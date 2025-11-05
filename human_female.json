@@ -1,0 +1,25 @@
+{
+  "macro_settings": {
+    "gender": 0.0,
+    "age": 0.35,
+    "muscle": 0.6,
+    "weight": 0.45,
+    "proportions": 0.5,
+    "height": 0.65,
+    "cupsize": 0.8,
+    "firmness": 0.5,
+    "race": {
+      "asian": 1.00,
+      "caucasian": 0.00,
+      "african": 0.00
+    }
+  },
+  "output": {
+    "directory": "./output",
+    "filename": "human_female.fbx"
+  },
+  "export_settings": {
+    "use_mesh_modifiers": true,
+    "add_leaf_bones": true
+  }
+}

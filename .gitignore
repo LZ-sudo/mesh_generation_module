@@ -1,0 +1,6 @@
+__pycache__/
+model_config/
+myenv/
+output/
+.blender_config.json
+test_scripts/

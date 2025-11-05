@@ -1,0 +1,9 @@
+bpy==4.5.4
+certifi==2025.10.5
+charset-normalizer==3.4.4
+Cython==3.2.0
+idna==3.11
+numpy==1.26.4
+requests==2.32.5
+urllib3==2.5.0
+zstandard==0.25.0
