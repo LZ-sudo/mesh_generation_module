@@ -3,17 +3,18 @@
 Batch Measurement Script - Runs INSIDE Blender
 
 This script processes a batch of parameter combinations:
-1. Loads batch configuration
-2. For each parameter combination:
+1. Loads configuration file
+2. Generates parameter combinations on-the-fly
+3. For each parameter combination:
    - Generate human mesh
    - Add rig
    - Extract measurements
    - Record to CSV
    - Delete model
-3. Save final CSV
+4. Save final CSV
 
 Usage (via run_blender.py):
-    python run_blender.py --script measure_batch.py -- --batch-config batch_config.json --output lookup_table.csv
+    python run_blender.py --script measure_batch.py -- --config lookup_table_config.json --output lookup_table.csv
 """
 
 import sys
@@ -22,6 +23,8 @@ import csv
 import json
 import argparse
 from pathlib import Path
+from itertools import product
+import numpy as np
 
 # Add script directory to path
 script_dir = Path(__file__).parent.absolute()
@@ -52,10 +55,10 @@ def parse_arguments():
     )
     
     parser.add_argument(
-        '--batch-config',
+        '--config',
         type=str,
         required=True,
-        help='Path to batch configuration JSON file'
+        help='Path to configuration JSON file'
     )
     
     parser.add_argument(
@@ -89,24 +92,76 @@ def parse_arguments():
     return parser.parse_args(argv)
 
 
-def load_batch_config(config_path: str) -> dict:
+def load_config(config_path: str) -> dict:
     """
-    Load batch configuration file.
-    
+    Load configuration file.
+
     Args:
-        config_path: Path to batch configuration JSON
-        
+        config_path: Path to configuration JSON
+
     Returns:
-        Batch configuration dictionary
+        Configuration dictionary
     """
     if not os.path.exists(config_path):
-        raise FileNotFoundError(f"Batch configuration not found: {config_path}")
-    
+        raise FileNotFoundError(f"Configuration not found: {config_path}")
+
     with open(config_path, 'r') as f:
         config = json.load(f)
-    
-    print(f"✓ Loaded batch configuration: {config['total_combinations']:,} combinations")
+
+    # Calculate total combinations
+    total = 1
+    for param_config in config["grid_params"].values():
+        min_val = param_config["min"]
+        max_val = param_config["max"]
+        step = param_config["step"]
+        n_values = len(np.arange(min_val, max_val + step/2, step))
+        total *= n_values
+
+    print(f"✓ Loaded configuration: {total:,} combinations")
     return config
+
+
+def generate_parameter_combinations(config: dict):
+    """
+    Generate parameter combinations on-the-fly from grid configuration.
+
+    This avoids loading millions of combinations into memory at once.
+
+    Args:
+        config: Configuration dictionary with fixed_params and grid_params
+
+    Yields:
+        Parameter dictionary for each combination
+    """
+    fixed_params = config["fixed_params"]
+    grid_params = config["grid_params"]
+
+    # Generate value lists for each grid parameter
+    param_names = []
+    param_values = []
+
+    for param_name, param_config in grid_params.items():
+        min_val = param_config["min"]
+        max_val = param_config["max"]
+        step = param_config["step"]
+
+        # Generate values using numpy for precision
+        values = np.arange(min_val, max_val + step/2, step)
+        values = np.clip(values, 0.0, 1.0)  # Ensure within bounds
+        values = [round(float(v), 3) for v in values]  # Round to 3 decimals
+
+        param_names.append(param_name)
+        param_values.append(values)
+
+    # Generate combinations one at a time
+    for combo in product(*param_values):
+        params = fixed_params.copy()
+
+        # Add grid parameter values
+        for i, param_name in enumerate(param_names):
+            params[param_name] = combo[i]
+
+        yield params
 
 
 def initialize_csv(output_path: str) -> tuple:
@@ -264,23 +319,29 @@ def main():
         sys.exit(e.code)
     
     print(f"\nConfiguration:")
-    print(f"  Batch config: {args.batch_config}")
+    print(f"  Config file: {args.config}")
     print(f"  Output: {args.output}")
     print(f"  Rig type: {args.rig_type}")
     print(f"  Delete models: {not args.no_delete}")
     print(f"  Checkpoint interval: {args.checkpoint_interval}")
-    
+
     try:
-        # Load batch configuration
+        # Load configuration
         print("\n" + "-"*70)
-        print("LOADING BATCH CONFIGURATION")
+        print("LOADING CONFIGURATION")
         print("-"*70)
-        batch_config = load_batch_config(args.batch_config)
-        
-        param_list = batch_config["parameters"]
-        total = len(param_list)
-        
-        print(f"\nWill process {total:,} models")
+        config = load_config(args.config)
+
+        # Calculate total combinations
+        total = 1
+        for param_config in config["grid_params"].values():
+            min_val = param_config["min"]
+            max_val = param_config["max"]
+            step = param_config["step"]
+            n_values = len(np.arange(min_val, max_val + step/2, step))
+            total *= n_values
+
+        print(f"\nWill process {total:,} models (generated on-the-fly)")
         
         # Initialize CSV
         print("\n" + "-"*70)
@@ -298,11 +359,14 @@ def main():
         print("\n" + "="*70)
         print("PROCESSING MODELS")
         print("="*70)
-        
+
         successful = 0
         failed = 0
-        
-        for i, params in enumerate(param_list, 1):
+
+        # Generate parameter combinations on-the-fly
+        param_generator = generate_parameter_combinations(config)
+
+        for i, params in enumerate(param_generator, 1):
             print(f"\n[{i}/{total}] Processing model {i:,}/{total:,}")
             print("-"*70)
             

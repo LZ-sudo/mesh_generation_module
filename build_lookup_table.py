@@ -22,22 +22,46 @@ from itertools import product
 import numpy as np
 
 
+def extract_config_suffix(config_path: str) -> str:
+    """
+    Extract suffix from config filename for naming output files.
+
+    Example:
+        lookup_table_config_female_asian.json -> female_asian
+        lookup_table_config.json -> (empty string)
+
+    Args:
+        config_path: Path to configuration file
+
+    Returns:
+        Suffix string (empty if no suffix)
+    """
+    filename = Path(config_path).stem  # Get filename without extension
+
+    # Look for pattern: lookup_table_config_SUFFIX
+    if "lookup_table_config_" in filename:
+        suffix = filename.replace("lookup_table_config_", "")
+        return suffix
+
+    return ""
+
+
 def load_config(config_path: str) -> dict:
     """
     Load configuration file.
-    
+
     Args:
         config_path: Path to configuration JSON
-        
+
     Returns:
         Configuration dictionary
     """
     if not Path(config_path).exists():
         raise FileNotFoundError(f"Configuration file not found: {config_path}")
-    
+
     with open(config_path, 'r') as f:
         config = json.load(f)
-    
+
     print(f"✓ Loaded configuration from: {config_path}")
     return config
 
@@ -153,51 +177,46 @@ def generate_parameter_grid(config: dict) -> list:
     return param_list
 
 
-def create_batch_config(param_list: list, output_path: str = "configs/batch_config.json"):
+def calculate_total_combinations(config: dict) -> int:
     """
-    Create batch configuration file for Blender processing.
-    
+    Calculate total number of parameter combinations from grid configuration.
+
     Args:
-        param_list: List of parameter dictionaries
-        output_path: Path to save batch configuration
+        config: Configuration dictionary with grid_params
+
+    Returns:
+        Total number of combinations
     """
-    # Ensure directory exists
-    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-    
-    batch_config = {
-        "total_combinations": len(param_list),
-        "parameters": param_list
-    }
-    
-    with open(output_path, 'w') as f:
-        json.dump(batch_config, f, indent=2)
-    
-    print(f"✓ Batch configuration saved to: {output_path}")
-    
-    # Report file size
-    file_size = Path(output_path).stat().st_size / 1024  # KB
-    print(f"  File size: {file_size:.1f} KB")
+    total = 1
+    for param_config in config["grid_params"].values():
+        min_val = param_config["min"]
+        max_val = param_config["max"]
+        step = param_config["step"]
+        n_values = len(np.arange(min_val, max_val + step/2, step))
+        total *= n_values
+
+    return total
 
 
-def launch_blender(batch_config_path: str, output_csv_path: str, delete_models: bool = False):
+def launch_blender(config_path: str, output_csv_path: str, delete_models: bool = False):
     """
     Launch Blender with measure_batch.py script.
-    
+
     Args:
-        batch_config_path: Path to batch configuration file
+        config_path: Path to configuration file (passed directly to Blender)
         output_csv_path: Path for output CSV file
         delete_models: Whether to delete models after measurement
     """
     print("\n" + "="*70)
     print("LAUNCHING BLENDER")
     print("="*70)
-    
-    # Build command
+
+    # Build command (pass config file directly, no intermediate batch_config)
     cmd = [
         "python", "run_blender.py",
         "--script", "measure_batch.py",
         "--",
-        "--batch-config", batch_config_path,
+        "--config", config_path,
         "--output", output_csv_path
     ]
     
@@ -310,20 +329,37 @@ Example:
         # Load and validate configuration
         config = load_config(args.config)
         validate_config(config)
-        
-        # Generate parameter grid
+
+        # Extract suffix from config filename for dynamic naming
+        suffix = extract_config_suffix(args.config)
+
+        # Generate dynamic output path
+        if suffix:
+            # Override output path if user didn't specify custom one
+            if args.output == 'output/lookup_table.csv':
+                output_csv_path = f"output/lookup_table_{suffix}.csv"
+            else:
+                output_csv_path = args.output
+        else:
+            output_csv_path = args.output
+
+        print(f"\nConfiguration:")
+        print(f"  Config file: {args.config}")
+        print(f"  Output CSV: {output_csv_path}")
+
+        # Calculate total combinations
+        total_combinations = calculate_total_combinations(config)
+        print(f"  Total combinations: {total_combinations:,}")
+
+        # Generate parameter grid (for summary only)
         param_list = generate_parameter_grid(config)
-        
+
         # Print summary
         print_summary(param_list)
-        
-        # Create batch configuration
-        batch_config_path = "configs/batch_config.json"
-        create_batch_config(param_list, batch_config_path)
-        
+
         # Launch Blender (unless dry-run)
         if args.dry_run:
-            print("\n✓ Dry run complete. Batch configuration ready.")
+            print("\n✓ Dry run complete. Configuration validated.")
             print(f"  To process: python build_lookup_table.py --config {args.config}")
         else:
             # Confirm before processing
@@ -332,10 +368,11 @@ Example:
                 if response.lower() not in ['yes', 'y']:
                     print("Aborted.")
                     return 0
-            
+
+            # Pass the config file directly to Blender (no intermediate batch_config needed)
             exit_code = launch_blender(
-                batch_config_path,
-                args.output,
+                args.config,
+                output_csv_path,
                 delete_models=not args.no_delete
             )
             
@@ -343,19 +380,19 @@ Example:
                 print("\n" + "="*70)
                 print("✓ LOOKUP TABLE GENERATION COMPLETE!")
                 print("="*70)
-                print(f"\nOutput saved to: {args.output}")
-                
+                print(f"\nOutput saved to: {output_csv_path}")
+
                 # Check output file
-                output_path = Path(args.output)
+                output_path = Path(output_csv_path)
                 if output_path.exists():
                     file_size = output_path.stat().st_size / 1024  # KB
                     print(f"File size: {file_size:.1f} KB")
-                    
+
                     # Count rows
-                    with open(output_path, 'r') as f:
+                    with open(output_csv_path, 'r') as f:
                         row_count = sum(1 for line in f) - 1  # Exclude header
                     print(f"Rows: {row_count:,}")
-                
+
                 print("="*70 + "\n")
             else:
                 print("\n✗ Lookup table generation failed")
