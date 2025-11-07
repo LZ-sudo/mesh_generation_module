@@ -3,7 +3,7 @@
 Main script for generating human meshes with MPFB2 in headless Blender.
 
 This script can be run from the command line without opening the Blender GUI:
-    blender --background --python generate_human.py -- --config path/to/config.json
+    
 
 The script will:
 1. Load configuration from JSON file
@@ -30,7 +30,7 @@ def parse_arguments():
     Parse command line arguments.
     
     When running with Blender, arguments after '--' are passed to the script.
-    Example: blender --background --python generate_human.py -- --config config.json
+    Example: python run_blender.py --script generate_human.py -- --config human_female.json
     
     Returns:
         Parsed arguments
@@ -46,12 +46,13 @@ def parse_arguments():
         description='Generate human mesh with MPFB2 in headless Blender',
         epilog="""
 Example usage:
-    blender --background --python generate_human.py -- --config config.json
+    python run_blender.py --script generate_human.py -- --config human_female.json
+
+    python run_blender.py --script generate_human.py -- --config human_female.json --rig-type default_no_toes
+
+    python run_blender.py --script generate_human.py -- --config human_female.json --fk-ik-hybrid --instrumented-arm right
+    """
     
-    blender --background --python generate_human.py -- \\
-        --config config.json \\
-        --rig-type default_no_toes
-        """
     )
     
     parser.add_argument(
@@ -74,13 +75,27 @@ Example usage:
         action='store_true',
         help='Skip adding rig (export mesh only)'
     )
-    
+
+    parser.add_argument(
+        '--fk-ik-hybrid',
+        action='store_true',
+        help='Configure FK/IK hybrid rig for IMU sensor-based motion capture'
+    )
+
+    parser.add_argument(
+        '--instrumented-arm',
+        type=str,
+        default='left',
+        choices=['left', 'right'],
+        help='Which arm has IMU sensors attached (default: left)'
+    )
+
     parser.add_argument(
         '--verbose',
         action='store_true',
         help='Enable verbose output'
     )
-    
+
     return parser.parse_args(argv)
 
 
@@ -98,8 +113,6 @@ def main():
         # Handle argparse errors gracefully
         if e.code != 0:
             print("\n✗ Error parsing arguments")
-            print("\nUsage:")
-            print("  blender --background --python generate_human.py -- --config config.json")
         sys.exit(e.code)
     
     if args.verbose:
@@ -112,8 +125,6 @@ def main():
         print(f"  Blender version: {bpy.app.version_string}")
     except ImportError:
         print("✗ ERROR: This script must be run with Blender!")
-        print("\nUsage:")
-        print("  blender --background --python generate_human.py -- --config config.json")
         sys.exit(1)
     
     # Check if MPFB2 is installed
@@ -184,9 +195,22 @@ def main():
         print("\n" + "-"*70)
         print("STEP 5: Adding Rig")
         print("-"*70)
-        
+
         try:
             armature, _ = utils.add_standard_rig(basemesh, args.rig_type)
+
+            # Configure FK/IK hybrid rig if requested
+            if args.fk_ik_hybrid:
+                print("\n" + "-"*70)
+                print("STEP 5.5: Configuring FK/IK Hybrid Rig")
+                print("-"*70)
+                try:
+                    utils.configure_fk_ik_hybrid_rig(armature, args.instrumented_arm)
+                except Exception as e:
+                    print(f"\n⚠ Warning: Failed to configure FK/IK hybrid rig: {e}")
+                    import traceback
+                    if args.verbose:
+                        traceback.print_exc()
         except Exception as e:
             print(f"\n⚠ Warning: Failed to add rig: {e}")
             print("Continuing without rig...")

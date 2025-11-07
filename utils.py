@@ -386,6 +386,229 @@ def add_standard_rig(basemesh, rig_type: str = "default") -> Tuple[Any, Any]:
         raise RuntimeError(f"Failed to add {rig_type} rig")
 
 
+def configure_fk_ik_hybrid_rig(armature, instrumented_arm: str = "left"):
+    """
+    Configure FK/IK hybrid rigging system for IMU sensor-based motion capture.
+
+    This function tags bones with custom properties to identify their control type
+    for use in game engines (Unity, Unreal, etc.). No Blender constraints are added,
+    ensuring clean export without pose deformation.
+
+    Bone tagging scheme:
+    - FK (Forward Kinematics): Bones controlled directly by IMU sensors
+      * spine01, spine02 (chest sensor)
+      * instrumented arm: upperarm01, lowerarm01, wrist (arm sensors)
+
+    - IK (Inverse Kinematics): Bones with positional constraints
+      * foot.L, foot.R (ground contact)
+      * root (pelvis anchor)
+
+    - Copy/Mirror: Bones that derive motion from other bones
+      * non-instrumented arm (mirrors instrumented arm)
+      * head, neck01 (follows chest)
+      * spine03 (interpolates between root and chest)
+
+    - Anchored: Bones fixed relative to root/pelvis
+      * spine04, spine05
+
+    Args:
+        armature: Blender armature object with standard MPFB2 rig
+        instrumented_arm: Which arm has sensors ("left" or "right")
+
+    Raises:
+        ValueError: If instrumented_arm is not "left" or "right"
+        RuntimeError: If required bones are not found in the armature
+    """
+    import bpy
+
+    if instrumented_arm not in ["left", "right"]:
+        raise ValueError(f"instrumented_arm must be 'left' or 'right', got '{instrumented_arm}'")
+
+    print(f"\n" + "="*70)
+    print("CONFIGURING FK/IK HYBRID RIG (TAGGING ONLY)")
+    print("="*70)
+    print(f"\nInstrumented arm: {instrumented_arm.upper()}")
+    print("Mode: Bone tagging without constraints (clean export)")
+
+    # Switch to pose mode to access bones
+    bpy.context.view_layer.objects.active = armature
+    bpy.ops.object.mode_set(mode='POSE')
+
+    pose_bones = armature.pose.bones
+
+    # Helper function to check if bone exists
+    def get_bone(bone_name: str):
+        if bone_name not in pose_bones:
+            raise RuntimeError(f"Required bone '{bone_name}' not found in armature")
+        return pose_bones[bone_name]
+
+    print("\n" + "-"*70)
+    print("STEP 1: Tagging FK Bones (Direct Sensor Control)")
+    print("-"*70)
+
+    # Configure FK for chest (spine1 and spine2)
+    print("\nConfiguring chest FK:")
+    try:
+        spine1 = get_bone("spine01")
+        spine2 = get_bone("spine02")
+
+        # Tag these bones for FK control (no constraints needed for FK, just marking)
+        spine1["fk_controlled"] = True
+        spine1["sensor_target"] = "chest"
+        spine2["fk_controlled"] = True
+        spine2["sensor_target"] = "chest"
+
+        print(f"  ✓ spine01: Tagged for chest sensor FK control")
+        print(f"  ✓ spine02: Tagged for chest sensor FK control")
+    except RuntimeError as e:
+        print(f"  ⚠ Warning: {e}")
+
+    # Configure FK for instrumented arm
+    print(f"\nConfiguring {instrumented_arm} arm FK:")
+    arm_suffix = ".L" if instrumented_arm == "left" else ".R"
+
+    try:
+        upperarm = get_bone(f"upperarm01{arm_suffix}")
+        lowerarm = get_bone(f"lowerarm01{arm_suffix}")
+        wrist = get_bone(f"wrist{arm_suffix}")
+
+        # Tag arm bones for FK control
+        upperarm["fk_controlled"] = True
+        upperarm["sensor_target"] = "upper_arm"
+        lowerarm["fk_controlled"] = True
+        lowerarm["sensor_target"] = "forearm"
+        wrist["fk_controlled"] = True
+        wrist["sensor_target"] = "hand"
+
+        print(f"  ✓ upperarm01{arm_suffix}: Tagged for upper arm sensor FK control")
+        print(f"  ✓ lowerarm01{arm_suffix}: Tagged for forearm sensor FK control")
+        print(f"  ✓ wrist{arm_suffix}: Tagged for hand sensor FK control")
+    except RuntimeError as e:
+        print(f"  ⚠ Warning: {e}")
+
+    print("\n" + "-"*70)
+    print("STEP 2: Tagging IK Bones (Positional Constraints)")
+    print("-"*70)
+
+    # Tag feet for IK ground contact
+    print("\nTagging foot bones for IK:")
+    for side, suffix in [("left", ".L"), ("right", ".R")]:
+        try:
+            foot = get_bone(f"foot{suffix}")
+
+            # Tag foot as IK controlled
+            foot["ik_controlled"] = True
+            foot["ik_purpose"] = "ground_constraint"
+            foot["ik_pole_target"] = f"toe3-1{suffix}"  # Suggested pole target for game engine
+
+            print(f"  ✓ {side} foot: Tagged for IK ground constraint")
+        except RuntimeError as e:
+            print(f"  ⚠ Warning: Could not tag {side} foot - {e}")
+
+    # Tag root (pelvis) as anchor
+    print("\nTagging root/pelvis anchor:")
+    try:
+        root = get_bone("root")
+
+        root["ik_controlled"] = True
+        root["ik_purpose"] = "anchor"
+
+        print("  ✓ root: Tagged as pelvis anchor")
+    except RuntimeError as e:
+        print(f"  ⚠ Warning: {e}")
+
+    print("\n" + "-"*70)
+    print("STEP 3: Tagging Copy/Mirror Bones (Derived Movement)")
+    print("-"*70)
+
+    # Tag non-instrumented arm for mirroring
+    print(f"\nTagging {'right' if instrumented_arm == 'left' else 'left'} arm for mirroring:")
+    mirror_suffix = ".R" if instrumented_arm == "left" else ".L"
+    source_suffix = ".L" if instrumented_arm == "left" else ".R"
+
+    for bone_type in ["upperarm01", "lowerarm01", "wrist"]:
+        try:
+            mirror_bone = get_bone(f"{bone_type}{mirror_suffix}")
+            source_bone_name = f"{bone_type}{source_suffix}"
+
+            mirror_bone["copy_controlled"] = True
+            mirror_bone["copy_source"] = source_bone_name
+            mirror_bone["copy_type"] = "mirror"
+
+            print(f"  ✓ {bone_type}{mirror_suffix}: Tagged to mirror {source_bone_name}")
+        except RuntimeError as e:
+            print(f"  ⚠ Warning: {e}")
+
+    # Tag head/neck to follow chest
+    print("\nTagging head/neck to follow chest:")
+    try:
+        neck01 = get_bone("neck01")
+        head = get_bone("head")
+
+        for bone, bone_name in [(neck01, "neck01"), (head, "head")]:
+            bone["copy_controlled"] = True
+            bone["copy_source"] = "spine02"
+            bone["copy_type"] = "follow"
+            bone["copy_influence"] = 0.5  # Suggested influence for natural movement
+
+            print(f"  ✓ {bone_name}: Tagged to follow chest (spine02)")
+    except RuntimeError as e:
+        print(f"  ⚠ Warning: {e}")
+
+    # Tag spine03 for interpolation
+    print("\nTagging spine for interpolation:")
+    try:
+        spine03 = get_bone("spine03")
+
+        # Determine lower spine source
+        lower_spine_source = "root"
+        try:
+            get_bone("spine04")
+            lower_spine_source = "spine04"
+        except RuntimeError:
+            try:
+                get_bone("spine05")
+                lower_spine_source = "spine05"
+            except RuntimeError:
+                pass
+
+        spine03["interpolated"] = True
+        spine03["interpolation_source_lower"] = lower_spine_source
+        spine03["interpolation_source_upper"] = "spine02"
+        spine03["interpolation_influence"] = 0.5  # 50/50 blend
+
+        print(f"  ✓ spine03: Tagged to interpolate between {lower_spine_source} and spine02")
+    except RuntimeError as e:
+        print(f"  ⚠ Warning: {e}")
+
+    # Tag spine04 and spine05 as anchored to root/pelvis
+    print("\nTagging lower spine anchoring:")
+    for spine_num in ["04", "05"]:
+        try:
+            spine = get_bone(f"spine{spine_num}")
+            spine["anchored_to"] = "root"
+            print(f"  ✓ spine{spine_num}: Tagged as anchored to root/pelvis")
+        except RuntimeError:
+            print(f"  ⚠ Warning: spine{spine_num} not found")
+
+    # Return to object mode
+    bpy.ops.object.mode_set(mode='OBJECT')
+
+    print("\n" + "="*70)
+    print("✓ FK/IK HYBRID RIG TAGGING COMPLETE")
+    print("="*70)
+    print("\nBone Tagging Summary:")
+    print("  FK Controlled: chest (spine01, spine02), instrumented arm")
+    print("  IK Controlled: both feet (ground), root (anchor)")
+    print("  Mirrored: non-instrumented arm")
+    print("  Tracked: head, neck01 (follows chest)")
+    print("  Interpolated: spine03 (between root/pelvis and chest)")
+    print("  Anchored: spine04, spine05 (to root/pelvis)")
+    print("\nNOTE: No Blender constraints added - only custom property tags")
+    print("      Use tags in game engine to apply IMU data and IK")
+    print("="*70 + "\n")
+
+
 def export_fbx(basemesh, armature, output_path: str, export_settings: Dict[str, Any] = None):
     """
     Export the human mesh and rig to FBX format.
@@ -429,7 +652,7 @@ def export_fbx(basemesh, armature, output_path: str, export_settings: Dict[str, 
         'apply_unit_scale': True,
         'apply_scale_options': 'FBX_SCALE_NONE',
         'use_space_transform': True,
-        'bake_space_transform': False,
+        'bake_space_transform': True,  # Changed to True to bake transforms into mesh
         'object_types': {'ARMATURE', 'MESH'},
         'use_mesh_modifiers': True,
         'use_mesh_modifiers_render': True,
@@ -437,7 +660,7 @@ def export_fbx(basemesh, armature, output_path: str, export_settings: Dict[str, 
         'use_subsurf': False,
         'use_mesh_edges': False,
         'use_tspace': False,
-        'use_custom_props': False,
+        'use_custom_props': True,  # Changed to True to preserve FK/IK tags
         'add_leaf_bones': False,
         'primary_bone_axis': 'Y',
         'secondary_bone_axis': 'X',
@@ -474,6 +697,11 @@ def export_fbx(basemesh, armature, output_path: str, export_settings: Dict[str, 
     )
 
     print(f"✓ Successfully exported to: {output_path}")
+
+    # Check if custom properties were exported
+    if armature and default_settings.get('use_custom_props', False):
+        print("\nNote: FK/IK bone tags exported as custom properties")
+        print("  Read these properties in your game engine to identify bone roles")
 
 
 def validate_json_structure(config: Dict[str, Any]) -> bool:

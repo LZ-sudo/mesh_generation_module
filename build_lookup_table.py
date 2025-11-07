@@ -273,8 +273,8 @@ def print_summary(param_list: list):
     
     print(f"\nTotal Combinations: {len(param_list):,}")
     
-    # Estimate processing time (rough estimate: 1-2 seconds per model)
-    estimated_time = len(param_list) * 1.5 / 60  # minutes
+    # Estimate processing time (rough estimate: 0.9 seconds per model)
+    estimated_time = len(param_list) * 0.9 / 60  # minutes
     print(f"Estimated Processing Time: {estimated_time:.1f} - {estimated_time*1.5:.1f} minutes")
     
     print("="*70 + "\n")
