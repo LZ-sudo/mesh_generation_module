@@ -1,0 +1,39 @@
+{
+  "fixed_params": {
+    "gender": 1.0,
+    "cupsize": 0.5,
+    "firmness": 0.5,
+    "race": {
+      "asian": 1.0,
+      "caucasian": 0.0,
+      "african": 0.0
+    }
+  },
+  "grid_params": {
+    "age": {
+      "min": 0.4,
+      "max": 1.0,
+      "step": 0.05
+    },
+    "muscle": {
+      "min": 0.0,
+      "max": 1.0,
+      "step": 0.10
+    },
+    "weight": {
+      "min": 0.0,
+      "max": 1.0,
+      "step": 0.10
+    },
+    "height": {
+      "min": 0.35,
+      "max": 0.75,
+      "step": 0.05
+    },
+    "proportions": {
+      "min": 0.2,
+      "max": 0.8,
+      "step": 0.05
+    }
+  }
+}
