@@ -164,21 +164,42 @@ def generate_parameter_combinations(config: dict):
         yield params
 
 
-def initialize_csv(output_path: str) -> tuple:
+def initialize_csv(output_path: str, config: dict) -> tuple:
     """
     Initialize CSV file with headers.
-    
+
     Args:
         output_path: Path for CSV file
-        
+        config: Configuration dictionary (used for validation)
+
     Returns:
         Tuple of (file_handle, csv_writer)
     """
     # Ensure output directory exists
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-    
-    # Define CSV columns
-    param_columns = ["age", "muscle", "weight", "height", "proportions"]
+
+    # Validate config has required keys
+    if "fixed_params" not in config or "grid_params" not in config:
+        raise ValueError("Config must contain 'fixed_params' and 'grid_params'")
+
+    # Define parameter columns
+    # Include ALL parameters: both fixed and grid
+    param_columns = [
+        # Fixed parameters
+        "gender",
+        "cupsize",
+        "firmness",
+        "asian",
+        "caucasian",
+        "african",
+        # Grid parameters
+        "age",
+        "muscle",
+        "weight",
+        "height",
+        "proportions"
+    ]
+
     measurement_columns = [
         "height_cm",
         "shoulder_width_cm",
@@ -189,17 +210,19 @@ def initialize_csv(output_path: str) -> tuple:
         "forearm_length_cm",
         "hand_length_cm"
     ]
-    
+
     columns = param_columns + measurement_columns
-    
+
     # Open CSV file
     csv_file = open(output_path, 'w', newline='')
     csv_writer = csv.DictWriter(csv_file, fieldnames=columns)
     csv_writer.writeheader()
-    
+
     print(f"✓ Initialized CSV: {output_path}")
     print(f"  Columns: {len(columns)}")
-    
+    print(f"    Parameters: {len(param_columns)} (6 fixed + 5 grid)")
+    print(f"    Measurements: {len(measurement_columns)}")
+
     return csv_file, csv_writer
 
 
@@ -243,14 +266,22 @@ def process_single_model(params: dict, rig_type: str) -> dict:
 def write_measurement_row(csv_writer, params: dict, measured: dict):
     """
     Write a single row to CSV.
-    
+
     Args:
         csv_writer: CSV writer object
-        params: Parameter dictionary
+        params: Parameter dictionary (includes both fixed and grid params)
         measured: Measurements dictionary
     """
     row = {
-        # Parameters
+        # Fixed parameters
+        "gender": params["gender"],
+        "cupsize": params["cupsize"],
+        "firmness": params["firmness"],
+        "asian": params["race"]["asian"],
+        "caucasian": params["race"]["caucasian"],
+        "african": params["race"]["african"],
+
+        # Grid parameters
         "age": params["age"],
         "muscle": params["muscle"],
         "weight": params["weight"],
@@ -267,7 +298,7 @@ def write_measurement_row(csv_writer, params: dict, measured: dict):
         "forearm_length_cm": measured["forearm_length"],
         "hand_length_cm": measured["hand_length"]
     }
-    
+
     csv_writer.writerow(row)
 
 
@@ -347,7 +378,7 @@ def main():
         print("\n" + "-"*70)
         print("INITIALIZING OUTPUT")
         print("-"*70)
-        csv_file, csv_writer = initialize_csv(args.output)
+        csv_file, csv_writer = initialize_csv(args.output, config)
         
         # Set up Blender scene
         print("\n" + "-"*70)
