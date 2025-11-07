@@ -14,7 +14,7 @@ This script processes a batch of parameter combinations:
 4. Save final CSV
 
 Usage (via run_blender.py):
-    python run_blender.py --script measure_batch.py -- --config lookup_table_config.json --output lookup_table.csv
+    python run_blender.py --script measure_batch.py -- --config configs/lookup_table_config_test.json 
 """
 
 import sys
@@ -26,13 +26,19 @@ from pathlib import Path
 from itertools import product
 import numpy as np
 
-# Add script directory to path
+# Add parent directory to path to import utils
+# (since measure_batch.py is now in measurement_functions subdirectory)
 script_dir = Path(__file__).parent.absolute()
+parent_dir = script_dir.parent.absolute()
+if str(parent_dir) not in sys.path:
+    sys.path.insert(0, str(parent_dir))
+
+# Import utilities from parent directory
+import utils
+
+# Import measurements from same directory (measurement_functions)
 if str(script_dir) not in sys.path:
     sys.path.insert(0, str(script_dir))
-
-# Import utilities
-import utils
 import measurements
 
 

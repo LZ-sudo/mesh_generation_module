@@ -10,7 +10,7 @@ This script runs OUTSIDE of Blender and:
 5. Reports results
 
 Usage:
-    python build_lookup_table.py --config lookup_table_config.json
+    python build_lookup_table.py --config configs/lookup_table_config_test.json
 """
 
 import json
@@ -214,7 +214,7 @@ def launch_blender(config_path: str, output_csv_path: str, delete_models: bool =
     # Build command (pass config file directly, no intermediate batch_config)
     cmd = [
         "python", "run_blender.py",
-        "--script", "measure_batch.py",
+        "--script", "measurement_functions/measure_batch.py",
         "--",
         "--config", config_path,
         "--output", output_csv_path
