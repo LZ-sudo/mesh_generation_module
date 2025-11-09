@@ -36,7 +36,7 @@ Automated tool for generating customizable human 3D meshes using Blender and MPF
 
 ## Prerequisites
 
-1. **Blender 4.2+** - Download from [blender.org](https://www.blender.org/download/)
+1. **Blender 4.5.3 LTS for Windows** - Download from [blender.org](https://download.blender.org/release/Blender4.5/blender-4.5.3-windows-x64.msi)
 2. **MPFB2 addon** - Install from Blender Extensions:
    - Open Blender
    - Go to Edit → Preferences → Extensions

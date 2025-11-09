@@ -22,6 +22,7 @@ import os
 import csv
 import json
 import argparse
+import gc
 from pathlib import Path
 from itertools import product
 import numpy as np
@@ -310,22 +311,50 @@ def write_measurement_row(csv_writer, params: dict, measured: dict):
 
 def cleanup_scene(basemesh, armature):
     """
-    Delete generated objects from scene.
-    
+    Delete generated objects from scene and clear orphaned data blocks.
+
+    This is critical for batch processing to prevent memory leaks.
+    Blender doesn't automatically remove mesh/armature data blocks when
+    objects are deleted, causing RAM to fill up during long batch runs.
+
     Args:
         basemesh: Mesh object to delete
         armature: Armature object to delete
     """
     import bpy
-    
+
+    # Store references to data blocks before deleting objects
+    mesh_data = basemesh.data if basemesh else None
+    armature_data = armature.data if armature else None
+
+    # Delete objects
     bpy.ops.object.select_all(action='DESELECT')
-    
+
     if basemesh:
         basemesh.select_set(True)
     if armature:
         armature.select_set(True)
-    
+
     bpy.ops.object.delete()
+
+    # Manually remove orphaned data blocks
+    # This is essential to prevent memory leaks in batch processing
+    if mesh_data and mesh_data.users == 0:
+        bpy.data.meshes.remove(mesh_data)
+
+    if armature_data and armature_data.users == 0:
+        bpy.data.armatures.remove(armature_data)
+
+    # Clear orphaned data blocks globally
+    # This catches any other orphaned data (materials, textures, etc.)
+    for block_type in [bpy.data.meshes, bpy.data.armatures, bpy.data.materials,
+                       bpy.data.textures, bpy.data.images]:
+        for block in block_type:
+            if block.users == 0:
+                block_type.remove(block)
+
+    # Force Python garbage collection to free memory immediately
+    gc.collect()
 
 
 def main():
@@ -423,7 +452,10 @@ def main():
                 # Checkpoint
                 if i % args.checkpoint_interval == 0:
                     csv_file.flush()
+                    # Force garbage collection periodically to prevent memory buildup
+                    gc.collect()
                     print(f"\n✓ Checkpoint: {i}/{total} models processed ({successful} successful, {failed} failed)")
+                    print(f"  Memory cleanup performed")
                 
             except Exception as e:
                 print(f"\n✗ Error processing model {i}: {e}")
