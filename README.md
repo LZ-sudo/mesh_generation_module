@@ -43,7 +43,7 @@ Automated tool for generating customizable human 3D meshes using Blender and MPF
    - Search for "MPFB" and click Install
    - Restart Blender
 
-3. **Python 3.8+** (usually comes with your system)
+3. **Python 3.11** (Specifically required for Blender API to work)
 
 ## Installation
 
