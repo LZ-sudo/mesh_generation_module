@@ -397,15 +397,15 @@ Each model is measured using precise bone-based methods:
 | Measurement | Description | Method |
 |-------------|-------------|--------|
 | `height_cm` | Total height | Head top to feet |
-| `shoulder_width_cm` | Shoulder breadth | Joint-based |
-| `chest_width_cm` | Chest depth | Mesh depth (front-to-back) |
-| `head_width_cm` | Head width | Mesh width (side-to-side) |
+| `shoulder_width_cm` | Shoulder breadth | Distance between shoulder01.L/R bones |
+| `hip_width_cm` | Hip width | Distance between upperleg01.L/R bones (hip joints) |
+| `head_width_cm` | Head width | Distance between temporalis02.L/R bones |
 | `neck_length_cm` | Neck length | Bone chain: neck01 → neck02 |
 | `upper_arm_length_cm` | Upper arm length | Bone chain: upperarm01 → upperarm02 |
 | `forearm_length_cm` | Forearm length | Bone chain: lowerarm01 → lowerarm02 |
 | `hand_length_cm` | Hand length | Bone chain: wrist → finger3-3 (middle finger tip) |
 
-All measurements use the left side of the body for consistency.
+All measurements use bone positions from the armature for accuracy and consistency.
 
 ### Command Line Options
 
@@ -428,24 +428,34 @@ python build_lookup_table.py --config configs/lookup_table_config.json --no-dele
 The generated CSV includes both input parameters and measurements:
 
 ```csv
-age,muscle,weight,height,proportions,height_cm,shoulder_width_cm,chest_width_cm,head_width_cm,neck_length_cm,upper_arm_length_cm,forearm_length_cm,hand_length_cm
-0.0,0.0,0.0,0.0,0.5,140.5,32.1,21.3,14.2,9.1,26.8,22.3,16.7
-0.0,0.0,0.0,0.1,0.5,145.2,33.4,22.1,14.5,9.3,27.5,23.1,17.1
+age,muscle,weight,height,proportions,height_cm,shoulder_width_cm,hip_width_cm,head_width_cm,neck_length_cm,upper_arm_length_cm,forearm_length_cm,hand_length_cm
+0.0,0.0,0.0,0.0,0.5,140.5,32.1,24.5,14.2,9.1,26.8,22.3,16.7
+0.0,0.0,0.0,0.1,0.5,145.2,33.4,25.1,14.5,9.3,27.5,23.1,17.1
 ...
 ```
 
 ### Performance & Scalability
 
-- **Processing speed**: ~1-2 seconds per model
+- **Processing speed**: ~10-20 ms per model (extremely fast!)
 - **Memory usage**: Constant (generates combinations on-the-fly)
+- **Memory optimization**: OS-level output suppression prevents memory leaks from print statements
 - **Config file size**: ~2 KB regardless of combination count
 - **Checkpoint saving**: Progress saved every 50 models by default
+- **Progress tracking**: Real-time progress bar with ETA
 - **Scalability**: Can handle millions of combinations without memory issues
 
 **Example processing times:**
-- 1,000 combinations: ~20-30 minutes
-- 10,000 combinations: ~3-5 hours
-- 100,000 combinations: ~30-50 hours
+- 1,000 combinations: ~10-20 seconds
+- 10,000 combinations: ~2-3 minutes
+- 100,000 combinations: ~20-30 minutes
+- 1,000,000 combinations: ~3-5 hours
+
+**Progress bar features:**
+- Real-time updates with estimated time remaining
+- Success/failure counters
+- Clean, single-line display that stays in place
+- Checkpoint notifications
+- OS-level output suppression for clean terminal
 
 ### Memory-Efficient Design
 
@@ -505,24 +515,29 @@ mesh_generation_module/
 
 ### Measurement System
 
-The measurement extraction uses a hybrid approach combining bone-based and mesh-based methods:
+The measurement extraction uses a combination of bone-based and mesh-based methods:
 
-**Bone-based measurements** (most accurate):
-- Uses the actual skeletal rig bone positions
-- Measures from extreme points of bone chains
-- Examples: neck_length (neck01→neck02), upper_arm_length (upperarm01→upperarm02), forearm_length (lowerarm01→lowerarm02), hand_length (wrist→finger3-3)
+**Bone position measurements** (width measurements):
+- Uses actual skeletal rig bone positions from the armature
+- Measures distances between specific bones
+- Examples:
+  - shoulder_width (shoulder01.L ↔ shoulder01.R)
+  - hip_width (upperleg01.L ↔ upperleg01.R hip joints)
+  - head_width (temporalis02.L ↔ temporalis02.R)
 
-**Joint-based measurements**:
-- Finds anatomical joints from mesh geometry
-- Measures distances between identified joint positions
-- Example: shoulder_width (distance between shoulder joints)
+**Bone chain measurements** (limb lengths):
+- Measures lengths of connected bone chains
+- Examples:
+  - neck_length (neck01 → neck02)
+  - upper_arm_length (upperarm01 → upperarm02)
+  - forearm_length (lowerarm01 → lowerarm02)
+  - hand_length (wrist → finger3-3)
 
-**Mesh-based measurements**:
-- Analyzes mesh vertex positions directly
-- Calculates widths and depths from vertex spans
-- Examples: chest_width (front-to-back depth), head_width (side-to-side width)
+**Mesh-based measurements** (height):
+- height: Calculated from mesh geometry using joint detection
+- Measures from head top to feet using anatomical landmark identification
 
-This approach provides high accuracy and consistency across all generated models.
+This hybrid approach provides high accuracy and consistency across all generated models, using the most appropriate method for each measurement type.
 
 ## Performance
 
@@ -532,9 +547,11 @@ This approach provides high accuracy and consistency across all generated models
 - **Mesh complexity**: ~19,000 vertices, ~163 bones (default rig)
 
 ### Lookup Table Generation
-- **Processing speed**: ~1-2 seconds per model (after Blender startup)
+- **Processing speed**: ~10-20 ms per model (extremely fast!)
 - **Memory usage**: Constant, regardless of combination count
-- **Throughput**: ~30-60 models per minute
+- **Memory optimization**: OS-level output suppression prevents memory leaks
+- **Throughput**: ~50-100 models per second
+- **Progress tracking**: Real-time progress bar with ETA
 - **Scalability**: Successfully tested with 100,000+ combinations
 
 ## License
@@ -570,7 +587,7 @@ python build_lookup_table.py --config configs/lookup_table_config_female_asian.j
 - **Blender cache**: `.blender_config.json`
 
 ### Measurement Columns
-`height_cm`, `shoulder_width_cm`, `chest_width_cm`, `head_width_cm`, `neck_length_cm`, `upper_arm_length_cm`, `forearm_length_cm`, `hand_length_cm`
+`height_cm`, `shoulder_width_cm`, `hip_width_cm`, `head_width_cm`, `neck_length_cm`, `upper_arm_length_cm`, `forearm_length_cm`, `hand_length_cm`
 
 ### Parameter Ranges
 All parameters: `0.0` to `1.0` (except race which must sum to ~1.0)

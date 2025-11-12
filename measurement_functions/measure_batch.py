@@ -23,6 +23,7 @@ import csv
 import json
 import argparse
 import gc
+import time
 from pathlib import Path
 from itertools import product
 import numpy as np
@@ -95,7 +96,7 @@ def parse_arguments():
         default=50,
         help='Save CSV every N models (default: 50)'
     )
-    
+
     return parser.parse_args(argv)
 
 
@@ -233,41 +234,142 @@ def initialize_csv(output_path: str, config: dict) -> tuple:
     return csv_file, csv_writer
 
 
-def process_single_model(params: dict, rig_type: str) -> dict:
+def process_single_model(params: dict, rig_type: str, quiet: bool = True) -> dict:
     """
     Generate model, measure, and return measurements.
-    
+
     Args:
         params: Parameter dictionary
         rig_type: Type of rig to add
-        
+        quiet: If True, suppress verbose output from measurements
+
     Returns:
         Dictionary with measurements
     """
     import bpy
     import importlib
-    
+
     # Get MPFB module path
     mpfb_path = utils._get_mpfb_module_path()
     HumanService = importlib.import_module(f'{mpfb_path}.services.humanservice').HumanService
-    
-    # Clear scene
-    bpy.ops.object.select_all(action='SELECT')
-    bpy.ops.object.delete()
-    
-    # Create human
-    basemesh = HumanService.create_human()
-    
-    # Apply macro settings
-    utils.apply_macro_settings_to_human(basemesh, params)
-    
-    # Add rig
-    armature, _ = utils.add_standard_rig(basemesh, rig_type)
-    
-    # Extract measurements
-    measured = measurements.extract_all_measurements(basemesh, armature)
-    
+
+    # Suppress output from Blender operations and measurements if in quiet mode
+    if quiet:
+        # Save original streams and file descriptors
+        old_stdout = sys.stdout
+        old_stderr = sys.stderr
+        old_stdout_fd = os.dup(1)  # Duplicate stdout file descriptor
+        old_stderr_fd = os.dup(2)  # Duplicate stderr file descriptor
+
+        # Open devnull and redirect at OS level
+        devnull_fd = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(devnull_fd, 1)  # Redirect stdout to devnull
+        os.dup2(devnull_fd, 2)  # Redirect stderr to devnull
+
+        # Also redirect Python's sys.stdout/stderr
+        devnull = open(os.devnull, 'w')
+        sys.stdout = devnull
+        sys.stderr = devnull
+
+    try:
+        # Clear scene
+        bpy.ops.object.select_all(action='SELECT')
+        bpy.ops.object.delete()
+
+        # Create human
+        basemesh = HumanService.create_human()
+
+        # Apply macro settings
+        utils.apply_macro_settings_to_human(basemesh, params)
+
+        # Add rig
+        armature, _ = utils.add_standard_rig(basemesh, rig_type)
+
+        # Extract measurements
+        measured = measurements.extract_all_measurements(basemesh, armature)
+
+    finally:
+        if quiet:
+            # Restore file descriptors first (OS level)
+            os.dup2(old_stdout_fd, 1)
+            os.dup2(old_stderr_fd, 2)
+            os.close(old_stdout_fd)
+            os.close(old_stderr_fd)
+            os.close(devnull_fd)
+
+            # Restore Python streams
+            sys.stdout = old_stdout
+            sys.stderr = old_stderr
+            devnull.close()
+
     return measured, basemesh, armature
+
+
+def format_time(seconds):
+    """
+    Format seconds into human-readable time string.
+
+    Args:
+        seconds: Time in seconds
+
+    Returns:
+        Formatted time string (e.g., "1h 23m 45s")
+    """
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    secs = int(seconds % 60)
+
+    if hours > 0:
+        return f"{hours}h {minutes}m {secs}s"
+    elif minutes > 0:
+        return f"{minutes}m {secs}s"
+    else:
+        return f"{secs}s"
+
+
+def print_progress_bar(current, total, start_time, successful, failed, bar_length=50):
+    """
+    Print a simple text-based progress bar.
+
+    Args:
+        current: Current iteration number
+        total: Total number of iterations
+        start_time: Start time (from time.time())
+        successful: Number of successful models
+        failed: Number of failed models
+        bar_length: Length of the progress bar in characters
+    """
+    # Calculate progress
+    progress = current / total
+    filled_length = int(bar_length * progress)
+    bar = '█' * filled_length + '░' * (bar_length - filled_length)
+
+    # Calculate timing
+    elapsed = time.time() - start_time
+    if current > 0:
+        avg_time_per_model = elapsed / current
+        remaining_models = total - current
+        estimated_remaining = avg_time_per_model * remaining_models
+    else:
+        estimated_remaining = 0.9 * total  # Initial estimate: 0.9 seconds per model
+
+    # Format the progress bar
+    percentage = progress * 100
+    elapsed_str = format_time(elapsed)
+    remaining_str = format_time(estimated_remaining)
+
+    # Build progress text
+    progress_text = (f'Progress: |{bar}| {current}/{total} ({percentage:.1f}%) '
+                     f'[Elapsed: {elapsed_str}, ETA: {remaining_str}] '
+                     f'[Success: {successful}, Failed: {failed}]')
+
+    # Clear the entire line first, then write progress (no newline!)
+    # Use a consistent line width to prevent flickering
+    line_width = 150
+    padded_text = progress_text.ljust(line_width)
+
+    sys.stdout.write(f'\r{padded_text}')
+    sys.stdout.flush()
 
 
 def write_measurement_row(csv_writer, params: dict, measured: dict):
@@ -424,46 +526,50 @@ def main():
         # Process each model
         print("\n" + "="*70)
         print("PROCESSING MODELS")
-        print("="*70)
+        print("="*70 + "\n")
 
         successful = 0
         failed = 0
+        start_time = time.time()
 
         # Generate parameter combinations on-the-fly
         param_generator = generate_parameter_combinations(config)
 
+        # Process each model with progress bar
         for i, params in enumerate(param_generator, 1):
-            print(f"\n[{i}/{total}] Processing model {i:,}/{total:,}")
-            print("-"*70)
-            
             try:
-                # Generate and measure
-                measured, basemesh, armature = process_single_model(params, args.rig_type)
-                
+                # Generate and measure (quiet mode with OS-level suppression)
+                measured, basemesh, armature = process_single_model(params, args.rig_type, quiet=True)
+
                 # Write to CSV
                 write_measurement_row(csv_writer, params, measured)
-                
+
                 # Cleanup (if not debugging)
                 if not args.no_delete:
                     cleanup_scene(basemesh, armature)
-                
+
                 successful += 1
-                
+
+                # Update progress bar on every iteration
+                print_progress_bar(i, total, start_time, successful, failed)
+
                 # Checkpoint
                 if i % args.checkpoint_interval == 0:
                     csv_file.flush()
                     # Force garbage collection periodically to prevent memory buildup
                     gc.collect()
-                    print(f"\n✓ Checkpoint: {i}/{total} models processed ({successful} successful, {failed} failed)")
-                    print(f"  Memory cleanup performed")
-                
+                    # Clear current line, print checkpoint message on new line
+                    sys.stdout.write('\r' + ' ' * 150 + '\r')  # Clear line
+                    sys.stdout.write(f"✓ Checkpoint: {i}/{total} models processed - Memory cleanup performed\n")
+                    sys.stdout.flush()
+
             except Exception as e:
-                print(f"\n✗ Error processing model {i}: {e}")
                 failed += 1
-                
-                # Write empty row or continue?
-                # For now, just continue
-                
+                # Clear current line, print error message on new line
+                sys.stdout.write('\r' + ' ' * 150 + '\r')  # Clear line
+                sys.stdout.write(f"✗ Error processing model {i}: {e}\n")
+                sys.stdout.flush()
+
                 if not args.no_delete:
                     # Try to clean up anyway
                     try:
@@ -472,6 +578,9 @@ def main():
                         bpy.ops.object.delete()
                     except:
                         pass
+
+        # Print newline after progress bar is complete
+        print()
         
         # Close CSV
         csv_file.close()
