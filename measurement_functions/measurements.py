@@ -30,7 +30,7 @@ VALIDATION_RANGES = {
     "hand_length": (15, 25),
     "neck_length": (8, 20),
     # Width measurements
-    "chest_width": (20, 50),      # Front-to-back chest depth
+    "hip_width": (20, 50),        # Hip width (bi-iliac breadth)
     "head_width": (12, 20)        # Head width (side to side)
 }
 
@@ -389,6 +389,55 @@ def measure_vertical_distance(mesh_obj, z_top: float, z_bottom: float) -> float:
         Distance in centimeters
     """
     return abs(z_top - z_bottom) * 100  # Convert to cm
+
+
+def get_bone_extremity_vertices(mesh_obj, bone_name: str, axis: str = 'x') -> Tuple[Optional[Vector], Optional[Vector]]:
+    """
+    Get the extreme vertices (min and max) of a bone's vertex group along a specified axis.
+
+    Args:
+        mesh_obj: Blender mesh object
+        bone_name: Name of the bone (vertex group name)
+        axis: Axis to measure along ('x', 'y', or 'z')
+
+    Returns:
+        Tuple of (min_vertex, max_vertex) or (None, None) if bone not found
+    """
+    if bone_name not in mesh_obj.vertex_groups:
+        print(f"⚠ Warning: Vertex group '{bone_name}' not found")
+        return (None, None)
+
+    # Get the vertex group
+    vg = mesh_obj.vertex_groups[bone_name]
+    vg_index = vg.index
+
+    # Get evaluated mesh
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    eval_obj = mesh_obj.evaluated_get(depsgraph)
+    eval_mesh = eval_obj.to_mesh(preserve_all_data_layers=False, depsgraph=depsgraph)
+
+    # Collect vertices that belong to this bone
+    vertices = []
+    for vert in eval_mesh.vertices:
+        for group in vert.groups:
+            if group.group == vg_index and group.weight > 0.1:  # Threshold to avoid negligible weights
+                world_pos = mesh_obj.matrix_world @ vert.co
+                vertices.append(world_pos)
+                break
+
+    eval_obj.to_mesh_clear()
+
+    if not vertices:
+        return (None, None)
+
+    # Get axis index
+    axis_idx = {'x': 0, 'y': 1, 'z': 2}[axis.lower()]
+
+    # Find min and max vertices along the specified axis
+    min_vert = min(vertices, key=lambda v: v[axis_idx])
+    max_vert = max(vertices, key=lambda v: v[axis_idx])
+
+    return (min_vert, max_vert)
 
 
 # ==================== POSE MANIPULATION ====================
@@ -945,48 +994,98 @@ def measure_height(armature) -> float:
 
 def measure_shoulder_width(armature) -> float:
     """
-    Measure shoulder width (biacromial breadth).
-    
+    Measure shoulder width using bone positions.
+    First tries shoulder01.L/R bones, then falls back to clavicle or upperarm01 bones.
+
     Args:
         armature: Blender armature object
-        
+
     Returns:
         Shoulder width in centimeters
     """
-    bone_names = get_bone_names(armature)
-    
-    # Get shoulder joint positions (head of upper arm bones)
-    left_shoulder = get_bone_world_position(armature, bone_names["shoulder_left"])
-    right_shoulder = get_bone_world_position(armature, bone_names["shoulder_right"])
-    
-    # Calculate width (horizontal distance)
-    width = abs(right_shoulder[0] - left_shoulder[0]) * 100  # Convert to cm
-    
-    validate_measurement("shoulder_width", width)
-    return width
+    # Try different bone name possibilities in order of preference
+    bone_options = [
+        ("shoulder01.L", "shoulder01.R", True)  # Tail of shoulder01 bones (outer shoulder) - BEST
+        # ("clavicle.L", "clavicle.R", True),       # Tail of clavicle bones (outer shoulder)
+        # ("upperarm01.L", "upperarm01.R", False),  # Head of upper arm bones (shoulder joint)
+    ]
+
+    for left_bone, right_bone, use_tail in bone_options:
+        try:
+            # Get left shoulder bone position
+            left_shoulder = get_bone_world_position(armature, left_bone, use_tail=use_tail)
+
+            # Get right shoulder bone position
+            right_shoulder = get_bone_world_position(armature, right_bone, use_tail=use_tail)
+
+            # Calculate width (horizontal distance)
+            width = abs(right_shoulder[0] - left_shoulder[0]) * 100  # Convert to cm
+
+            validate_measurement("shoulder_width", width)
+            print(f"  Using bones: {left_bone}/{right_bone} ({'tail' if use_tail else 'head'} position)")
+            return width
+        except ValueError:
+            continue  # Try next bone option
+
+    print(f"⚠ Warning: Could not find any suitable shoulder bones")
+    return 0.0
 
 
 def measure_hip_width(armature) -> float:
     """
-    Measure hip width (bi-iliac breadth).
-    
+    Measure hip width using bone positions.
+    Measures the distance between upperleg01.L and upperleg01.R bones
+    (the actual hip joint positions where legs connect to pelvis).
+
     Args:
         armature: Blender armature object
-        
+
     Returns:
         Hip width in centimeters
     """
-    bone_names = get_bone_names(armature)
-    
-    # Get hip joint positions (head of thigh bones)
-    left_hip = get_bone_world_position(armature, bone_names["hip_left"])
-    right_hip = get_bone_world_position(armature, bone_names["hip_right"])
-    
-    # Calculate width (horizontal distance)
-    width = abs(right_hip[0] - left_hip[0]) * 100  # Convert to cm
-    
-    validate_measurement("hip_width", width)
-    return width
+    try:
+        # Get left hip joint bone position (head of upperleg01.L)
+        left_hip = get_bone_world_position(armature, "upperleg01.L", use_tail=False)
+
+        # Get right hip joint bone position (head of upperleg01.R)
+        right_hip = get_bone_world_position(armature, "upperleg01.R", use_tail=False)
+
+        # Calculate width (horizontal distance)
+        width = abs(right_hip[0] - left_hip[0]) * 100  # Convert to cm
+
+        validate_measurement("hip_width", width)
+        return width
+    except ValueError as e:
+        print(f"⚠ Warning: Could not measure hip width: {e}")
+        return 0.0
+
+
+def measure_head_width(armature) -> float:
+    """
+    Measure head width using bone positions.
+    Measures the distance between temporalis02.L and temporalis02.R bones.
+
+    Args:
+        armature: Blender armature object
+
+    Returns:
+        Head width in centimeters
+    """
+    try:
+        # Get left temporalis bone position (head of temporalis02.L)
+        left_temporalis = get_bone_world_position(armature, "temporalis02.L", use_tail=False)
+
+        # Get right temporalis bone position (head of temporalis02.R)
+        right_temporalis = get_bone_world_position(armature, "temporalis02.R", use_tail=False)
+
+        # Calculate width (horizontal distance)
+        width = abs(right_temporalis[0] - left_temporalis[0]) * 100  # Convert to cm
+
+        validate_measurement("head_width", width)
+        return width
+    except ValueError as e:
+        print(f"⚠ Warning: Could not measure head width: {e}")
+        return 0.0
 
 
 def measure_inseam(armature) -> float:
@@ -1352,27 +1451,23 @@ def extract_all_measurements_joint_based(mesh, armature=None) -> Dict[str, float
     measurements["height"] = (joints['head_top'].z - joints['feet'].z) * 100
     validate_measurement("height", measurements["height"])
 
-    # Step 3: Torso measurements using horizontal slices
-    print("  Measuring torso dimensions...")
-
-    # Shoulder width (distance between shoulder joints)
-    if 'shoulder_left' in joints and 'shoulder_right' in joints:
-        measurements["shoulder_width"] = (joints['shoulder_right'].x - joints['shoulder_left'].x) * 100
-        validate_measurement("shoulder_width", measurements["shoulder_width"])
-    else:
-        measurements["shoulder_width"] = measure_width_at_height(mesh, joints['shoulders_center'].z)
-
-    # Step 4: Body widths (depth measurements)
+    # Step 3: Width measurements using bone positions
     print("  Measuring body widths...")
 
-    # Chest width (front-to-back depth at chest level)
-    measurements["chest_width"] = measure_depth_at_height(mesh, joints['chest'].z)
-    validate_measurement("chest_width", measurements["chest_width"])
+    if armature is not None:
+        # Shoulder width using shoulder01.L and shoulder01.R bones
+        measurements["shoulder_width"] = measure_shoulder_width(armature)
 
-    # Head width (side-to-side at widest part of head)
-    head_width_height = joints['head_top'].z - (joints['head_top'].z - joints['neck'].z) * 0.4
-    measurements["head_width"] = measure_width_at_height(mesh, head_width_height, tolerance=0.03)
-    validate_measurement("head_width", measurements["head_width"])
+        # Hip width using upperleg01.L and upperleg01.R bones (hip joints)
+        measurements["hip_width"] = measure_hip_width(armature)
+
+        # Head width using temporalis02.L and temporalis02.R bones
+        measurements["head_width"] = measure_head_width(armature)
+    else:
+        print("  ⚠ Warning: No armature available for width measurements")
+        measurements["shoulder_width"] = 0.0
+        measurements["hip_width"] = 0.0
+        measurements["head_width"] = 0.0
 
     # Step 5: Arm, hand, and neck measurements using BONE CHAINS
     print("  Measuring arm, hand, and neck dimensions (bone-based)...")
@@ -1512,10 +1607,8 @@ def print_measurements(measurements: Dict[str, float]):
 
     print("\nHorizontal Widths (side-to-side):")
     print(f"  Shoulder Width:    {measurements.get('shoulder_width', 0):6.1f} cm")
+    print(f"  Hip Width:         {measurements.get('hip_width', 0):6.1f} cm")
     print(f"  Head Width:        {measurements.get('head_width', 0):6.1f} cm")
-
-    print("\nBody Depths (front-to-back):")
-    print(f"  Chest Width:       {measurements.get('chest_width', 0):6.1f} cm")
 
     print("\nArm & Hand Dimensions (bone-based):")
     upper_arm = measurements.get('upper_arm_length', 0)

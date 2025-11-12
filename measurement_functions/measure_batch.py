@@ -210,7 +210,7 @@ def initialize_csv(output_path: str, config: dict) -> tuple:
     measurement_columns = [
         "height_cm",
         "shoulder_width_cm",
-        "chest_width_cm",
+        "hip_width_cm",
         "head_width_cm",
         "neck_length_cm",
         "upper_arm_length_cm",
@@ -298,7 +298,7 @@ def write_measurement_row(csv_writer, params: dict, measured: dict):
         # Measurements (rename keys to match CSV columns)
         "height_cm": measured["height"],
         "shoulder_width_cm": measured["shoulder_width"],
-        "chest_width_cm": measured["chest_width"],
+        "hip_width_cm": measured["hip_width"],
         "head_width_cm": measured["head_width"],
         "neck_length_cm": measured["neck_length"],
         "upper_arm_length_cm": measured["upper_arm_length"],
