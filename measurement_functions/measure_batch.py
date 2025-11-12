@@ -221,8 +221,10 @@ def initialize_csv(output_path: str, config: dict) -> tuple:
 
     columns = param_columns + measurement_columns
 
-    # Open CSV file
-    csv_file = open(output_path, 'w', newline='')
+    # Open CSV file with larger buffer (8MB) to reduce I/O operations
+    # buffering=-1 uses default system buffer size (typically 4-8KB)
+    # We use a larger 8MB buffer for better performance with large files
+    csv_file = open(output_path, 'w', newline='', buffering=8*1024*1024)
     csv_writer = csv.DictWriter(csv_file, fieldnames=columns)
     csv_writer.writeheader()
 
@@ -372,7 +374,7 @@ def print_progress_bar(current, total, start_time, successful, failed, bar_lengt
     sys.stdout.flush()
 
 
-def write_measurement_row(csv_writer, params: dict, measured: dict):
+def write_measurement_row(csv_writer, params: dict, measured: dict, csv_file=None, row_number=None):
     """
     Write a single row to CSV.
 
@@ -380,6 +382,8 @@ def write_measurement_row(csv_writer, params: dict, measured: dict):
         csv_writer: CSV writer object
         params: Parameter dictionary (includes both fixed and grid params)
         measured: Measurements dictionary
+        csv_file: Optional file handle for flushing
+        row_number: Optional row number for debugging
     """
     row = {
         # Fixed parameters
@@ -409,6 +413,13 @@ def write_measurement_row(csv_writer, params: dict, measured: dict):
     }
 
     csv_writer.writerow(row)
+
+    # Debug: verify write every 1000 rows
+    if row_number and row_number % 1000 == 0 and csv_file:
+        csv_file.flush()
+        # Write to stderr so it's not suppressed
+        sys.stderr.write(f"\n[DEBUG] Wrote row {row_number} to CSV\n")
+        sys.stderr.flush()
 
 
 def cleanup_scene(basemesh, armature):
@@ -542,7 +553,7 @@ def main():
                 measured, basemesh, armature = process_single_model(params, args.rig_type, quiet=True)
 
                 # Write to CSV
-                write_measurement_row(csv_writer, params, measured)
+                write_measurement_row(csv_writer, params, measured, csv_file, i)
 
                 # Cleanup (if not debugging)
                 if not args.no_delete:
@@ -553,14 +564,29 @@ def main():
                 # Update progress bar on every iteration
                 print_progress_bar(i, total, start_time, successful, failed)
 
-                # Checkpoint
-                if i % args.checkpoint_interval == 0:
+                # Flush CSV every 100 rows
+                if i % 100 == 0:
                     csv_file.flush()
-                    # Force garbage collection periodically to prevent memory buildup
+
+                # Memory cleanup every 100 models
+                if i % 100 == 0:
+                    # Force garbage collection to prevent memory buildup
                     gc.collect()
+
+                    # Clear orphaned Blender data blocks (safe in headless mode)
+                    import bpy
+                    for block_type in [bpy.data.meshes, bpy.data.armatures, bpy.data.materials,
+                                       bpy.data.textures, bpy.data.images]:
+                        for block in list(block_type):  # Use list() to avoid iterator issues
+                            if block.users == 0:
+                                try:
+                                    block_type.remove(block)
+                                except:
+                                    pass
+
                     # Clear current line, print checkpoint message on new line
                     sys.stdout.write('\r' + ' ' * 150 + '\r')  # Clear line
-                    sys.stdout.write(f"✓ Checkpoint: {i}/{total} models processed - Memory cleanup performed\n")
+                    sys.stdout.write(f"✓ Memory cleanup: {i}/{total} models processed\n")
                     sys.stdout.flush()
 
             except Exception as e:
