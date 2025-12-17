@@ -4,3 +4,5 @@ myenv/
 output/
 .blender_config.json
 test_scripts/
+json_inputs/
+lookup_tables/
