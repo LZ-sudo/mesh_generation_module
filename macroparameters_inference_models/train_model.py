@@ -133,14 +133,17 @@ def load_data(csv_path):
     return X, y, macro_bounds
 
 
-def evaluate_with_cv(X, y, n_estimators, max_depth, learning_rate, cv_folds=5, random_state=42, verbose=False):
+def evaluate_with_cv(X, y, n_estimators, max_depth, learning_rate,
+                     min_child_weight=1, subsample=1.0, colsample_bytree=1.0,
+                     gamma=0.0, reg_alpha=0.0, reg_lambda=1.0,
+                     cv_folds=5, random_state=42, verbose=False):
     """
-    Evaluate model using cross-validation.
+    Evaluate XGBoost model using cross-validation with comprehensive hyperparameters.
 
     Returns average MAE across all measurements and folds.
     """
     if verbose:
-        print(f"  Cross-validating: n_estimators={n_estimators}, max_depth={max_depth}, lr={learning_rate}")
+        print(f"  Cross-validating: n_est={n_estimators}, depth={max_depth}, lr={learning_rate:.4f}")
 
     total_mae = 0.0
 
@@ -158,6 +161,12 @@ def evaluate_with_cv(X, y, n_estimators, max_depth, learning_rate, cv_folds=5, r
             n_estimators=n_estimators,
             max_depth=max_depth,
             learning_rate=learning_rate,
+            min_child_weight=min_child_weight,
+            subsample=subsample,
+            colsample_bytree=colsample_bytree,
+            gamma=gamma,
+            reg_alpha=reg_alpha,
+            reg_lambda=reg_lambda,
             tree_method=tree_method,
             device=device_to_use,
             random_state=random_state,
@@ -187,8 +196,12 @@ def evaluate_with_cv(X, y, n_estimators, max_depth, learning_rate, cv_folds=5, r
     return avg_mae
 
 
-def train_models_with_params(X, y, n_estimators, max_depth, learning_rate, random_state=42, verbose=True):
-    """Train XGBoost models with specific hyperparameters on full dataset."""
+def train_models_with_params(X, y, hyperparams, random_state=42, verbose=True):
+    """Train XGBoost models with specific hyperparameters on full dataset.
+
+    Args:
+        hyperparams: Dictionary containing all XGBoost hyperparameters
+    """
     models = {}
 
     # Determine tree method based on GPU availability
@@ -203,9 +216,15 @@ def train_models_with_params(X, y, n_estimators, max_depth, learning_rate, rando
 
         # Train on full dataset
         model = xgb.XGBRegressor(
-            n_estimators=n_estimators,
-            max_depth=max_depth,
-            learning_rate=learning_rate,
+            n_estimators=hyperparams['n_estimators'],
+            max_depth=hyperparams['max_depth'],
+            learning_rate=hyperparams['learning_rate'],
+            min_child_weight=hyperparams.get('min_child_weight', 1),
+            subsample=hyperparams.get('subsample', 1.0),
+            colsample_bytree=hyperparams.get('colsample_bytree', 1.0),
+            gamma=hyperparams.get('gamma', 0.0),
+            reg_alpha=hyperparams.get('reg_alpha', 0.0),
+            reg_lambda=hyperparams.get('reg_lambda', 1.0),
             tree_method=tree_method,
             device=device_to_use,
             random_state=random_state,
@@ -388,14 +407,37 @@ def evaluate_model_with_mesh(models, macro_bounds):
 def objective_optuna_cv(trial, X, y):
     """
     Optuna objective function for Stage 1: Cross-validation based optimization.
+
+    Optimizes comprehensive set of XGBoost hyperparameters for best performance.
     """
-    # Sample hyperparameters for XGBoost
-    n_estimators = trial.suggest_int('n_estimators', 50, 500, step=50)
-    max_depth = trial.suggest_int('max_depth', 3, 15)  # XGBoost typically uses shallower trees
-    learning_rate = trial.suggest_float('learning_rate', 0.01, 0.3)
+    # Core tree parameters
+    n_estimators = trial.suggest_int('n_estimators', 100, 1000, step=50)
+    max_depth = trial.suggest_int('max_depth', 3, 15)
+    learning_rate = trial.suggest_float('learning_rate', 0.001, 0.3, log=True)
+
+    # Regularization parameters (prevent overfitting)
+    min_child_weight = trial.suggest_int('min_child_weight', 1, 10)
+    subsample = trial.suggest_float('subsample', 0.5, 1.0)
+    colsample_bytree = trial.suggest_float('colsample_bytree', 0.5, 1.0)
+    gamma = trial.suggest_float('gamma', 0.0, 5.0)
+    reg_alpha = trial.suggest_float('reg_alpha', 0.0, 10.0)  # L1 regularization
+    reg_lambda = trial.suggest_float('reg_lambda', 0.0, 10.0)  # L2 regularization
 
     # Evaluate with cross-validation
-    mae = evaluate_with_cv(X, y, n_estimators, max_depth, learning_rate, cv_folds=5, verbose=False)
+    mae = evaluate_with_cv(
+        X, y,
+        n_estimators=n_estimators,
+        max_depth=max_depth,
+        learning_rate=learning_rate,
+        min_child_weight=min_child_weight,
+        subsample=subsample,
+        colsample_bytree=colsample_bytree,
+        gamma=gamma,
+        reg_alpha=reg_alpha,
+        reg_lambda=reg_lambda,
+        cv_folds=5,
+        verbose=False
+    )
 
     return mae
 
@@ -537,9 +579,15 @@ Examples:
         # Suppress Optuna's logging output
         optuna.logging.set_verbosity(optuna.logging.WARNING)
 
+        # Create study with sampler that prevents duplicate trials
         study = optuna.create_study(
             direction='minimize',
-            sampler=TPESampler(seed=args.random_seed)
+            sampler=TPESampler(
+                seed=args.random_seed,
+                n_startup_trials=10,  # Random trials before TPE kicks in
+                multivariate=True,  # Consider parameter interactions
+                warn_independent_sampling=False  # Suppress warnings
+            )
         )
 
         # Custom callback to show progress
@@ -569,17 +617,25 @@ Examples:
 
         print(f"\nStage 1 completed in {stage1_time/60:.1f} minutes")
 
-        # Get top N candidates
-        top_trials = sorted(study.trials, key=lambda t: t.value)[:args.n_validate]
+        # Get top N UNIQUE candidates (avoid duplicates)
+        seen_params = set()
+        top_trials = []
+        for trial in sorted(study.trials, key=lambda t: t.value):
+            # Create a hashable tuple of parameters
+            param_tuple = tuple(sorted(trial.params.items()))
+            if param_tuple not in seen_params:
+                seen_params.add(param_tuple)
+                top_trials.append(trial)
+                if len(top_trials) >= args.n_validate:
+                    break
 
         print(f"\n" + "-" * 80)
-        print(f"TOP {args.n_validate} CANDIDATES FROM STAGE 1:")
+        print(f"TOP {len(top_trials)} UNIQUE CANDIDATES FROM STAGE 1:")
         print("-" * 80)
         for i, trial in enumerate(top_trials, 1):
-            print(f"{i}. n_estimators={trial.params['n_estimators']}, "
-                  f"max_depth={trial.params['max_depth']}, "
-                  f"learning_rate={trial.params['learning_rate']:.3f}, "
-                  f"CV-MAE={trial.value:.4f} cm")
+            print(f"{i}. CV-MAE={trial.value:.4f} cm")
+            print(f"   n_estimators={trial.params['n_estimators']}, max_depth={trial.params['max_depth']}, lr={trial.params['learning_rate']:.4f}")
+            print(f"   min_child_weight={trial.params['min_child_weight']}, subsample={trial.params['subsample']:.3f}, colsample={trial.params['colsample_bytree']:.3f}")
 
         # ========================================================================
         # STAGE 2: VALIDATION WITH REAL MESH GENERATION
@@ -596,18 +652,18 @@ Examples:
 
         for i, trial in enumerate(top_trials, 1):
             print(f"\nValidating candidate {i}/{args.n_validate}:")
-            print(f"  Hyperparameters: n_estimators={trial.params['n_estimators']}, "
-                  f"max_depth={trial.params['max_depth']}, "
-                  f"learning_rate={trial.params['learning_rate']:.3f}")
+            print(f"  Hyperparameters:")
+            print(f"    n_estimators={trial.params['n_estimators']}, max_depth={trial.params['max_depth']}")
+            print(f"    learning_rate={trial.params['learning_rate']:.4f}, min_child_weight={trial.params['min_child_weight']}")
+            print(f"    subsample={trial.params['subsample']:.3f}, colsample_bytree={trial.params['colsample_bytree']:.3f}")
+            print(f"    gamma={trial.params['gamma']:.3f}, reg_alpha={trial.params['reg_alpha']:.3f}, reg_lambda={trial.params['reg_lambda']:.3f}")
             print(f"  CV-MAE: {trial.value:.4f} cm")
 
             # Train models with these hyperparameters
             print("  Training models on full dataset...")
             models = train_models_with_params(
                 X, y,
-                trial.params['n_estimators'],
-                trial.params['max_depth'],
-                trial.params['learning_rate'],
+                trial.params,
                 verbose=True
             )
 
@@ -618,9 +674,7 @@ Examples:
                 print(f"  Mesh-MAE: {mesh_mae:.4f} cm")
 
                 validation_results.append({
-                    'n_estimators': trial.params['n_estimators'],
-                    'max_depth': trial.params['max_depth'],
-                    'learning_rate': trial.params['learning_rate'],
+                    **trial.params,  # Include all hyperparameters
                     'cv_mae': trial.value,
                     'mesh_mae': mesh_mae,
                     'models': models
@@ -629,9 +683,7 @@ Examples:
             except Exception as e:
                 print(f"  ERROR during mesh validation: {e}")
                 validation_results.append({
-                    'n_estimators': trial.params['n_estimators'],
-                    'max_depth': trial.params['max_depth'],
-                    'learning_rate': trial.params['learning_rate'],
+                    **trial.params,  # Include all hyperparameters
                     'cv_mae': trial.value,
                     'mesh_mae': 999.9,
                     'models': models
@@ -647,17 +699,18 @@ Examples:
         print(f"\nStage 2 completed in {stage2_time/60:.1f} minutes")
 
         # Print Stage 2 validation results
-        print(f"\n" + "-" * 95)
+        print(f"\n" + "-" * 100)
         print(f"STAGE 2 VALIDATION RESULTS:")
-        print("-" * 95)
-        print(f"{'Candidate':<11s} {'n_estimators':<14s} {'max_depth':<11s} {'learning_rate':<15s} {'CV-MAE (cm)':<13s} {'Mesh-MAE (cm)':<15s}")
-        print("-" * 95)
+        print("-" * 100)
+        print(f"{'#':<4s} {'n_est':<7s} {'depth':<7s} {'lr':<10s} {'subsample':<10s} {'CV-MAE':<10s} {'Mesh-MAE':<12s}")
+        print("-" * 100)
 
         for i, result in enumerate(validation_results, 1):
-            print(f"{i:<11d} {result['n_estimators']:<14d} {result['max_depth']:<11d} "
-                  f"{result['learning_rate']:<15.3f} {result['cv_mae']:<13.4f} {result['mesh_mae']:<15.4f}")
+            print(f"{i:<4d} {result['n_estimators']:<7d} {result['max_depth']:<7d} "
+                  f"{result['learning_rate']:<10.4f} {result['subsample']:<10.3f} "
+                  f"{result['cv_mae']:<10.4f} {result['mesh_mae']:<12.4f}")
 
-        print("-" * 95)
+        print("-" * 100)
 
         # ========================================================================
         # FINAL RESULTS
@@ -669,30 +722,44 @@ Examples:
         # Sort by mesh MAE (real-world performance)
         validation_results.sort(key=lambda x: x['mesh_mae'])
 
-        print("\n" + "-" * 95)
-        print(f"{'Rank':<6s} {'n_estimators':<14s} {'max_depth':<11s} {'CV-MAE (cm)':<13s} {'Mesh-MAE (cm)':<15s} {'Status':<10s}")
-        print("-" * 95)
+        print("\n" + "-" * 100)
+        print(f"{'Rank':<6s} {'n_est':<7s} {'depth':<7s} {'lr':<10s} {'CV-MAE':<10s} {'Mesh-MAE':<12s} {'Status':<10s}")
+        print("-" * 100)
 
         for i, result in enumerate(validation_results, 1):
             status = "BEST" if i == 1 else ""
-            print(f"{i:<6d} {result['n_estimators']:<14d} {result['max_depth']:<11d} "
-                  f"{result['cv_mae']:<13.4f} {result['mesh_mae']:<15.4f} {status:<10s}")
+            print(f"{i:<6d} {result['n_estimators']:<7d} {result['max_depth']:<7d} "
+                  f"{result['learning_rate']:<10.4f} "
+                  f"{result['cv_mae']:<10.4f} {result['mesh_mae']:<12.4f} {status:<10s}")
 
-        print("-" * 95)
+        print("-" * 100)
 
         best_result = validation_results[0]
 
         print(f"\nBest hyperparameters (based on real mesh generation):")
-        print(f"  n_estimators: {best_result['n_estimators']}")
-        print(f"  max_depth: {best_result['max_depth']}")
-        print(f"  learning_rate: {best_result['learning_rate']:.3f}")
-        print(f"  CV-MAE: {best_result['cv_mae']:.4f} cm")
-        print(f"  Mesh-MAE: {best_result['mesh_mae']:.4f} cm")
+        print(f"  Core parameters:")
+        print(f"    n_estimators: {best_result['n_estimators']}")
+        print(f"    max_depth: {best_result['max_depth']}")
+        print(f"    learning_rate: {best_result['learning_rate']:.4f}")
+        print(f"  Regularization:")
+        print(f"    min_child_weight: {best_result['min_child_weight']}")
+        print(f"    subsample: {best_result['subsample']:.3f}")
+        print(f"    colsample_bytree: {best_result['colsample_bytree']:.3f}")
+        print(f"    gamma: {best_result['gamma']:.3f}")
+        print(f"    reg_alpha: {best_result['reg_alpha']:.3f}")
+        print(f"    reg_lambda: {best_result['reg_lambda']:.3f}")
+        print(f"  Performance:")
+        print(f"    CV-MAE: {best_result['cv_mae']:.4f} cm")
+        print(f"    Mesh-MAE: {best_result['mesh_mae']:.4f} cm")
 
         total_time = stage1_time + stage2_time
         print(f"\nTotal optimization time: {total_time/60:.1f} minutes")
         print(f"  Stage 1 (CV): {stage1_time/60:.1f} minutes")
         print(f"  Stage 2 (Mesh): {stage2_time/60:.1f} minutes")
+
+        # Prepare hyperparameters dict (excluding non-hyperparameter keys)
+        hyperparams_to_save = {k: v for k, v in best_result.items()
+                              if k not in ['cv_mae', 'mesh_mae', 'models']}
 
         # Save best model
         save_models(
@@ -703,11 +770,7 @@ Examples:
                 'cv_mae': best_result['cv_mae'],
                 'mesh_mae': best_result['mesh_mae']
             },
-            hyperparameters={
-                'n_estimators': best_result['n_estimators'],
-                'max_depth': best_result['max_depth'],
-                'learning_rate': best_result['learning_rate']
-            }
+            hyperparameters=hyperparams_to_save
         )
 
         print("\n" + "=" * 80)
