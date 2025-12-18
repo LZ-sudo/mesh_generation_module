@@ -32,6 +32,28 @@ if str(parent_dir) not in sys.path:
 from infer_macroparameters import load_models, find_macroparameters, MEASUREMENTS
 
 
+def convert_numpy_types(obj):
+    """
+    Recursively convert numpy types to native Python types for JSON serialization.
+
+    Args:
+        obj: Object that may contain numpy types
+
+    Returns:
+        Object with numpy types converted to Python native types
+    """
+    if isinstance(obj, dict):
+        return {key: convert_numpy_types(value) for key, value in obj.items()}
+    elif isinstance(obj, list):
+        return [convert_numpy_types(item) for item in obj]
+    elif isinstance(obj, np.integer):
+        return int(obj)
+    elif isinstance(obj, np.floating):
+        return float(obj)
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    else:
+        return obj
 
 
 def generate_and_measure_mesh(macroparameters, rig_type='default_no_toes'):
@@ -380,14 +402,19 @@ This script will:
 
         # Save complete results
         output_path = str(input_path).replace('.json', '_accuracy_test_result.json')
+
+        # Convert all numpy types to Python native types for JSON serialization
+        results_dict = {
+            'target_measurements': target_measurements,
+            'predicted_macroparameters': result['macroparameters'],
+            'predicted_measurements': result['predicted_measurements'],
+            'actual_measurements': actual_measurements,
+            'comparison': comparison
+        }
+        results_dict = convert_numpy_types(results_dict)
+
         with open(output_path, 'w') as f:
-            json.dump({
-                'target_measurements': target_measurements,
-                'predicted_macroparameters': result['macroparameters'],
-                'predicted_measurements': result['predicted_measurements'],
-                'actual_measurements': actual_measurements,
-                'comparison': comparison
-            }, f, indent=2)
+            json.dump(results_dict, f, indent=2)
 
         print(f"\nComplete results saved to: {output_path}")
 

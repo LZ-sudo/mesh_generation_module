@@ -32,6 +32,30 @@ MEASUREMENTS = [
 ]
 
 
+def convert_numpy_types(obj):
+    """
+    Recursively convert numpy types to native Python types for JSON serialization.
+
+    Args:
+        obj: Object that may contain numpy types
+
+    Returns:
+        Object with numpy types converted to Python native types
+    """
+    if isinstance(obj, dict):
+        return {key: convert_numpy_types(value) for key, value in obj.items()}
+    elif isinstance(obj, list):
+        return [convert_numpy_types(item) for item in obj]
+    elif isinstance(obj, np.integer):
+        return int(obj)
+    elif isinstance(obj, np.floating):
+        return float(obj)
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    else:
+        return obj
+
+
 def print_progress_bar(iteration, total, prefix='', suffix='', length=50, fill='█'):
     """Print a progress bar to console."""
     percent = f"{100 * (iteration / float(total)):.1f}"
@@ -285,15 +309,20 @@ def process_single(input_path, models, macro_bounds, method, weights):
 
     # Save result
     output_path = str(input_path).replace('.json', '_result.json')
+
+    # Convert all numpy types to Python native types for JSON serialization
+    result_dict = {
+        'target_measurements': target_measurements,
+        'macroparameters': result['macroparameters'],
+        'predicted_measurements': result['predicted_measurements'],
+        'errors': result['errors'],
+        'mae': result['mae'],
+        'max_error': result['max_error']
+    }
+    result_dict = convert_numpy_types(result_dict)
+
     with open(output_path, 'w') as f:
-        json.dump({
-            'target_measurements': target_measurements,
-            'macroparameters': result['macroparameters'],
-            'predicted_measurements': result['predicted_measurements'],
-            'errors': result['errors'],
-            'mae': result['mae'],
-            'max_error': result['max_error']
-        }, f, indent=2)
+        json.dump(result_dict, f, indent=2)
 
     print(f"\nResult saved to: {output_path}")
 
