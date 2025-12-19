@@ -1,26 +1,60 @@
 """
-Test Model Accuracy with Real Mesh Generation
+Test Model Accuracy with Real Mesh Generation (Batch Support)
 
-This script validates the inverse mapping model by:
-1. Taking target measurements
+This script validates the inverse mapping model with real-world measurements by:
+1. Taking target measurements (single or batch)
 2. Using the model to predict macroparameters
-3. Generating an actual mesh with those macroparameters
-4. Measuring the generated mesh
+3. Generating actual meshes with those macroparameters
+4. Measuring the generated meshes
 5. Comparing actual measurements to predictions and targets
+6. Producing aggregate statistics and detailed CSV results
 
-This provides the TRUE accuracy of the model's inverse mapping capability.
+This provides TRUE accuracy of the model's inverse mapping capability across
+different demographics (gender, race, etc.).
+
+JSON Input Formats:
+
+Single measurement:
+{
+  "height_cm": 165.0,
+  "shoulder_width_cm": 38.5,
+  ...
+}
+
+Batch measurements:
+{
+  "category": "asian_male",
+  "description": "Real measurements from Asian male subjects",
+  "measurements": [
+    {
+      "subject_id": "AM001",
+      "height_cm": 172.5,
+      "shoulder_width_cm": 42.3,
+      ...
+    },
+    {
+      "subject_id": "AM002",
+      ...
+    }
+  ]
+}
 
 Usage:
+    # Single measurement
     python test_model_accuracy.py --input test_measurements.json --models model.pkl
-    python test_model_accuracy.py --input test_measurements.json --models model.pkl --keep-mesh
+
+    # Batch measurements
+    python test_model_accuracy.py --input asian_male_batch.json --models model.pkl
 """
 
 import json
 import sys
 import subprocess
 import argparse
+import csv
 from pathlib import Path
 import numpy as np
+from statistics import mean, median, stdev
 
 # Add parent directory to path for imports
 script_dir = Path(__file__).parent.absolute()
@@ -73,10 +107,6 @@ def generate_and_measure_mesh(macroparameters, rig_type='default_no_toes'):
     Returns:
         Dictionary of actual measurements from the generated mesh
     """
-    print("\n" + "="*80)
-    print("GENERATING AND MEASURING MESH")
-    print("="*80)
-
     # Build config in measure_batch.py format
     # Fixed parameters match what was used in the lookup table training data
     config = {
@@ -117,33 +147,19 @@ def generate_and_measure_mesh(macroparameters, rig_type='default_no_toes'):
                 'max': macroparameters['proportions'],
                 'step': 1.0
             }
-        }
+        },
+        'rig_type': rig_type
     }
-
-    print("\nMacroparameters:")
-    for param, value in macroparameters.items():
-        print(f"  {param:12s}: {value:.4f}")
-
-    print("\nFixed parameters (from training data):")
-    print(f"  gender:      {config['fixed_params']['gender']}")
-    print(f"  cupsize:     {config['fixed_params']['cupsize']}")
-    print(f"  firmness:    {config['fixed_params']['firmness']}")
-    print(f"  race:        asian={config['fixed_params']['race']['asian']}")
 
     # Save config to temporary file
     config_path = parent_dir / 'temp_test_config.json'
     with open(config_path, 'w') as f:
         json.dump(config, f, indent=2)
 
-    print(f"\nSaved config to: {config_path}")
-
     # Path for output CSV
     output_csv_path = parent_dir / 'temp_test_measurements.csv'
 
     # Run Blender with measure_batch.py using run_blender.py wrapper
-    print("\nLaunching Blender to generate and measure mesh...")
-    print("-" * 80)
-
     cmd = [
         'python',
         str(parent_dir / 'run_blender.py'),
@@ -163,22 +179,19 @@ def generate_and_measure_mesh(macroparameters, rig_type='default_no_toes'):
             timeout=300  # 5 minute timeout
         )
 
-        # Always print Blender output for debugging
-        print("\n--- Blender Output ---")
-        if result.stdout:
-            print(result.stdout)
-        print("--- End Blender Output ---\n")
-
         if result.returncode != 0:
             print(f"\nERROR: Blender exited with code {result.returncode}", file=sys.stderr)
             if result.stderr:
                 print("--- Blender Error Output ---", file=sys.stderr)
                 print(result.stderr, file=sys.stderr)
-                print("--- End Error Output ---", file=sys.stderr)
             raise RuntimeError(f"Blender process failed with code {result.returncode}")
 
     except subprocess.TimeoutExpired:
         raise RuntimeError("Blender process timed out after 5 minutes")
+    finally:
+        # Clean up temp config
+        if config_path.exists():
+            config_path.unlink()
 
     # Load measurements from CSV
     if not output_csv_path.exists():
@@ -192,138 +205,180 @@ def generate_and_measure_mesh(macroparameters, rig_type='default_no_toes'):
 
     # Extract first (and only) row of measurements
     row = df.iloc[0]
-    actual_measurements = {
-        'height_cm': row['height_cm'],
-        'shoulder_width_cm': row['shoulder_width_cm'],
-        'hip_width_cm': row['hip_width_cm'],
-        'head_width_cm': row['head_width_cm'],
-        'neck_length_cm': row['neck_length_cm'],
-        'upper_arm_length_cm': row['upper_arm_length_cm'],
-        'forearm_length_cm': row['forearm_length_cm'],
-        'hand_length_cm': row['hand_length_cm']
-    }
+    measurements = {}
+    for measure in MEASUREMENTS:
+        if measure in row:
+            measurements[measure] = float(row[measure])
 
-    # Clean up temporary files
-    config_path.unlink()
-    output_csv_path.unlink()
+    # Clean up temp CSV
+    if output_csv_path.exists():
+        output_csv_path.unlink()
 
-    print("-" * 80)
-    print("\nMesh generated and measured successfully!")
-
-    return actual_measurements
+    return measurements
 
 
-def compare_results(target_measurements, predicted_measurements, actual_measurements):
+def test_single_subject(subject_id, target_measurements, models, macro_bounds, method, rig_type):
     """
-    Compare target, predicted, and actual measurements.
-
-    Args:
-        target_measurements: Original target measurements
-        predicted_measurements: Model's predicted measurements
-        actual_measurements: Measurements from actual generated mesh
+    Test model on a single subject's measurements.
 
     Returns:
-        Dictionary with comparison metrics
+        Dictionary with test results for this subject
     """
-    print("\n" + "="*80)
-    print("COMPARISON RESULTS")
-    print("="*80)
+    print(f"\n{'='*80}")
+    print(f"Testing Subject: {subject_id}")
+    print(f"{'='*80}")
 
-    print("\n" + "-"*95)
-    print(f"{'Measurement':<25s} {'Target':>12s} {'Predicted':>12s} {'Actual':>12s} {'Pred Error':>12s} {'Actual Error':>12s}")
-    print("-"*95)
+    # Find macroparameters
+    result = find_macroparameters(
+        models, macro_bounds, target_measurements,
+        method=method, weights=None, verbose=False
+    )
 
-    pred_errors = []
-    actual_errors = []
+    print("\nPredicted Macroparameters:")
+    for param, value in result['macroparameters'].items():
+        print(f"  {param:12s}: {value:.4f}")
 
+    # Generate and measure actual mesh
+    print("\nGenerating and measuring mesh...")
+    actual_measurements = generate_and_measure_mesh(
+        result['macroparameters'],
+        rig_type=rig_type
+    )
+
+    # Calculate errors
+    errors_per_measurement = {}
     for measure in MEASUREMENTS:
-        if measure in target_measurements:
-            target = target_measurements[measure]
-            predicted = predicted_measurements[measure]
-            actual = actual_measurements.get(measure, None)
+        target = target_measurements.get(measure, 0.0)
+        actual = actual_measurements.get(measure, 0.0)
+        predicted = result['predicted_measurements'].get(measure, 0.0)
 
-            if actual is not None:
-                pred_error = predicted - target
-                actual_error = actual - target
+        errors_per_measurement[measure] = {
+            'target': target,
+            'predicted': predicted,
+            'actual': actual,
+            'prediction_error': abs(predicted - target),
+            'actual_error': abs(actual - target)
+        }
 
-                pred_errors.append(abs(pred_error))
-                actual_errors.append(abs(actual_error))
+    # Calculate MAE
+    actual_errors = [e['actual_error'] for e in errors_per_measurement.values()]
+    mae = mean(actual_errors)
+    max_error = max(actual_errors)
 
-                print(f"{measure:<25s} {target:>12.2f} {predicted:>12.2f} {actual:>12.2f} {pred_error:>+12.2f} {actual_error:>+12.2f}")
-
-    print("-"*95)
-
-    pred_mae = np.mean(pred_errors)
-    actual_mae = np.mean(actual_errors)
-
-    pred_max = np.max(pred_errors)
-    actual_max = np.max(actual_errors)
-
-    print(f"{'MAE':<25s} {'':>12s} {pred_mae:>12.2f} {actual_mae:>12.2f}")
-    print(f"{'Max Error':<25s} {'':>12s} {pred_max:>12.2f} {actual_max:>12.2f}")
-    print("-"*95)
-
-    print("\n" + "="*80)
-    print("ACCURACY ASSESSMENT")
-    print("="*80)
-
-    print(f"\nModel Prediction Error (MAE): {pred_mae:.4f} cm")
-    print(f"Actual Mesh Error (MAE):      {actual_mae:.4f} cm")
-
-    improvement = pred_mae - actual_mae
-    if improvement > 0:
-        print(f"\nActual mesh is BETTER than predicted by {improvement:.4f} cm")
-    elif improvement < 0:
-        print(f"\nActual mesh is WORSE than predicted by {abs(improvement):.4f} cm")
-    else:
-        print(f"\nActual mesh matches prediction exactly")
-
-    if actual_mae < 1.0:
-        print("\n✓ EXCELLENT: Actual mesh error < 1.0 cm")
-    elif actual_mae < 2.0:
-        print("\n✓ GOOD: Actual mesh error < 2.0 cm")
-    elif actual_mae < 3.0:
-        print("\n~ ACCEPTABLE: Actual mesh error < 3.0 cm")
-    else:
-        print("\n✗ POOR: Actual mesh error >= 3.0 cm")
-
-    print("="*80)
+    print(f"\nResults:")
+    print(f"  MAE: {mae:.4f} cm")
+    print(f"  Max Error: {max_error:.4f} cm")
 
     return {
-        'pred_mae': pred_mae,
-        'actual_mae': actual_mae,
-        'pred_max_error': pred_max,
-        'actual_max_error': actual_max,
-        'improvement': improvement
+        'subject_id': subject_id,
+        'macroparameters': result['macroparameters'],
+        'measurements': errors_per_measurement,
+        'mae': mae,
+        'max_error': max_error
     }
+
+
+def save_results_to_csv(results, category, output_path):
+    """
+    Save detailed results to CSV.
+
+    Args:
+        results: List of result dictionaries from test_single_subject
+        category: Category name (e.g., "asian_male")
+        output_path: Path to save CSV file
+    """
+    csv_rows = []
+
+    for result in results:
+        base_row = {
+            'category': category,
+            'subject_id': result['subject_id'],
+            'mae': result['mae'],
+            'max_error': result['max_error']
+        }
+
+        # Add macroparameters
+        for param, value in result['macroparameters'].items():
+            base_row[f'macro_{param}'] = value
+
+        # Add per-measurement errors
+        for measure, data in result['measurements'].items():
+            base_row[f'{measure}_target'] = data['target']
+            base_row[f'{measure}_predicted'] = data['predicted']
+            base_row[f'{measure}_actual'] = data['actual']
+            base_row[f'{measure}_error'] = data['actual_error']
+
+        csv_rows.append(base_row)
+
+    # Write CSV
+    if csv_rows:
+        with open(output_path, 'w', newline='') as f:
+            fieldnames = list(csv_rows[0].keys())
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(csv_rows)
+
+
+def print_aggregate_statistics(results, category):
+    """
+    Print aggregate statistics across all subjects.
+
+    Args:
+        results: List of result dictionaries
+        category: Category name
+    """
+    if not results:
+        print("No results to analyze")
+        return
+
+    print(f"\n{'='*80}")
+    print(f"AGGREGATE STATISTICS - {category.upper()}")
+    print(f"{'='*80}")
+
+    # Overall MAE statistics
+    maes = [r['mae'] for r in results]
+    max_errors = [r['max_error'] for r in results]
+
+    print(f"\nOverall Performance (n={len(results)} subjects):")
+    print(f"  Mean MAE:       {mean(maes):.4f} cm")
+    print(f"  Median MAE:     {median(maes):.4f} cm")
+    if len(maes) > 1:
+        print(f"  Std Dev MAE:    {stdev(maes):.4f} cm")
+    print(f"  Min MAE:        {min(maes):.4f} cm")
+    print(f"  Max MAE:        {max(maes):.4f} cm")
+    print(f"\n  Mean Max Error: {mean(max_errors):.4f} cm")
+    print(f"  Worst Error:    {max(max_errors):.4f} cm")
+
+    # Per-measurement error statistics
+    print(f"\nPer-Measurement Error Analysis:")
+    print(f"  {'Measurement':<25s} {'Mean Error':<12s} {'Max Error':<12s}")
+    print(f"  {'-'*25} {'-'*12} {'-'*12}")
+
+    for measure in MEASUREMENTS:
+        errors = [r['measurements'][measure]['actual_error'] for r in results]
+        mean_err = mean(errors)
+        max_err = max(errors)
+        print(f"  {measure:<25s} {mean_err:<12.4f} {max_err:<12.4f}")
+
+    # Identify best and worst subjects
+    best = min(results, key=lambda x: x['mae'])
+    worst = max(results, key=lambda x: x['mae'])
+
+    print(f"\nBest Subject:  {best['subject_id']} (MAE: {best['mae']:.4f} cm)")
+    print(f"Worst Subject: {worst['subject_id']} (MAE: {worst['mae']:.4f} cm)")
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Test model accuracy with real mesh generation',
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  # Test with a measurements JSON file
-  python test_model_accuracy.py --input test_measurements.json --models model.pkl
-
-  # Use hybrid optimization for potentially better results
-  python test_model_accuracy.py --input test_measurements.json --models model.pkl --method both
-
-This script will:
-1. Load your target measurements
-2. Use the model to predict macroparameters
-3. Generate an actual mesh in Blender
-4. Measure the generated mesh
-5. Compare predictions vs reality
-        """
+        description='Test model accuracy with real mesh generation (supports batch testing)',
+        formatter_class=argparse.RawDescriptionHelpFormatter
     )
 
     parser.add_argument(
         '--input',
         type=str,
         required=True,
-        help='Input measurements JSON file'
+        help='Input measurements JSON file (single or batch format)'
     )
 
     parser.add_argument(
@@ -356,67 +411,77 @@ This script will:
     print("=" * 80)
 
     try:
-        # Load target measurements
+        # Load input
         input_path = Path(args.input)
         if not input_path.exists():
             raise FileNotFoundError(f"Input file not found: {input_path}")
 
         with open(input_path, 'r') as f:
-            target_measurements = json.load(f)
+            input_data = json.load(f)
 
-        print("\nTarget Measurements:")
-        for measure, value in target_measurements.items():
-            if measure in MEASUREMENTS:
-                print(f"  {measure:25s}: {value:.2f} cm")
-
-        # Load models and find macroparameters
-        print("\n" + "="*80)
+        # Load models
+        print("\nLoading models...")
         models, macro_bounds = load_models(args.models)
 
-        print("\nFinding optimal macroparameters...")
-        result = find_macroparameters(
-            models, macro_bounds, target_measurements,
-            method=args.method, weights=None, verbose=False
-        )
+        # Determine if batch or single
+        is_batch = 'measurements' in input_data and isinstance(input_data['measurements'], list)
 
-        print("\nPredicted Macroparameters:")
-        for param, value in result['macroparameters'].items():
-            print(f"  {param:12s}: {value:.4f}")
+        if is_batch:
+            # Batch processing
+            category = input_data.get('category', 'unknown')
+            description = input_data.get('description', '')
+            measurements_list = input_data['measurements']
 
-        print("\nPredicted Measurements:")
-        for measure, value in result['predicted_measurements'].items():
-            print(f"  {measure:25s}: {value:.2f} cm")
+            print(f"\nBatch Mode: {category}")
+            print(f"Description: {description}")
+            print(f"Number of subjects: {len(measurements_list)}")
 
-        # Generate and measure actual mesh
-        actual_measurements = generate_and_measure_mesh(
-            result['macroparameters'],
-            rig_type=args.rig_type
-        )
+            results = []
+            for i, measurement_data in enumerate(measurements_list, 1):
+                subject_id = measurement_data.get('subject_id', f'Subject_{i:03d}')
 
-        # Compare results
-        comparison = compare_results(
-            target_measurements,
-            result['predicted_measurements'],
-            actual_measurements
-        )
+                # Extract measurement values (remove subject_id if present)
+                target_measurements = {k: v for k, v in measurement_data.items()
+                                     if k in MEASUREMENTS}
 
-        # Save complete results
-        output_path = str(input_path).replace('.json', '_accuracy_test_result.json')
+                result = test_single_subject(
+                    subject_id, target_measurements,
+                    models, macro_bounds,
+                    args.method, args.rig_type
+                )
+                results.append(result)
 
-        # Convert all numpy types to Python native types for JSON serialization
-        results_dict = {
-            'target_measurements': target_measurements,
-            'predicted_macroparameters': result['macroparameters'],
-            'predicted_measurements': result['predicted_measurements'],
-            'actual_measurements': actual_measurements,
-            'comparison': comparison
-        }
-        results_dict = convert_numpy_types(results_dict)
+            # Save CSV
+            csv_path = str(input_path).replace('.json', '_batch_results.csv')
+            save_results_to_csv(results, category, csv_path)
+            print(f"\n\nDetailed results saved to: {csv_path}")
 
-        with open(output_path, 'w') as f:
-            json.dump(results_dict, f, indent=2)
+            # Print aggregate statistics
+            print_aggregate_statistics(results, category)
 
-        print(f"\nComplete results saved to: {output_path}")
+        else:
+            # Single measurement (backward compatibility)
+            target_measurements = {k: v for k, v in input_data.items() if k in MEASUREMENTS}
+
+            print("\nSingle Measurement Mode")
+            print("\nTarget Measurements:")
+            for measure, value in target_measurements.items():
+                print(f"  {measure:25s}: {value:.2f} cm")
+
+            result = test_single_subject(
+                'single_test', target_measurements,
+                models, macro_bounds,
+                args.method, args.rig_type
+            )
+
+            # Save single result
+            output_path = str(input_path).replace('.json', '_result.json')
+            result_dict = convert_numpy_types(result)
+
+            with open(output_path, 'w') as f:
+                json.dump(result_dict, f, indent=2)
+
+            print(f"\n\nResults saved to: {output_path}")
 
         print("\n" + "="*80)
         print("TEST COMPLETE")
