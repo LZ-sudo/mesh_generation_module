@@ -11,6 +11,7 @@ This module provides helper functions for:
 import json
 import os
 import sys
+import importlib
 from typing import Dict, Any, Tuple
 
 # NOTE: bpy and mpfb imports are done inside functions to avoid import errors
@@ -350,6 +351,79 @@ def apply_macro_settings_to_human(basemesh, macro_settings: Dict[str, Any]):
     basemesh.data.update()
 
     print("✓ Macro settings applied successfully")
+
+# ============================================================================
+# MICROPARAMETER (TARGET) APPLICATION FUNCTIONS
+# ============================================================================
+
+def apply_microparameters_to_human(basemesh: 'bpy.types.Object',
+                                    micro_settings: Dict[str, float],
+                                    bake: bool = True,
+                                    verbose: bool = False) -> None:
+    """
+    Apply microparameters (MPFB2 targets) to a human mesh.
+
+    Microparameters are individual body part modifiers that provide fine-grained
+    control over specific dimensions like arm length, shoulder width, etc.
+
+    Args:
+        basemesh: Blender object representing the human mesh
+        micro_settings: Dictionary mapping microparameter names to values (0.0-1.0)
+                       Example: {
+                           'measure-upperarm-length-incr': 0.7,
+                           'measure-shoulder-dist-incr': 0.6
+                       }
+        bake: Whether to bake targets after applying (default True)
+        verbose: Print detailed progress information
+
+    Example:
+        >>> micro_settings = {
+        ...     'measure-upperarm-length-incr': 0.7,  # Longer arms
+        ...     'measure-shoulder-dist-incr': 0.8,     # Wider shoulders
+        ...     'neck-scale-vert-incr': 0.4            # Shorter neck
+        ... }
+        >>> apply_microparameters_to_human(basemesh, micro_settings)
+    """
+    if not micro_settings:
+        if verbose:
+            print("No microparameters to apply")
+        return
+
+    mpfb_path = _get_mpfb_module_path()
+
+    # Import TargetService
+    TargetService = importlib.import_module(f'{mpfb_path}.services.targetservice').TargetService
+
+    if verbose:
+        print(f"\nApplying {len(micro_settings)} microparameters...")
+
+    # Apply each microparameter
+    for micro_name, micro_value in micro_settings.items():
+        try:
+            # Get full path for the target
+            full_path = TargetService.target_full_path(micro_name)
+
+            if full_path is None:
+                print(f"Warning: Could not find target '{micro_name}'")
+                continue
+
+            # Load target with specified value
+            TargetService.load_target(basemesh, full_path, weight=micro_value, name=micro_name)
+
+            if verbose:
+                print(f"  ✓ {micro_name}: {micro_value:.3f}")
+
+        except Exception as e:
+            print(f"  ✗ Error loading '{micro_name}': {e}")
+
+    # Bake targets to apply them permanently
+    if bake:
+        try:
+            TargetService.bake_targets(basemesh)
+            if verbose:
+                print("  ✓ Targets baked to mesh")
+        except Exception as e:
+            print(f"  ✗ Error baking targets: {e}")
 
 
 def add_standard_rig(basemesh, rig_type: str = "default") -> Tuple[Any, Any]:
@@ -707,20 +781,20 @@ def export_fbx(basemesh, armature, output_path: str, export_settings: Dict[str, 
 def validate_json_structure(config: Dict[str, Any]) -> bool:
     """
     Validate that JSON has required structure.
-    
+
     Args:
         config: Configuration dictionary
-        
+
     Returns:
         True if valid
-        
+
     Raises:
         ValueError: If structure is invalid
     """
     required_keys = {"macro_settings", "output"}
-    
+
     missing_keys = required_keys - set(config.keys())
     if missing_keys:
         raise ValueError(f"Configuration missing required keys: {missing_keys}")
-    
+
     return True

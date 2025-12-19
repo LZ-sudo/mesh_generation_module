@@ -1,0 +1,37 @@
+{
+  "macro_settings": {
+    "gender": 0.0,
+    "age": 0.7,
+    "muscle": 0.6,
+    "weight": 0.55,
+    "proportions": 0.5,
+    "height": 0.65,
+    "cupsize": 0.5,
+    "firmness": 0.5,
+    "race": {
+      "asian": 0.2,
+      "caucasian": 0.5,
+      "african": 0.3
+    }
+  },
+  "micro_settings": {
+    "measure-upperleg-height-incr": 0.7,
+    "measure-lowerleg-height-incr": 0.6,
+    "measure-napetowaist-dist-incr": 0.5,
+    "measure-shoulder-dist-incr": 0.75,
+    "measure-hips-circ-incr": 0.55,
+    "head-scale-horiz-incr": 0.5,
+    "neck-scale-vert-incr": 0.4,
+    "measure-upperarm-length-incr": 0.7,
+    "measure-lowerarm-length-incr": 0.6,
+    "l-hand-scale-incr": 0.65
+  },
+  "output": {
+    "directory": "./output",
+    "filename": "test_human_with_micros.fbx"
+  },
+  "export_settings": {
+    "use_mesh_modifiers": true,
+    "add_leaf_bones": true
+  }
+}

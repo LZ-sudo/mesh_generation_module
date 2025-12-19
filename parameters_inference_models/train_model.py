@@ -1,11 +1,16 @@
 """
-Train Inverse Mapping Models with Hybrid Bayesian Optimization
+Train Inverse Mapping Models with LightGBM and Hybrid Bayesian Optimization
 
 This script uses a two-stage approach:
 1. Fast Bayesian optimization with cross-validation (50-100 trials, ~30-60 minutes)
 2. Validation of top candidates with real mesh generation (~10-20 minutes)
 
-This provides excellent results in a practical timeframe.
+LightGBM provides faster training and often better accuracy compared to XGBoost.
+
+IMPORTANT: This script now predicts all 5 macroparameters (age, muscle, weight,
+height, proportions). With the introduction of microparameter fine-tuning, muscle
+and weight can be predicted for overall body composition while microparameters
+handle precise measurement matching.
 
 Usage:
     # Quick training (50 trials CV + top 3 validation)
@@ -40,31 +45,31 @@ except ImportError:
     OPTUNA_AVAILABLE = False
     print("WARNING: optuna not installed. Install with: pip install optuna")
 
-# Try to import XGBoost
+# Try to import LightGBM
 try:
-    import xgboost as xgb
-    XGBOOST_AVAILABLE = True
-    # Check if GPU/CUDA is available for XGBoost by testing if 'gpu_hist' is a valid tree method
+    import lightgbm as lgb
+    LIGHTGBM_AVAILABLE = True
+    # Check if GPU is available for LightGBM
     try:
-        # Try to create a DMatrix and train with gpu_hist
-        # If XGBoost was compiled without GPU support, this will fail
-        import numpy as np
+        # Test if GPU is available by creating a small dataset and training
         test_X = np.array([[1.0, 2.0], [3.0, 4.0]])
         test_y = np.array([1.0, 2.0])
-        dtrain = xgb.DMatrix(test_X, label=test_y)
-        params = {'tree_method': 'gpu_hist', 'verbosity': 0}
-        xgb.train(params, dtrain, num_boost_round=1)
+        train_data = lgb.Dataset(test_X, label=test_y)
+        params = {'device': 'gpu', 'verbosity': -1}
+        lgb.train(params, train_data, num_boost_round=1)
         GPU_AVAILABLE = True
     except Exception as e:
-        # If we get an error about invalid tree_method, GPU is not available
+        # If GPU training fails, fall back to CPU
         GPU_AVAILABLE = False
 except ImportError:
-    XGBOOST_AVAILABLE = False
+    LIGHTGBM_AVAILABLE = False
     GPU_AVAILABLE = False
-    print("WARNING: xgboost not installed. Install with: pip install xgboost")
+    print("WARNING: lightgbm not installed. Install with: pip install lightgbm")
 
 # Configuration
-MACROPARAMETERS = ['age', 'muscle', 'weight', 'height', 'proportions']
+# NOTE: All 5 macroparameters are now predicted. Microparameters will be used for fine-tuning.
+MACROPARAMETERS = ['age', 'muscle', 'weight', 'height', 'proportions']  # All 5 parameters
+EXCLUDED_MACROPARAMETERS = {}  # No excluded parameters
 MEASUREMENTS = [
     'height_cm', 'shoulder_width_cm', 'hip_width_cm', 'head_width_cm',
     'neck_length_cm', 'upper_arm_length_cm', 'forearm_length_cm', 'hand_length_cm'
@@ -134,22 +139,21 @@ def load_data(csv_path):
 
 
 def evaluate_with_cv(X, y, n_estimators, max_depth, learning_rate,
-                     min_child_weight=1, subsample=1.0, colsample_bytree=1.0,
-                     gamma=0.0, reg_alpha=0.0, reg_lambda=1.0,
-                     cv_folds=5, random_state=42, verbose=False):
+                     num_leaves=31, min_child_samples=20, subsample=1.0,
+                     colsample_bytree=1.0, reg_alpha=0.0, reg_lambda=0.0,
+                     min_split_gain=0.0, cv_folds=5, random_state=42, verbose=False):
     """
-    Evaluate XGBoost model using cross-validation with comprehensive hyperparameters.
+    Evaluate LightGBM model using cross-validation with comprehensive hyperparameters.
 
     Returns average MAE across all measurements and folds.
     """
     if verbose:
-        print(f"  Cross-validating: n_est={n_estimators}, depth={max_depth}, lr={learning_rate:.4f}")
+        print(f"  Cross-validating: n_est={n_estimators}, leaves={num_leaves}, lr={learning_rate:.4f}")
 
     total_mae = 0.0
 
-    # Determine tree method based on GPU availability
-    tree_method = 'gpu_hist' if GPU_AVAILABLE else 'hist'
-    device_to_use = 'cuda' if GPU_AVAILABLE else 'cpu'
+    # Determine device based on GPU availability
+    device_type = 'gpu' if GPU_AVAILABLE else 'cpu'
 
     for idx, measure in enumerate(MEASUREMENTS):
         if verbose:
@@ -157,20 +161,21 @@ def evaluate_with_cv(X, y, n_estimators, max_depth, learning_rate,
                              prefix='    CV Progress:',
                              suffix=f'{measure}')
 
-        model = xgb.XGBRegressor(
+        model = lgb.LGBMRegressor(
             n_estimators=n_estimators,
             max_depth=max_depth,
             learning_rate=learning_rate,
-            min_child_weight=min_child_weight,
+            num_leaves=num_leaves,
+            min_child_samples=min_child_samples,
             subsample=subsample,
             colsample_bytree=colsample_bytree,
-            gamma=gamma,
             reg_alpha=reg_alpha,
             reg_lambda=reg_lambda,
-            tree_method=tree_method,
-            device=device_to_use,
+            min_split_gain=min_split_gain,
+            device=device_type,
             random_state=random_state,
-            verbosity=0  # Suppress XGBoost output
+            verbosity=-1,  # Suppress LightGBM output
+            force_col_wise=True  # Faster for datasets with many rows
         )
 
         # Cross-validation with negative MAE scoring
@@ -197,16 +202,15 @@ def evaluate_with_cv(X, y, n_estimators, max_depth, learning_rate,
 
 
 def train_models_with_params(X, y, hyperparams, random_state=42, verbose=True):
-    """Train XGBoost models with specific hyperparameters on full dataset.
+    """Train LightGBM models with specific hyperparameters on full dataset.
 
     Args:
-        hyperparams: Dictionary containing all XGBoost hyperparameters
+        hyperparams: Dictionary containing all LightGBM hyperparameters
     """
     models = {}
 
-    # Determine tree method based on GPU availability
-    tree_method = 'gpu_hist' if GPU_AVAILABLE else 'hist'
-    device_to_use = 'cuda' if GPU_AVAILABLE else 'cpu'
+    # Determine device based on GPU availability
+    device_type = 'gpu' if GPU_AVAILABLE else 'cpu'
 
     for idx, measure in enumerate(MEASUREMENTS):
         if verbose:
@@ -215,20 +219,21 @@ def train_models_with_params(X, y, hyperparams, random_state=42, verbose=True):
                              suffix=f'{measure}')
 
         # Train on full dataset
-        model = xgb.XGBRegressor(
+        model = lgb.LGBMRegressor(
             n_estimators=hyperparams['n_estimators'],
             max_depth=hyperparams['max_depth'],
             learning_rate=hyperparams['learning_rate'],
-            min_child_weight=hyperparams.get('min_child_weight', 1),
+            num_leaves=hyperparams.get('num_leaves', 31),
+            min_child_samples=hyperparams.get('min_child_samples', 20),
             subsample=hyperparams.get('subsample', 1.0),
             colsample_bytree=hyperparams.get('colsample_bytree', 1.0),
-            gamma=hyperparams.get('gamma', 0.0),
             reg_alpha=hyperparams.get('reg_alpha', 0.0),
-            reg_lambda=hyperparams.get('reg_lambda', 1.0),
-            tree_method=tree_method,
-            device=device_to_use,
+            reg_lambda=hyperparams.get('reg_lambda', 0.0),
+            min_split_gain=hyperparams.get('min_split_gain', 0.0),
+            device=device_type,
             random_state=random_state,
-            verbosity=0  # Suppress XGBoost output
+            verbosity=-1,  # Suppress LightGBM output
+            force_col_wise=True  # Faster for datasets with many rows
         )
         model.fit(X, y[measure])
 
@@ -275,7 +280,11 @@ def objective_function(macroparameters, models, target_measurements):
 
 
 def find_macroparameters(models, macro_bounds, target_measurements):
-    """Find macroparameters that best match target measurements."""
+    """Find macroparameters that best match target measurements.
+
+    Only optimizes for MACROPARAMETERS (age, height, proportions).
+    Sets excluded parameters (muscle, weight) to default values.
+    """
     bounds = [(macro_bounds[param][0], macro_bounds[param][1])
               for param in MACROPARAMETERS]
 
@@ -294,7 +303,10 @@ def find_macroparameters(models, macro_bounds, target_measurements):
         updating='deferred'
     )
 
+    # Create full macroparameter dict with optimized values + defaults for excluded params
     macroparameters = {param: result.x[i] for i, param in enumerate(MACROPARAMETERS)}
+    macroparameters.update(EXCLUDED_MACROPARAMETERS)  # Add muscle=0.5, weight=0.5
+
     return macroparameters
 
 
@@ -408,18 +420,29 @@ def objective_optuna_cv(trial, X, y):
     """
     Optuna objective function for Stage 1: Cross-validation based optimization.
 
-    Optimizes comprehensive set of XGBoost hyperparameters for best performance.
+    Optimizes comprehensive set of LightGBM hyperparameters for best performance.
     """
     # Core tree parameters
     n_estimators = trial.suggest_int('n_estimators', 100, 1000, step=50)
     max_depth = trial.suggest_int('max_depth', 3, 15)
     learning_rate = trial.suggest_float('learning_rate', 0.001, 0.3, log=True)
 
+    # LightGBM specific: num_leaves (should be < 2^max_depth to prevent overfitting)
+    # Suggest based on max_depth, ensuring valid range
+    max_leaves = 2 ** max_depth
+    # Ensure low <= high by using max(min_leaves, ...) for the lower bound
+    min_num_leaves = 20
+    max_num_leaves = min(max_leaves - 1, 255)
+    # If max_depth is too small (e.g., 3 or 4), adjust the range
+    if max_num_leaves < min_num_leaves:
+        min_num_leaves = max(2, max_num_leaves // 2)
+    num_leaves = trial.suggest_int('num_leaves', min_num_leaves, max(min_num_leaves, max_num_leaves))
+
     # Regularization parameters (prevent overfitting)
-    min_child_weight = trial.suggest_int('min_child_weight', 1, 10)
+    min_child_samples = trial.suggest_int('min_child_samples', 5, 100)
     subsample = trial.suggest_float('subsample', 0.5, 1.0)
     colsample_bytree = trial.suggest_float('colsample_bytree', 0.5, 1.0)
-    gamma = trial.suggest_float('gamma', 0.0, 5.0)
+    min_split_gain = trial.suggest_float('min_split_gain', 0.0, 1.0)
     reg_alpha = trial.suggest_float('reg_alpha', 0.0, 10.0)  # L1 regularization
     reg_lambda = trial.suggest_float('reg_lambda', 0.0, 10.0)  # L2 regularization
 
@@ -429,12 +452,13 @@ def objective_optuna_cv(trial, X, y):
         n_estimators=n_estimators,
         max_depth=max_depth,
         learning_rate=learning_rate,
-        min_child_weight=min_child_weight,
+        num_leaves=num_leaves,
+        min_child_samples=min_child_samples,
         subsample=subsample,
         colsample_bytree=colsample_bytree,
-        gamma=gamma,
         reg_alpha=reg_alpha,
         reg_lambda=reg_lambda,
+        min_split_gain=min_split_gain,
         cv_folds=5,
         verbose=False
     )
@@ -451,6 +475,7 @@ def save_models(models, macro_bounds, output_path, performance=None, hyperparame
         'models': models,
         'macro_bounds': macro_bounds,
         'macroparameters': MACROPARAMETERS,
+        'excluded_macroparameters': EXCLUDED_MACROPARAMETERS,  # Save defaults for muscle/weight
         'measurements': MEASUREMENTS,
         'performance': performance,
         'hyperparameters': hyperparameters
@@ -524,13 +549,13 @@ Examples:
         print("Install with: pip install optuna")
         return 1
 
-    if not XGBOOST_AVAILABLE:
-        print("\nERROR: xgboost is required for training")
-        print("Install with: pip install xgboost")
+    if not LIGHTGBM_AVAILABLE:
+        print("\nERROR: lightgbm is required for training")
+        print("Install with: pip install lightgbm")
         return 1
 
     print("=" * 80)
-    print("HYBRID BAYESIAN OPTIMIZATION TRAINING (XGBoost)")
+    print("HYBRID BAYESIAN OPTIMIZATION TRAINING (LightGBM)")
     print("=" * 80)
     print(f"\nConfiguration:")
     print(f"  Input: {args.input}")
@@ -540,11 +565,11 @@ Examples:
 
     # GPU detection
     if GPU_AVAILABLE:
-        print(f"\n  GPU: AVAILABLE (using tree_method='gpu_hist')")
-        print(f"  Note: GPU acceleration can be 5-20x faster!")
+        print(f"\n  GPU: AVAILABLE (using device='gpu')")
+        print(f"  Note: GPU acceleration can significantly speed up training!")
     else:
-        print(f"\n  GPU: Not available (using tree_method='hist' on CPU)")
-        print(f"  Note: Install CUDA and compatible XGBoost for GPU acceleration")
+        print(f"\n  GPU: Not available (using device='cpu')")
+        print(f"  Note: Install CUDA and compatible LightGBM for GPU acceleration")
 
     # Estimate time
     stage1_time_min = args.n_trials * 0.5  # ~30 seconds per trial
@@ -599,7 +624,7 @@ Examples:
                 prefix='Stage 1 Progress:',
                 suffix=f'Trial {trial.number + 1}/{args.n_trials} | '
                        f'n_est={trial.params["n_estimators"]}, '
-                       f'depth={trial.params["max_depth"]}, '
+                       f'leaves={trial.params["num_leaves"]}, '
                        f'lr={trial.params["learning_rate"]:.3f}, '
                        f'MAE={trial.value:.4f}cm'
             )
@@ -635,7 +660,7 @@ Examples:
         for i, trial in enumerate(top_trials, 1):
             print(f"{i}. CV-MAE={trial.value:.4f} cm")
             print(f"   n_estimators={trial.params['n_estimators']}, max_depth={trial.params['max_depth']}, lr={trial.params['learning_rate']:.4f}")
-            print(f"   min_child_weight={trial.params['min_child_weight']}, subsample={trial.params['subsample']:.3f}, colsample={trial.params['colsample_bytree']:.3f}")
+            print(f"   num_leaves={trial.params['num_leaves']}, min_child_samples={trial.params['min_child_samples']}, subsample={trial.params['subsample']:.3f}, colsample={trial.params['colsample_bytree']:.3f}")
 
         # ========================================================================
         # STAGE 2: VALIDATION WITH REAL MESH GENERATION
@@ -654,9 +679,9 @@ Examples:
             print(f"\nValidating candidate {i}/{args.n_validate}:")
             print(f"  Hyperparameters:")
             print(f"    n_estimators={trial.params['n_estimators']}, max_depth={trial.params['max_depth']}")
-            print(f"    learning_rate={trial.params['learning_rate']:.4f}, min_child_weight={trial.params['min_child_weight']}")
-            print(f"    subsample={trial.params['subsample']:.3f}, colsample_bytree={trial.params['colsample_bytree']:.3f}")
-            print(f"    gamma={trial.params['gamma']:.3f}, reg_alpha={trial.params['reg_alpha']:.3f}, reg_lambda={trial.params['reg_lambda']:.3f}")
+            print(f"    learning_rate={trial.params['learning_rate']:.4f}, num_leaves={trial.params['num_leaves']}")
+            print(f"    min_child_samples={trial.params['min_child_samples']}, subsample={trial.params['subsample']:.3f}, colsample_bytree={trial.params['colsample_bytree']:.3f}")
+            print(f"    min_split_gain={trial.params['min_split_gain']:.3f}, reg_alpha={trial.params['reg_alpha']:.3f}, reg_lambda={trial.params['reg_lambda']:.3f}")
             print(f"  CV-MAE: {trial.value:.4f} cm")
 
             # Train models with these hyperparameters
@@ -741,11 +766,12 @@ Examples:
         print(f"    n_estimators: {best_result['n_estimators']}")
         print(f"    max_depth: {best_result['max_depth']}")
         print(f"    learning_rate: {best_result['learning_rate']:.4f}")
+        print(f"    num_leaves: {best_result['num_leaves']}")
         print(f"  Regularization:")
-        print(f"    min_child_weight: {best_result['min_child_weight']}")
+        print(f"    min_child_samples: {best_result['min_child_samples']}")
         print(f"    subsample: {best_result['subsample']:.3f}")
         print(f"    colsample_bytree: {best_result['colsample_bytree']:.3f}")
-        print(f"    gamma: {best_result['gamma']:.3f}")
+        print(f"    min_split_gain: {best_result['min_split_gain']:.3f}")
         print(f"    reg_alpha: {best_result['reg_alpha']:.3f}")
         print(f"    reg_lambda: {best_result['reg_lambda']:.3f}")
         print(f"  Performance:")
