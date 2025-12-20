@@ -61,21 +61,21 @@ def parse_arguments():
     parser = argparse.ArgumentParser(
         description='Batch process human models and extract measurements'
     )
-    
+
     parser.add_argument(
-        '--config',
+        '--param-list',
         type=str,
         required=True,
-        help='Path to configuration JSON file'
+        help='Path to JSON file containing list of parameter combinations'
     )
-    
+
     parser.add_argument(
         '--output',
         type=str,
         default='output/lookup_table.csv',
         help='Path for output CSV file'
     )
-    
+
     parser.add_argument(
         '--rig-type',
         type=str,
@@ -83,13 +83,13 @@ def parse_arguments():
         choices=['default', 'default_no_toes', 'game_engine'],
         help='Type of rig to add'
     )
-    
+
     parser.add_argument(
         '--no-delete',
         action='store_true',
         help='Do not delete models after measurement (for debugging)'
     )
-    
+
     parser.add_argument(
         '--checkpoint-interval',
         type=int,
@@ -100,85 +100,33 @@ def parse_arguments():
     return parser.parse_args(argv)
 
 
-def load_config(config_path: str) -> dict:
+def load_parameter_list(param_list_path: str) -> list:
     """
-    Load configuration file.
+    Load pre-generated parameter combinations from JSON file.
 
     Args:
-        config_path: Path to configuration JSON
+        param_list_path: Path to JSON file containing parameter list
 
     Returns:
-        Configuration dictionary
+        List of parameter dictionaries
     """
-    if not os.path.exists(config_path):
-        raise FileNotFoundError(f"Configuration not found: {config_path}")
+    if not os.path.exists(param_list_path):
+        raise FileNotFoundError(f"Parameter list not found: {param_list_path}")
 
-    with open(config_path, 'r') as f:
-        config = json.load(f)
+    with open(param_list_path, 'r') as f:
+        param_list = json.load(f)
 
-    # Calculate total combinations
-    total = 1
-    for param_config in config["grid_params"].values():
-        min_val = param_config["min"]
-        max_val = param_config["max"]
-        step = param_config["step"]
-        n_values = len(np.arange(min_val, max_val + step/2, step))
-        total *= n_values
-
-    print(f"✓ Loaded configuration: {total:,} combinations")
-    return config
+    print(f"✓ Loaded {len(param_list):,} parameter combinations")
+    return param_list
 
 
-def generate_parameter_combinations(config: dict):
-    """
-    Generate parameter combinations on-the-fly from grid configuration.
-
-    This avoids loading millions of combinations into memory at once.
-
-    Args:
-        config: Configuration dictionary with fixed_params and grid_params
-
-    Yields:
-        Parameter dictionary for each combination
-    """
-    fixed_params = config["fixed_params"]
-    grid_params = config["grid_params"]
-
-    # Generate value lists for each grid parameter
-    param_names = []
-    param_values = []
-
-    for param_name, param_config in grid_params.items():
-        min_val = param_config["min"]
-        max_val = param_config["max"]
-        step = param_config["step"]
-
-        # Generate values using numpy for precision
-        values = np.arange(min_val, max_val + step/2, step)
-        values = np.clip(values, 0.0, 1.0)  # Ensure within bounds
-        values = [round(float(v), 3) for v in values]  # Round to 3 decimals
-
-        param_names.append(param_name)
-        param_values.append(values)
-
-    # Generate combinations one at a time
-    for combo in product(*param_values):
-        params = fixed_params.copy()
-
-        # Add grid parameter values
-        for i, param_name in enumerate(param_names):
-            params[param_name] = combo[i]
-
-        yield params
-
-
-def initialize_csv(output_path: str, config: dict) -> tuple:
+def initialize_csv(output_path: str, param_list: list) -> tuple:
     """
     Initialize CSV file with headers.
 
     Args:
         output_path: Path for CSV file
-        config: Configuration dictionary (used for validation)
+        param_list: List of parameter dictionaries (used for validation)
 
     Returns:
         Tuple of (file_handle, csv_writer)
@@ -186,9 +134,9 @@ def initialize_csv(output_path: str, config: dict) -> tuple:
     # Ensure output directory exists
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
 
-    # Validate config has required keys
-    if "fixed_params" not in config or "grid_params" not in config:
-        raise ValueError("Config must contain 'fixed_params' and 'grid_params'")
+    # Validate param_list is not empty
+    if not param_list:
+        raise ValueError("Parameter list cannot be empty")
 
     # Define parameter columns
     # Include ALL parameters: both fixed and grid
@@ -498,42 +446,33 @@ def main():
         sys.exit(e.code)
     
     print(f"\nConfiguration:")
-    print(f"  Config file: {args.config}")
+    print(f"  Parameter list: {args.param_list}")
     print(f"  Output: {args.output}")
     print(f"  Rig type: {args.rig_type}")
     print(f"  Delete models: {not args.no_delete}")
     print(f"  Checkpoint interval: {args.checkpoint_interval}")
 
     try:
-        # Load configuration
+        # Load parameter list
         print("\n" + "-"*70)
-        print("LOADING CONFIGURATION")
+        print("LOADING PARAMETER COMBINATIONS")
         print("-"*70)
-        config = load_config(args.config)
+        param_list = load_parameter_list(args.param_list)
 
-        # Calculate total combinations
-        total = 1
-        for param_config in config["grid_params"].values():
-            min_val = param_config["min"]
-            max_val = param_config["max"]
-            step = param_config["step"]
-            n_values = len(np.arange(min_val, max_val + step/2, step))
-            total *= n_values
+        print(f"\nWill process {len(param_list):,} models")
 
-        print(f"\nWill process {total:,} models (generated on-the-fly)")
-        
         # Initialize CSV
         print("\n" + "-"*70)
         print("INITIALIZING OUTPUT")
         print("-"*70)
-        csv_file, csv_writer = initialize_csv(args.output, config)
-        
+        csv_file, csv_writer = initialize_csv(args.output, param_list)
+
         # Set up Blender scene
         print("\n" + "-"*70)
         print("SETTING UP BLENDER SCENE")
         print("-"*70)
         utils.setup_blender_scene()
-        
+
         # Process each model
         print("\n" + "="*70)
         print("PROCESSING MODELS")
@@ -542,12 +481,10 @@ def main():
         successful = 0
         failed = 0
         start_time = time.time()
-
-        # Generate parameter combinations on-the-fly
-        param_generator = generate_parameter_combinations(config)
+        total = len(param_list)
 
         # Process each model with progress bar
-        for i, params in enumerate(param_generator, 1):
+        for i, params in enumerate(param_list, 1):
             try:
                 # Generate and measure (quiet mode with OS-level suppression)
                 measured, basemesh, armature = process_single_model(params, args.rig_type, quiet=True)
