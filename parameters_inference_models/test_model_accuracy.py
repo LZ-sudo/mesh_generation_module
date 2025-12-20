@@ -90,28 +90,34 @@ def convert_numpy_types(obj):
         return obj
 
 
-def generate_and_measure_mesh(macroparameters, rig_type='default_no_toes'):
+def generate_and_measure_mesh(macroparameters, microparameters=None, rig_type='default_no_toes'):
     """
-    Generate a mesh with given macroparameters and measure it.
+    Generate a mesh with given macroparameters (and optionally microparameters) and measure it.
 
     This function:
-    1. Creates a config file in measure_batch.py format (single combination)
-    2. Calls Blender with measure_batch.py to generate and measure
-    3. Reads the resulting CSV
+    1. Creates a config file for generate_human.py (with macro and optionally micro settings)
+    2. Calls Blender with generate_human.py to generate the model
+    3. Calls Blender to measure the generated FBX
     4. Returns the measurements
 
     Args:
         macroparameters: Dictionary of macroparameter values
+        microparameters: Optional dictionary of microparameter values
         rig_type: Type of rig to add
 
     Returns:
         Dictionary of actual measurements from the generated mesh
     """
-    # Build config in measure_batch.py format
+    # Build config for generate_human.py
     # Fixed parameters match what was used in the lookup table training data
     config = {
-        'fixed_params': {
+        'macro_settings': {
             'gender': 0.0,        # Female
+            'age': macroparameters['age'],
+            'muscle': macroparameters['muscle'],
+            'weight': macroparameters['weight'],
+            'height': macroparameters['height'],
+            'proportions': macroparameters['proportions'],
             'cupsize': 0.5,       # Medium
             'firmness': 0.5,      # Medium
             'race': {
@@ -120,53 +126,32 @@ def generate_and_measure_mesh(macroparameters, rig_type='default_no_toes'):
                 'african': 0.0
             }
         },
-        'grid_params': {
-            # Each grid param has a single value (min == max, step doesn't matter)
-            'age': {
-                'min': macroparameters['age'],
-                'max': macroparameters['age'],
-                'step': 1.0
-            },
-            'muscle': {
-                'min': macroparameters['muscle'],
-                'max': macroparameters['muscle'],
-                'step': 1.0
-            },
-            'weight': {
-                'min': macroparameters['weight'],
-                'max': macroparameters['weight'],
-                'step': 1.0
-            },
-            'height': {
-                'min': macroparameters['height'],
-                'max': macroparameters['height'],
-                'step': 1.0
-            },
-            'proportions': {
-                'min': macroparameters['proportions'],
-                'max': macroparameters['proportions'],
-                'step': 1.0
-            }
+        'output': {
+            'directory': str(parent_dir / 'output'),
+            'filename': 'temp_test_model.fbx'
         },
-        'rig_type': rig_type
+        'export_settings': {
+            'use_mesh_modifiers': True,
+            'add_leaf_bones': True
+        }
     }
 
+    # Add microparameters if provided
+    if microparameters:
+        config['micro_settings'] = microparameters
+
     # Save config to temporary file
-    config_path = parent_dir / 'temp_test_config.json'
+    config_path = parent_dir / 'temp_test_human_config.json'
     with open(config_path, 'w') as f:
         json.dump(config, f, indent=2)
 
-    # Path for output CSV
-    output_csv_path = parent_dir / 'temp_test_measurements.csv'
-
-    # Run Blender with measure_batch.py using run_blender.py wrapper
+    # Run Blender with generate_human.py
     cmd = [
         'python',
         str(parent_dir / 'run_blender.py'),
-        '--script', 'measurement_functions/measure_batch.py',
+        '--script', 'generate_human.py',
         '--',
         '--config', str(config_path),
-        '--output', str(output_csv_path),
         '--rig-type', rig_type
     ]
 
@@ -181,6 +166,9 @@ def generate_and_measure_mesh(macroparameters, rig_type='default_no_toes'):
 
         if result.returncode != 0:
             print(f"\nERROR: Blender exited with code {result.returncode}", file=sys.stderr)
+            if result.stdout:
+                print("--- Blender Output ---", file=sys.stderr)
+                print(result.stdout, file=sys.stderr)
             if result.stderr:
                 print("--- Blender Error Output ---", file=sys.stderr)
                 print(result.stderr, file=sys.stderr)
@@ -193,33 +181,193 @@ def generate_and_measure_mesh(macroparameters, rig_type='default_no_toes'):
         if config_path.exists():
             config_path.unlink()
 
-    # Load measurements from CSV
-    if not output_csv_path.exists():
-        raise RuntimeError("Measurements CSV not created by Blender")
+    # Create a temporary Blender script to measure the generated mesh
+    # This script imports the FBX and measures it
+    measurements_json_path = parent_dir / 'temp_test_measurements.json'
+    fbx_path = parent_dir / 'output' / 'temp_test_model.fbx'
 
-    import pandas as pd
-    df = pd.read_csv(output_csv_path)
+    measure_script = f"""
+import sys
+import json
+from pathlib import Path
 
-    if len(df) == 0:
-        raise RuntimeError("CSV is empty - no measurements recorded")
+# Add parent to path for measurements module
+parent = Path(__file__).parent.absolute()
+if str(parent) not in sys.path:
+    sys.path.insert(0, str(parent))
 
-    # Extract first (and only) row of measurements
-    row = df.iloc[0]
-    measurements = {}
-    for measure in MEASUREMENTS:
-        if measure in row:
-            measurements[measure] = float(row[measure])
+try:
+    import bpy
+    from measurement_functions import measurements
 
-    # Clean up temp CSV
-    if output_csv_path.exists():
-        output_csv_path.unlink()
+    # Clear scene
+    bpy.ops.object.select_all(action='SELECT')
+    bpy.ops.object.delete()
+
+    # Import FBX
+    bpy.ops.import_scene.fbx(filepath=r'{fbx_path}')
+
+    # Find mesh and armature
+    basemesh = None
+    armature = None
+    for obj in bpy.data.objects:
+        if obj.type == 'MESH' and basemesh is None:
+            basemesh = obj
+        elif obj.type == 'ARMATURE' and armature is None:
+            armature = obj
+
+    if not basemesh:
+        print("ERROR: No mesh found in FBX")
+        sys.exit(1)
+    if not armature:
+        print("ERROR: No armature found in FBX")
+        sys.exit(1)
+
+    # Extract measurements
+    measured = measurements.extract_all_measurements(basemesh, armature)
+
+    # Convert keys to add _cm suffix for compatibility
+    measurements_with_suffix = {{}}
+    for key, value in measured.items():
+        if not key.endswith('_cm'):
+            measurements_with_suffix[f"{{key}}_cm"] = value
+        else:
+            measurements_with_suffix[key] = value
+
+    # Save to JSON
+    with open(r'{measurements_json_path}', 'w') as f:
+        json.dump(measurements_with_suffix, f, indent=2)
+
+    print("Measurements saved successfully")
+    sys.exit(0)
+
+except Exception as e:
+    print(f"ERROR: {{e}}")
+    import traceback
+    traceback.print_exc()
+    sys.exit(1)
+"""
+
+    # Write temporary measurement script
+    temp_measure_script = parent_dir / 'temp_measure_script.py'
+    with open(temp_measure_script, 'w') as f:
+        f.write(measure_script)
+
+    # Run measurement script
+    measure_cmd = [
+        'python',
+        str(parent_dir / 'run_blender.py'),
+        '--script', str(temp_measure_script)
+    ]
+
+    try:
+        result = subprocess.run(
+            measure_cmd,
+            cwd=str(parent_dir),
+            capture_output=True,
+            text=True,
+            timeout=300
+        )
+
+        if result.returncode != 0:
+            print(f"\nERROR: Measurement failed with code {result.returncode}", file=sys.stderr)
+            if result.stdout:
+                print("--- Measurement Output ---", file=sys.stderr)
+                print(result.stdout, file=sys.stderr)
+            if result.stderr:
+                print("--- Measurement Error Output ---", file=sys.stderr)
+                print(result.stderr, file=sys.stderr)
+            raise RuntimeError(f"Measurement failed with code {result.returncode}")
+
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("Measurement process timed out after 5 minutes")
+    finally:
+        # Clean up temp script
+        if temp_measure_script.exists():
+            temp_measure_script.unlink()
+
+    # Load measurements from JSON
+    if not measurements_json_path.exists():
+        raise RuntimeError("Measurements JSON not created")
+
+    with open(measurements_json_path, 'r') as f:
+        measurements = json.load(f)
+
+    # Clean up temp JSON and FBX
+    if measurements_json_path.exists():
+        measurements_json_path.unlink()
+
+    if fbx_path.exists():
+        fbx_path.unlink()
 
     return measurements
 
 
-def test_single_subject(subject_id, target_measurements, models, macro_bounds, method, rig_type):
+def calculate_micro_adjustments(measurement_errors, sensitivity_matrix):
+    """
+    Calculate microparameter adjustments needed to reduce measurement errors.
+
+    Args:
+        measurement_errors: Dict of {measurement_name: error_cm}
+        sensitivity_matrix: Dict mapping microparameter names to their sensitivities
+                          Format: {micro_name: {measurement_name: delta_cm_per_unit}}
+
+    Returns:
+        Dict of {micro_name: adjustment_value}
+    """
+    micro_adjustments = {}
+
+    for micro_name, sensitivities in sensitivity_matrix.items():
+        # For each microparameter, calculate how much to adjust it
+        # based on the errors in measurements it affects
+
+        # Simple approach: Use the measurement with largest error that this micro affects
+        best_adjustment = 0.0
+        max_relevance = 0.0
+
+        for measure_name, sensitivity in sensitivities.items():
+            if abs(sensitivity) < 0.01:  # Skip if micro has negligible effect
+                continue
+
+            # Get error for this measurement (remove _cm suffix if needed)
+            error = measurement_errors.get(measure_name, 0.0)
+            if error == 0.0:
+                error = measurement_errors.get(measure_name.replace('_cm', ''), 0.0)
+
+            if abs(error) < 0.1:  # Skip if error is negligible
+                continue
+
+            # Calculate adjustment: error / sensitivity
+            # If error is positive (actual > target), we need to reduce
+            # If sensitivity is positive, decreasing micro reduces measurement
+            adjustment = -error / sensitivity
+
+            # Weight by how relevant this is (error * sensitivity strength)
+            relevance = abs(error) * abs(sensitivity)
+
+            if relevance > max_relevance:
+                max_relevance = relevance
+                best_adjustment = adjustment
+
+        # Clamp adjustment to reasonable range [-1.0, 1.0]
+        micro_adjustments[micro_name] = max(-1.0, min(1.0, best_adjustment))
+
+    return micro_adjustments
+
+
+def test_single_subject(subject_id, target_measurements, models, macro_bounds, method, rig_type, sensitivity_matrix=None):
     """
     Test model on a single subject's measurements.
+
+    Args:
+        subject_id: Identifier for this subject
+        target_measurements: Target measurements to match
+        models: Trained regression models
+        macro_bounds: Bounds for macroparameters
+        method: Optimization method
+        rig_type: Type of rig to use
+        sensitivity_matrix: Optional sensitivity matrix for microparameter adjustments
+                          Format: {micro_name: {measurement_name: delta_cm_per_unit}}
 
     Returns:
         Dictionary with test results for this subject
@@ -238,44 +386,105 @@ def test_single_subject(subject_id, target_measurements, models, macro_bounds, m
     for param, value in result['macroparameters'].items():
         print(f"  {param:12s}: {value:.4f}")
 
-    # Generate and measure actual mesh
-    print("\nGenerating and measuring mesh...")
-    actual_measurements = generate_and_measure_mesh(
+    # Generate and measure actual mesh (macros only)
+    print("\nGenerating and measuring mesh (macroparameters only)...")
+    actual_measurements_macro = generate_and_measure_mesh(
         result['macroparameters'],
         rig_type=rig_type
     )
 
-    # Calculate errors
-    errors_per_measurement = {}
+    # Calculate errors with macros only
+    errors_macro = {}
     for measure in MEASUREMENTS:
         target = target_measurements.get(measure, 0.0)
-        actual = actual_measurements.get(measure, 0.0)
+        actual = actual_measurements_macro.get(measure, 0.0)
         predicted = result['predicted_measurements'].get(measure, 0.0)
 
-        errors_per_measurement[measure] = {
+        errors_macro[measure] = {
             'target': target,
             'predicted': predicted,
             'actual': actual,
             'prediction_error': abs(predicted - target),
-            'actual_error': abs(actual - target)
+            'actual_error': abs(actual - target),
+            'error_value': actual - target  # Signed error for micro calculation
         }
 
-    # Calculate MAE
-    actual_errors = [e['actual_error'] for e in errors_per_measurement.values()]
-    mae = mean(actual_errors)
-    max_error = max(actual_errors)
+    # Calculate MAE with macros only
+    actual_errors_macro = [e['actual_error'] for e in errors_macro.values()]
+    mae_macro = mean(actual_errors_macro)
+    max_error_macro = max(actual_errors_macro)
 
-    print(f"\nResults:")
-    print(f"  MAE: {mae:.4f} cm")
-    print(f"  Max Error: {max_error:.4f} cm")
+    print(f"\nResults (Macroparameters only):")
+    print(f"  MAE: {mae_macro:.4f} cm")
+    print(f"  Max Error: {max_error_macro:.4f} cm")
 
-    return {
+    # If sensitivity matrix provided, apply microparameter adjustments
+    result_data = {
         'subject_id': subject_id,
         'macroparameters': result['macroparameters'],
-        'measurements': errors_per_measurement,
-        'mae': mae,
-        'max_error': max_error
+        'measurements_macro_only': errors_macro,
+        'mae_macro_only': mae_macro,
+        'max_error_macro_only': max_error_macro
     }
+
+    if sensitivity_matrix:
+        print("\n" + "-"*80)
+        print("Applying Microparameter Adjustments")
+        print("-"*80)
+
+        # Calculate microparameter adjustments based on errors
+        measurement_errors = {m: e['error_value'] for m, e in errors_macro.items()}
+        micro_adjustments = calculate_micro_adjustments(measurement_errors, sensitivity_matrix)
+
+        print("\nMicroparameter Adjustments:")
+        for micro_name, value in micro_adjustments.items():
+            print(f"  {micro_name:40s}: {value:+.4f}")
+
+        # Generate and measure with macros + micros
+        print("\nGenerating and measuring mesh (macroparameters + microparameters)...")
+        actual_measurements_with_micro = generate_and_measure_mesh(
+            result['macroparameters'],
+            microparameters=micro_adjustments,
+            rig_type=rig_type
+        )
+
+        # Calculate errors with macros + micros
+        errors_with_micro = {}
+        for measure in MEASUREMENTS:
+            target = target_measurements.get(measure, 0.0)
+            actual = actual_measurements_with_micro.get(measure, 0.0)
+
+            errors_with_micro[measure] = {
+                'target': target,
+                'actual': actual,
+                'actual_error': abs(actual - target)
+            }
+
+        # Calculate MAE with macros + micros
+        actual_errors_with_micro = [e['actual_error'] for e in errors_with_micro.values()]
+        mae_with_micro = mean(actual_errors_with_micro)
+        max_error_with_micro = max(actual_errors_with_micro)
+
+        print(f"\nResults (Macroparameters + Microparameters):")
+        print(f"  MAE: {mae_with_micro:.4f} cm")
+        print(f"  Max Error: {max_error_with_micro:.4f} cm")
+
+        improvement = ((mae_macro - mae_with_micro) / mae_macro) * 100 if mae_macro > 0 else 0.0
+        print(f"\n  Improvement: {improvement:.2f}%")
+
+        # Add micro results to return data
+        result_data['microparameters'] = micro_adjustments
+        result_data['measurements_with_micro'] = errors_with_micro
+        result_data['mae_with_micro'] = mae_with_micro
+        result_data['max_error_with_micro'] = max_error_with_micro
+        result_data['improvement_percent'] = improvement
+    else:
+        # No sensitivity matrix - return macro-only results as final results
+        result_data['measurements'] = errors_macro
+        result_data['mae'] = mae_macro
+        result_data['max_error'] = max_error_macro
+
+    return result_data
 
 
 def save_results_to_csv(results, category, output_path):
@@ -290,23 +499,45 @@ def save_results_to_csv(results, category, output_path):
     csv_rows = []
 
     for result in results:
+        # Check if microparameters were used
+        has_micro = 'microparameters' in result
+
         base_row = {
             'category': category,
             'subject_id': result['subject_id'],
-            'mae': result['mae'],
-            'max_error': result['max_error']
+            'mae_macro_only': result.get('mae_macro_only', result.get('mae', 0.0)),
+            'max_error_macro_only': result.get('max_error_macro_only', result.get('max_error', 0.0))
         }
+
+        # Add microparameter results if available
+        if has_micro:
+            base_row['mae_with_micro'] = result['mae_with_micro']
+            base_row['max_error_with_micro'] = result['max_error_with_micro']
+            base_row['improvement_percent'] = result['improvement_percent']
 
         # Add macroparameters
         for param, value in result['macroparameters'].items():
             base_row[f'macro_{param}'] = value
 
-        # Add per-measurement errors
-        for measure, data in result['measurements'].items():
+        # Add microparameters if present
+        if has_micro:
+            for param, value in result['microparameters'].items():
+                base_row[f'micro_{param}'] = value
+
+        # Add per-measurement errors (use macro_only measurements)
+        measurements = result.get('measurements_macro_only', result.get('measurements', {}))
+        for measure, data in measurements.items():
             base_row[f'{measure}_target'] = data['target']
-            base_row[f'{measure}_predicted'] = data['predicted']
-            base_row[f'{measure}_actual'] = data['actual']
-            base_row[f'{measure}_error'] = data['actual_error']
+            if 'predicted' in data:
+                base_row[f'{measure}_predicted'] = data['predicted']
+            base_row[f'{measure}_actual_macro'] = data['actual']
+            base_row[f'{measure}_error_macro'] = data['actual_error']
+
+        # Add microparameter measurement results if available
+        if has_micro:
+            for measure, data in result['measurements_with_micro'].items():
+                base_row[f'{measure}_actual_micro'] = data['actual']
+                base_row[f'{measure}_error_micro'] = data['actual_error']
 
         csv_rows.append(base_row)
 
@@ -335,37 +566,70 @@ def print_aggregate_statistics(results, category):
     print(f"AGGREGATE STATISTICS - {category.upper()}")
     print(f"{'='*80}")
 
-    # Overall MAE statistics
-    maes = [r['mae'] for r in results]
-    max_errors = [r['max_error'] for r in results]
+    # Check if microparameters were used
+    has_micro = 'microparameters' in results[0]
 
-    print(f"\nOverall Performance (n={len(results)} subjects):")
-    print(f"  Mean MAE:       {mean(maes):.4f} cm")
-    print(f"  Median MAE:     {median(maes):.4f} cm")
-    if len(maes) > 1:
-        print(f"  Std Dev MAE:    {stdev(maes):.4f} cm")
-    print(f"  Min MAE:        {min(maes):.4f} cm")
-    print(f"  Max MAE:        {max(maes):.4f} cm")
-    print(f"\n  Mean Max Error: {mean(max_errors):.4f} cm")
-    print(f"  Worst Error:    {max(max_errors):.4f} cm")
+    # Overall MAE statistics (macro only)
+    maes_macro = [r.get('mae_macro_only', r.get('mae', 0.0)) for r in results]
+    max_errors_macro = [r.get('max_error_macro_only', r.get('max_error', 0.0)) for r in results]
+
+    print(f"\nOverall Performance - Macroparameters Only (n={len(results)} subjects):")
+    print(f"  Mean MAE:       {mean(maes_macro):.4f} cm")
+    print(f"  Median MAE:     {median(maes_macro):.4f} cm")
+    if len(maes_macro) > 1:
+        print(f"  Std Dev MAE:    {stdev(maes_macro):.4f} cm")
+    print(f"  Min MAE:        {min(maes_macro):.4f} cm")
+    print(f"  Max MAE:        {max(maes_macro):.4f} cm")
+    print(f"\n  Mean Max Error: {mean(max_errors_macro):.4f} cm")
+    print(f"  Worst Error:    {max(max_errors_macro):.4f} cm")
+
+    if has_micro:
+        # Statistics with microparameters
+        maes_micro = [r['mae_with_micro'] for r in results]
+        max_errors_micro = [r['max_error_with_micro'] for r in results]
+        improvements = [r['improvement_percent'] for r in results]
+
+        print(f"\nOverall Performance - With Microparameters (n={len(results)} subjects):")
+        print(f"  Mean MAE:       {mean(maes_micro):.4f} cm")
+        print(f"  Median MAE:     {median(maes_micro):.4f} cm")
+        if len(maes_micro) > 1:
+            print(f"  Std Dev MAE:    {stdev(maes_micro):.4f} cm")
+        print(f"  Min MAE:        {min(maes_micro):.4f} cm")
+        print(f"  Max MAE:        {max(maes_micro):.4f} cm")
+        print(f"\n  Mean Max Error: {mean(max_errors_micro):.4f} cm")
+        print(f"  Worst Error:    {max(max_errors_micro):.4f} cm")
+
+        print(f"\nImprovement from Microparameters:")
+        print(f"  Mean Improvement:   {mean(improvements):.2f}%")
+        print(f"  Median Improvement: {median(improvements):.2f}%")
+        print(f"  Min Improvement:    {min(improvements):.2f}%")
+        print(f"  Max Improvement:    {max(improvements):.2f}%")
 
     # Per-measurement error statistics
-    print(f"\nPer-Measurement Error Analysis:")
+    print(f"\nPer-Measurement Error Analysis (Macroparameters Only):")
     print(f"  {'Measurement':<25s} {'Mean Error':<12s} {'Max Error':<12s}")
     print(f"  {'-'*25} {'-'*12} {'-'*12}")
 
     for measure in MEASUREMENTS:
-        errors = [r['measurements'][measure]['actual_error'] for r in results]
-        mean_err = mean(errors)
-        max_err = max(errors)
-        print(f"  {measure:<25s} {mean_err:<12.4f} {max_err:<12.4f}")
+        measurements = [r.get('measurements_macro_only', r.get('measurements', {})) for r in results]
+        errors = [m[measure]['actual_error'] for m in measurements if measure in m]
+        if errors:
+            mean_err = mean(errors)
+            max_err = max(errors)
+            print(f"  {measure:<25s} {mean_err:<12.4f} {max_err:<12.4f}")
 
     # Identify best and worst subjects
-    best = min(results, key=lambda x: x['mae'])
-    worst = max(results, key=lambda x: x['mae'])
+    best_macro = min(results, key=lambda x: x.get('mae_macro_only', x.get('mae', float('inf'))))
+    worst_macro = max(results, key=lambda x: x.get('mae_macro_only', x.get('mae', 0.0)))
 
-    print(f"\nBest Subject:  {best['subject_id']} (MAE: {best['mae']:.4f} cm)")
-    print(f"Worst Subject: {worst['subject_id']} (MAE: {worst['mae']:.4f} cm)")
+    print(f"\nBest Subject (Macros):  {best_macro['subject_id']} (MAE: {best_macro.get('mae_macro_only', best_macro.get('mae', 0.0)):.4f} cm)")
+    print(f"Worst Subject (Macros): {worst_macro['subject_id']} (MAE: {worst_macro.get('mae_macro_only', worst_macro.get('mae', 0.0)):.4f} cm)")
+
+    if has_micro:
+        best_micro = min(results, key=lambda x: x['mae_with_micro'])
+        worst_micro = max(results, key=lambda x: x['mae_with_micro'])
+        print(f"\nBest Subject (With Micros):  {best_micro['subject_id']} (MAE: {best_micro['mae_with_micro']:.4f} cm)")
+        print(f"Worst Subject (With Micros): {worst_micro['subject_id']} (MAE: {worst_micro['mae_with_micro']:.4f} cm)")
 
 
 def main():
@@ -404,6 +668,13 @@ def main():
         help='Type of rig to add (default: default_no_toes)'
     )
 
+    parser.add_argument(
+        '--sensitivity-matrix',
+        type=str,
+        default=None,
+        help='Path to sensitivity matrix JSON for microparameter adjustments (optional)'
+    )
+
     args = parser.parse_args()
 
     print("=" * 80)
@@ -422,6 +693,17 @@ def main():
         # Load models
         print("\nLoading models...")
         models, macro_bounds = load_models(args.models)
+
+        # Load sensitivity matrix if provided
+        sensitivity_matrix = None
+        if args.sensitivity_matrix:
+            sensitivity_path = Path(args.sensitivity_matrix)
+            if not sensitivity_path.exists():
+                raise FileNotFoundError(f"Sensitivity matrix file not found: {sensitivity_path}")
+
+            with open(sensitivity_path, 'r') as f:
+                sensitivity_matrix = json.load(f)
+            print(f"Loaded sensitivity matrix: {len(sensitivity_matrix)} microparameters")
 
         # Determine if batch or single
         is_batch = 'measurements' in input_data and isinstance(input_data['measurements'], list)
@@ -447,7 +729,8 @@ def main():
                 result = test_single_subject(
                     subject_id, target_measurements,
                     models, macro_bounds,
-                    args.method, args.rig_type
+                    args.method, args.rig_type,
+                    sensitivity_matrix
                 )
                 results.append(result)
 
@@ -471,7 +754,8 @@ def main():
             result = test_single_subject(
                 'single_test', target_measurements,
                 models, macro_bounds,
-                args.method, args.rig_type
+                args.method, args.rig_type,
+                sensitivity_matrix
             )
 
             # Save single result

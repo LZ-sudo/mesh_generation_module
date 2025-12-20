@@ -317,7 +317,7 @@ def main():
     else:
         blender_path = finder.find_blender()
         if not blender_path:
-            print("\n✗ ERROR: Could not find Blender installation!")
+            print("\n ERROR: Could not find Blender installation!")
             print("\nPlease either:")
             print("  1. Install Blender from https://www.blender.org/download/")
             print("  2. Set BLENDER_PATH environment variable to your Blender executable")
@@ -333,18 +333,18 @@ def main():
 
     # If find-only mode, exit here
     if args.find_only:
-        print(f"\n✓ Blender executable: {blender_path}")
+        print(f"\n Blender executable: {blender_path}")
         return 0
 
     # Validate script argument
     if not args.script:
-        print("\n✗ ERROR: --script argument is required")
+        print("\n ERROR: --script argument is required")
         print("Usage: python run_blender.py --script generate_human.py -- --config config.json")
         return 1
 
     script_path = Path(args.script)
     if not script_path.exists():
-        print(f"\n✗ ERROR: Script file not found: {script_path}")
+        print(f"\n ERROR: Script file not found: {script_path}")
         return 1
 
     # Build Blender command
@@ -372,10 +372,10 @@ def main():
         result = subprocess.run(blender_cmd)
         return result.returncode
     except KeyboardInterrupt:
-        print("\n\n✗ Interrupted by user")
+        print("\n\n Interrupted by user")
         return 130
     except Exception as e:
-        print(f"\n✗ Error running Blender: {e}")
+        print(f"\n Error running Blender: {e}")
         return 1
 
 
