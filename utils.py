@@ -302,13 +302,15 @@ def check_mpfb2_installed() -> bool:
         return False
 
 
-def apply_macro_settings_to_human(basemesh, macro_settings: Dict[str, Any]):
+def apply_macro_settings_to_human(basemesh, macro_settings: Dict[str, Any], bake: bool = True):
     """
     Apply macro settings to the human basemesh.
 
     Args:
         basemesh: Blender object representing the human basemesh
         macro_settings: Dictionary of validated macro settings
+        bake: Whether to bake targets after applying (default True).
+              Set to False if microparameters will be applied afterward.
     """
     import importlib
     import bpy
@@ -341,15 +343,81 @@ def apply_macro_settings_to_human(basemesh, macro_settings: Dict[str, Any]):
     except Exception as e:
         print(f"  Warning: Could not reapply macro details: {e}")
 
-    # Now bake all targets to permanently apply them to the mesh
-    print("Baking all targets to mesh...")
-    TargetService.bake_targets(basemesh)
+    # Optionally bake targets (skip if microparameters will be applied next)
+    if bake:
+        print("Baking all targets to mesh...")
+        TargetService.bake_targets(basemesh)
 
-    # Final scene update
-    bpy.context.view_layer.update()
-    basemesh.data.update()
+        # Final scene update
+        bpy.context.view_layer.update()
+        basemesh.data.update()
 
     print("✓ Macro settings applied successfully")
+
+
+def apply_microparameters_to_human(basemesh, micro_settings: Dict[str, float], bake: bool = True, verbose: bool = False):
+    """
+    Apply microparameters (MPFB2 targets) to the human basemesh for fine-tuning.
+
+    This should be called AFTER apply_macro_settings_to_human with bake=False.
+
+    Args:
+        basemesh: Blender object representing the human basemesh
+        micro_settings: Dictionary mapping microparameter names to values (0.0-1.0)
+        bake: Whether to bake all targets (macros + micros) after applying (default True)
+        verbose: Whether to print detailed progress information
+
+    Example:
+        >>> micro_settings = {
+        ...     'measure-shoulder-dist-incr': 0.8,
+        ...     'measure-upperarm-length-incr': 0.6
+        ... }
+        >>> apply_microparameters_to_human(basemesh, micro_settings)
+    """
+    if not micro_settings:
+        if verbose:
+            print("No microparameters to apply")
+        return
+
+    import importlib
+    import bpy
+
+    mpfb_path = _get_mpfb_module_path()
+    TargetService = importlib.import_module(f'{mpfb_path}.services.targetservice').TargetService
+
+    if verbose:
+        print(f"\nApplying {len(micro_settings)} microparameters...")
+
+    # Load each microparameter target
+    for micro_name, micro_value in micro_settings.items():
+        try:
+            # Get full path for the target
+            full_path = TargetService.target_full_path(micro_name)
+
+            if full_path is None:
+                print(f"  ✗ Warning: Could not find target '{micro_name}'")
+                continue
+
+            # Load target with specified value
+            TargetService.load_target(basemesh, full_path, weight=micro_value, name=micro_name)
+
+            if verbose:
+                print(f"  ✓ {micro_name}: {micro_value:.3f}")
+
+        except Exception as e:
+            print(f"  ✗ Error loading '{micro_name}': {e}")
+
+    # Bake all targets (macros + micros) to apply them permanently
+    if bake:
+        print("Baking all targets (macros + microparameters) to mesh...")
+        TargetService.bake_targets(basemesh)
+
+        # Final scene update
+        bpy.context.view_layer.update()
+        basemesh.data.update()
+
+        if verbose:
+            print("  ✓ All targets baked to mesh")
 
 
 def add_standard_rig(basemesh, rig_type: str = "default") -> Tuple[Any, Any]:
