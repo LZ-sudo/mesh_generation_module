@@ -6,4 +6,4 @@ output/
 test_scripts/
 json_inputs/
 lookup_tables/
-parameters_inference_weight_files/
+macroparameters_inference_weight_files/

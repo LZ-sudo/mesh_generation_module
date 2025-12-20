@@ -178,12 +178,9 @@ def main():
     
     # Apply macro settings
     print("\n" + "-"*70)
-    print("STEP 4: Applying Macroparameters")
+    print("STEP 4: Applying Body Parameters")
     print("-"*70)
-
-    # Check if microparameters will be applied (skip baking if yes)
-    has_micros = 'micro_settings' in config and config['micro_settings']
-
+    
     try:
         # Don't bake macros if microparameters will be applied next
         utils.apply_macro_settings_to_human(basemesh, validated_macro, bake=not has_micros)
@@ -192,23 +189,6 @@ def main():
         import traceback
         traceback.print_exc()
         sys.exit(1)
-
-    # Apply microparameters if provided
-    if has_micros:
-        print("\n" + "-"*70)
-        print("STEP 4.5: Applying Microparameters (Fine-Tuning)")
-        print("-"*70)
-
-        try:
-            # Apply micros with bake=True to bake both macros and micros together
-            utils.apply_microparameters_to_human(basemesh, config['micro_settings'], bake=True, verbose=args.verbose)
-            print(f"✓ Applied {len(config['micro_settings'])} microparameters")
-        except Exception as e:
-            print(f"\n⚠ Warning: Failed to apply microparameters: {e}")
-            print("Continuing with macroparameters only...")
-            import traceback
-            if args.verbose:
-                traceback.print_exc()
     
     # Add rigging
     armature = None

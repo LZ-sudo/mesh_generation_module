@@ -25,10 +25,7 @@ from pathlib import Path
 from scipy.optimize import minimize, differential_evolution
 
 # Configuration
-# NOTE: This will be overridden by values loaded from the model file
-# Default to full parameter set (matching train_model.py)
 MACROPARAMETERS = ['age', 'muscle', 'weight', 'height', 'proportions']
-EXCLUDED_MACROPARAMETERS = {}
 MEASUREMENTS = [
     'height_cm', 'shoulder_width_cm', 'hip_width_cm', 'head_width_cm',
     'neck_length_cm', 'upper_arm_length_cm', 'forearm_length_cm', 'hand_length_cm'
@@ -77,10 +74,8 @@ def load_models(model_path):
         model_path: Path to pickle file with trained models
 
     Returns:
-        tuple: (models dict, macro_bounds dict, macroparameters list, excluded_macroparameters dict)
+        tuple: (models dict, macro_bounds dict)
     """
-    global MACROPARAMETERS, EXCLUDED_MACROPARAMETERS
-
     print(f"Loading models from: {model_path}")
 
     if not Path(model_path).exists():
@@ -92,19 +87,8 @@ def load_models(model_path):
     models = data['models']
     macro_bounds = data['macro_bounds']
 
-    # Load macroparameter configuration from model file (for compatibility)
-    if 'macroparameters' in data:
-        MACROPARAMETERS = data['macroparameters']
-    if 'excluded_macroparameters' in data:
-        EXCLUDED_MACROPARAMETERS = data['excluded_macroparameters']
-
     print(f"Loaded {len(models)} models")
-    print(f"\nMacroparameter configuration:")
-    print(f"  Predicted parameters: {MACROPARAMETERS}")
-    if EXCLUDED_MACROPARAMETERS:
-        print(f"  Excluded (fixed) parameters: {EXCLUDED_MACROPARAMETERS}")
-
-    print(f"\nMacroparameter bounds (for optimization):")
+    print(f"\nMacroparameter bounds:")
     for param, (min_val, max_val) in macro_bounds.items():
         print(f"  {param:12s}: [{min_val:.3f}, {max_val:.3f}]")
     print("-" * 80)
@@ -247,9 +231,8 @@ def find_macroparameters(models, macro_bounds, target_measurements,
     else:
         raise ValueError(f"Unknown method: {method}")
 
-    # Package results - add optimized params + excluded params with defaults
+    # Package results
     macroparameters = {param: macro_values[i] for i, param in enumerate(MACROPARAMETERS)}
-    macroparameters.update(EXCLUDED_MACROPARAMETERS)  # Add muscle=0.5, weight=0.5
     predicted_measurements = predict_measurements(models, macro_values)
 
     # Calculate errors
@@ -412,155 +395,6 @@ def process_batch(input_path, output_path, models, macro_bounds, method, weights
     print("="*80)
 
     return results_df
-
-
-# ============================================================================
-# MICROPARAMETER ADJUSTMENT FUNCTIONS
-# ============================================================================
-
-def load_sensitivity_matrix(sensitivity_file=None):
-    """
-    Load microparameter sensitivity matrix.
-
-    Args:
-        sensitivity_file: Path to sensitivity JSON file. If None, uses default location.
-
-    Returns:
-        Dictionary mapping microparameter names to sensitivity coefficients
-    """
-    if sensitivity_file is None:
-        script_dir = Path(__file__).parent.absolute()
-        parent_dir = script_dir.parent.absolute()
-        sensitivity_file = parent_dir / 'macroparameters_generation_and_analysis' / 'micro_sensitivity_matrix.json'
-
-    if not sensitivity_file.exists():
-        print(f"\nWarning: Sensitivity matrix not found at {sensitivity_file}")
-        print("Run build_micro_sensitivity_table.py first to generate it.")
-        return None
-
-    with open(sensitivity_file, 'r') as f:
-        sensitivity_matrix = json.load(f)
-
-    return sensitivity_matrix
-
-
-def calculate_micro_adjustments(macro_measurements, target_measurements, sensitivity_matrix, verbose=True):
-    """
-    Calculate microparameter adjustments based on residuals and sensitivity matrix.
-
-    Args:
-        macro_measurements: Measurements from macroparameter-only mesh
-        target_measurements: Target measurements to match
-        sensitivity_matrix: Dictionary of microparameter sensitivities
-        verbose: Print detailed results
-
-    Returns:
-        Dictionary of microparameter names to adjustment values (0.0-1.0)
-    """
-    if sensitivity_matrix is None:
-        if verbose:
-            print("\nNo sensitivity matrix available - skipping micro adjustments")
-        return {}
-
-    # Calculate residuals
-    residuals = {
-        measure: target_measurements.get(measure, 0) - macro_measurements.get(measure, 0)
-        for measure in MEASUREMENTS
-    }
-
-    if verbose:
-        print("\n" + "="*80)
-        print("MICROPARAMETER ADJUSTMENT CALCULATION")
-        print("="*80)
-        print("\nMeasurement Residuals (Target - Macro):")
-        for measure in MEASUREMENTS:
-            residual = residuals[measure]
-            print(f"  {measure:25s}: {residual:+.2f} cm")
-
-    # Microparameter mapping
-    # Format: {micro_name: primary_measurement}
-    micro_mapping = {
-        'measure-upperleg-height-incr': 'height_cm',
-        'measure-lowerleg-height-incr': 'height_cm',
-        'measure-napetowaist-dist-incr': 'height_cm',
-        'measure-shoulder-dist-incr': 'shoulder_width_cm',
-        'measure-hips-circ-incr': 'hip_width_cm',
-        'head-scale-horiz-incr': 'head_width_cm',
-        'neck-scale-vert-incr': 'neck_length_cm',
-        'measure-upperarm-length-incr': 'upper_arm_length_cm',
-        'measure-lowerarm-length-incr': 'forearm_length_cm',
-        'l-hand-scale-incr': 'hand_length_cm',
-    }
-
-    # Calculate micro adjustments
-    micro_adjustments = {}
-
-    if verbose:
-        print("\nMicroparameter Adjustments:")
-
-    for micro_name, primary_measure in micro_mapping.items():
-        if micro_name not in sensitivity_matrix:
-            if verbose:
-                print(f"  {micro_name:35s}: No sensitivity data")
-            continue
-
-        # Get sensitivity coefficient for this micro's primary measurement
-        sensitivity = sensitivity_matrix[micro_name].get(primary_measure, 0)
-
-        if abs(sensitivity) < 0.01:  # Skip if sensitivity too low
-            micro_adjustments[micro_name] = 0.5  # Neutral value
-            if verbose:
-                print(f"  {micro_name:35s}: Neutral (low sensitivity)")
-            continue
-
-        # Calculate required adjustment: residual / sensitivity
-        # Residual is in cm, sensitivity is in cm/unit
-        # So adjustment is in units (0-1 range)
-        required_adjustment = residuals[primary_measure] / sensitivity
-
-        # For height, split adjustment across 3 components
-        if primary_measure == 'height_cm':
-            if 'upperleg' in micro_name:
-                required_adjustment *= 0.4  # 40% to upper leg
-            elif 'lowerleg' in micro_name:
-                required_adjustment *= 0.4  # 40% to lower leg
-            elif 'napetowaist' in micro_name:
-                required_adjustment *= 0.2  # 20% to torso
-
-        # Start from neutral (0.5) and add adjustment
-        micro_value = 0.5 + required_adjustment
-
-        # Clamp to valid range [0.0, 1.0]
-        micro_value = max(0.0, min(1.0, micro_value))
-
-        micro_adjustments[micro_name] = micro_value
-
-        if verbose:
-            print(f"  {micro_name:35s}: {micro_value:.3f} (Δ{required_adjustment:+.3f})")
-
-    if verbose:
-        print("="*80)
-
-    return micro_adjustments
-
-
-def apply_micro_adjustments(macroparameters, micro_adjustments):
-    """
-    Combine macroparameters with microparameter adjustments.
-
-    Args:
-        macroparameters: Dictionary of macroparameter values
-        micro_adjustments: Dictionary of microparameter values
-
-    Returns:
-        Dictionary with both macros and micros combined
-    """
-    combined = {
-        'macroparameters': macroparameters,
-        'microparameters': micro_adjustments
-    }
-
-    return combined
 
 
 def main():
