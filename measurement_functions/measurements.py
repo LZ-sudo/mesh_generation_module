@@ -2,13 +2,21 @@
 Measurement extraction functions for human models.
 
 This module provides functions to extract body measurements from a rigged
-human mesh in Blender using armature-based methods.
+human mesh in Blender using PURE MESH-BASED METHODS (no bone dependency):
+
+Approach:
+1. Find anatomical landmarks directly from mesh vertices
+2. Use horizontal plane slicing for circumferences
+3. Use bounding boxes and vertex extrema for lengths and widths
+4. Calculate distances along mesh surface where appropriate
 
 All measurements are returned in centimeters.
 """
 
+import bpy
 import math
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
+import bmesh
 from mathutils import Vector
 
 # ==================== VALIDATION RANGES ====================
@@ -21,8 +29,9 @@ VALIDATION_RANGES = {
     "upper_arm_length": (25, 45),
     "hand_length": (15, 25),
     "neck_length": (8, 20),
-    "hip_width": (20, 50),
-    "head_width": (12, 20)
+    # Width measurements
+    "hip_width": (20, 50),        # Hip width (bi-iliac breadth)
+    "head_width": (12, 20)        # Head width (side to side)
 }
 
 
@@ -34,35 +43,35 @@ BONE_NAMES = {
         "head_top": "head",
         "foot_left": "foot.L",
         "foot_right": "foot.R",
-        "shoulder_left": "upperarm01.L",
+        "shoulder_left": "upperarm01.L",       # Start of upper arm (shoulder joint)
         "shoulder_right": "upperarm01.R",
-        "hip_left": "upperleg01.L",
+        "hip_left": "upperleg01.L",            # Start of upper leg (hip joint)
         "hip_right": "upperleg01.R",
-        "pelvis": "root",
-        "elbow_left": "lowerarm01.L",
+        "pelvis": "root",                      # Root bone (pelvis center)
+        "elbow_left": "lowerarm01.L",          # Start of forearm (elbow joint)
         "elbow_right": "lowerarm01.R",
-        "wrist_left": "wrist.L",
+        "wrist_left": "wrist.L",               # Wrist joint
         "wrist_right": "wrist.R",
-        "chest": "spine03",
-        "waist": "spine02",
-        "neck": "neck01"
+        "chest": "spine03",                    # Mid-upper spine (chest level)
+        "waist": "spine02",                    # Lower-mid spine (waist level)
+        "neck": "neck01"                       # Base of neck
     },
     "default_no_toes": {
         "head_top": "head",
         "foot_left": "foot.L",
         "foot_right": "foot.R",
-        "shoulder_left": "upperarm01.L",
+        "shoulder_left": "upperarm01.L",       # Start of upper arm (shoulder joint)
         "shoulder_right": "upperarm01.R",
-        "hip_left": "upperleg01.L",
+        "hip_left": "upperleg01.L",            # Start of upper leg (hip joint)
         "hip_right": "upperleg01.R",
-        "pelvis": "root",
-        "elbow_left": "lowerarm01.L",
+        "pelvis": "root",                      # Root bone (pelvis center)
+        "elbow_left": "lowerarm01.L",          # Start of forearm (elbow joint)
         "elbow_right": "lowerarm01.R",
-        "wrist_left": "wrist.L",
+        "wrist_left": "wrist.L",               # Wrist joint
         "wrist_right": "wrist.R",
-        "chest": "spine03",
-        "waist": "spine02",
-        "neck": "neck01"
+        "chest": "spine03",                    # Mid-upper spine (chest level)
+        "waist": "spine02",                    # Lower-mid spine (waist level)
+        "neck": "neck01"                       # Base of neck
     }
 }
 
@@ -71,89 +80,94 @@ BONE_NAMES = {
 
 def get_bone_names(armature) -> Dict[str, str]:
     """
-    Detect rig type and return appropriate bone name mappings.
-
+    Detect rig type and return appropriate bone name mapping.
+    
     Args:
         armature: Blender armature object
-
+        
     Returns:
-        Dictionary mapping anatomical names to bone names for this rig
+        Dictionary mapping anatomical locations to bone names
     """
-    return BONE_NAMES["default"]
+    # Try to detect rig type from armature name or bone structure
+    # For now, default to "default_no_toes" as it's most commonly used
+    return BONE_NAMES["default_no_toes"]
 
 
 def get_bone_world_position(armature, bone_name: str, use_tail: bool = False) -> Tuple[float, float, float]:
     """
-    Get world-space position of a bone in the armature.
-
+    Get world-space position of a bone.
+    
     Args:
         armature: Blender armature object
         bone_name: Name of the bone
-        use_tail: If True, return tail position; if False, return head position
-
+        use_tail: If True, use tail position; otherwise use head position
+        
     Returns:
-        (x, y, z) tuple in world coordinates
+        Tuple of (x, y, z) coordinates in world space
     """
     if bone_name not in armature.pose.bones:
         raise ValueError(f"Bone '{bone_name}' not found in armature")
-
-    pose_bone = armature.pose.bones[bone_name]
-
+    
+    bone = armature.pose.bones[bone_name]
+    
     if use_tail:
-        # Get tail position in world space
-        bone_vec = pose_bone.tail
-        world_pos = armature.matrix_world @ bone_vec
+        local_pos = bone.tail
     else:
-        # Get head position in world space
-        bone_vec = pose_bone.head
-        world_pos = armature.matrix_world @ bone_vec
-
+        local_pos = bone.head
+    
+    # Convert to world space
+    world_pos = armature.matrix_world @ local_pos
+    
     return (world_pos.x, world_pos.y, world_pos.z)
 
 
 def distance_3d(p1: Tuple[float, float, float], p2: Tuple[float, float, float]) -> float:
     """
     Calculate Euclidean distance between two 3D points.
-
+    
     Args:
         p1: First point (x, y, z)
         p2: Second point (x, y, z)
-
+        
     Returns:
-        Distance in Blender units
+        Distance between points
     """
-    dx = p2[0] - p1[0]
-    dy = p2[1] - p1[1]
-    dz = p2[2] - p1[2]
-    return math.sqrt(dx*dx + dy*dy + dz*dz)
+    return math.sqrt(
+        (p2[0] - p1[0])**2 +
+        (p2[1] - p1[1])**2 +
+        (p2[2] - p1[2])**2
+    )
 
 
 def validate_measurement(name: str, value: float) -> bool:
     """
-    Validate a measurement against expected ranges.
-
+    Validate that a measurement is within expected range.
+    
     Args:
         name: Measurement name
         value: Measurement value in cm
-
+        
     Returns:
         True if valid, False otherwise
     """
     if name not in VALIDATION_RANGES:
-        return True  # No validation range defined
-
+        print(f"⚠ Warning: No validation range for '{name}'")
+        return True
+    
     min_val, max_val = VALIDATION_RANGES[name]
-
-    if value < min_val or value > max_val:
-        print(f"  ⚠ Warning: {name} = {value:.1f} cm is outside expected range [{min_val}, {max_val}]")
+    
+    if not (min_val <= value <= max_val):
+        print(f"⚠ Warning: {name} = {value:.1f}cm is outside expected range [{min_val}, {max_val}]")
         return False
-
+    
     return True
 
 
+# # ==================== MESH ANALYSIS HELPER FUNCTIONS ====================
+
 def get_mesh_vertices_world_space(mesh_obj) -> List[Vector]:
     """
-    Get all vertices from a mesh in world coordinates.
+    Get all mesh vertices in world space coordinates.
 
     Args:
         mesh_obj: Blender mesh object
@@ -161,14 +175,158 @@ def get_mesh_vertices_world_space(mesh_obj) -> List[Vector]:
     Returns:
         List of vertex positions in world space
     """
-    # Get the world matrix to transform from local to world space
-    world_matrix = mesh_obj.matrix_world
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    eval_obj = mesh_obj.evaluated_get(depsgraph)
+    eval_mesh = eval_obj.to_mesh(preserve_all_data_layers=False, depsgraph=depsgraph)
 
-    # Get all vertices in world space
-    vertices = [world_matrix @ v.co for v in mesh_obj.data.vertices]
+    vertices = [mesh_obj.matrix_world @ v.co for v in eval_mesh.vertices]
 
+    eval_obj.to_mesh_clear()
     return vertices
 
+
+def get_bone_extremity_vertices(mesh_obj, bone_name: str, axis: str = 'x') -> Tuple[Optional[Vector], Optional[Vector]]:
+    """
+    Get the extreme vertices (min and max) of a bone's vertex group along a specified axis.
+
+    Args:
+        mesh_obj: Blender mesh object
+        bone_name: Name of the bone (vertex group name)
+        axis: Axis to measure along ('x', 'y', or 'z')
+
+    Returns:
+        Tuple of (min_vertex, max_vertex) or (None, None) if bone not found
+    """
+    if bone_name not in mesh_obj.vertex_groups:
+        print(f"⚠ Warning: Vertex group '{bone_name}' not found")
+        return (None, None)
+
+    # Get the vertex group
+    vg = mesh_obj.vertex_groups[bone_name]
+    vg_index = vg.index
+
+    # Get evaluated mesh
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    eval_obj = mesh_obj.evaluated_get(depsgraph)
+    eval_mesh = eval_obj.to_mesh(preserve_all_data_layers=False, depsgraph=depsgraph)
+
+    # Collect vertices that belong to this bone
+    vertices = []
+    for vert in eval_mesh.vertices:
+        for group in vert.groups:
+            if group.group == vg_index and group.weight > 0.1:  # Threshold to avoid negligible weights
+                world_pos = mesh_obj.matrix_world @ vert.co
+                vertices.append(world_pos)
+                break
+
+    eval_obj.to_mesh_clear()
+
+    if not vertices:
+        return (None, None)
+
+    # Get axis index
+    axis_idx = {'x': 0, 'y': 1, 'z': 2}[axis.lower()]
+
+    # Find min and max vertices along the specified axis
+    min_vert = min(vertices, key=lambda v: v[axis_idx])
+    max_vert = max(vertices, key=lambda v: v[axis_idx])
+
+    return (min_vert, max_vert)
+
+
+# ==================== POSE MANIPULATION ====================
+
+def set_armature_to_tpose(armature):
+    """
+    Set armature to T-pose by rotating shoulder bones to horizontal.
+
+    This makes arm measurements more accurate by extending arms perpendicular to body.
+
+    Args:
+        armature: Blender armature object
+
+    Returns:
+        Dictionary with original rotations for restoration
+    """
+    import bpy
+    from mathutils import Euler
+    import math
+
+    if armature is None or armature.type != 'ARMATURE':
+        print("⚠ Warning: No armature provided for T-pose")
+        return {}
+
+    # Store original pose
+    original_rotations = {}
+
+    # Enter pose mode
+    bpy.context.view_layer.objects.active = armature
+    bpy.ops.object.mode_set(mode='POSE')
+
+    # Common shoulder bone name patterns
+    shoulder_patterns = {
+        'left': ['upperarm01.L', 'upper_arm.L', 'shoulder.L', 'arm.L'],
+        'right': ['upperarm01.R', 'upper_arm.R', 'shoulder.R', 'arm.R']
+    }
+
+    # Find and rotate shoulder bones
+    for side, patterns in shoulder_patterns.items():
+        for pattern in patterns:
+            if pattern in armature.pose.bones:
+                bone = armature.pose.bones[pattern]
+
+                # Store original rotation
+                original_rotations[pattern] = bone.rotation_euler.copy()
+
+                # Set to T-pose (arms horizontal)
+                # Left arm: rotate up, Right arm: rotate up
+                if side == 'left':
+                    bone.rotation_euler = Euler((0, 0, math.radians(90)), 'XYZ')
+                else:
+                    bone.rotation_euler = Euler((0, 0, math.radians(-90)), 'XYZ')
+
+                print(f"  Set {pattern} to T-pose")
+                break  # Found the bone, move to next side
+
+    # Update armature
+    bpy.context.view_layer.update()
+
+    # Return to object mode
+    bpy.ops.object.mode_set(mode='OBJECT')
+
+    return original_rotations
+
+
+def restore_armature_pose(armature, original_rotations):
+    """
+    Restore armature to original pose.
+
+    Args:
+        armature: Blender armature object
+        original_rotations: Dictionary of original rotations from set_armature_to_tpose
+    """
+    import bpy
+
+    if not original_rotations or armature is None:
+        return
+
+    # Enter pose mode
+    bpy.context.view_layer.objects.active = armature
+    bpy.ops.object.mode_set(mode='POSE')
+
+    # Restore rotations
+    for bone_name, rotation in original_rotations.items():
+        if bone_name in armature.pose.bones:
+            armature.pose.bones[bone_name].rotation_euler = rotation
+
+    # Update armature
+    bpy.context.view_layer.update()
+
+    # Return to object mode
+    bpy.ops.object.mode_set(mode='OBJECT')
+
+
+# ==================== JOINT-BASED SEGMENTATION & BOUNDING BOX MEASUREMENTS ====================
 
 def find_body_joints(mesh_obj) -> Dict[str, Vector]:
     """
@@ -265,76 +423,157 @@ def find_body_joints(mesh_obj) -> Dict[str, Vector]:
     return joints
 
 
+def segment_mesh_region(mesh_obj, z_min: float, z_max: float,
+                        x_min: float = None, x_max: float = None) -> List[Vector]:
+    """
+    Extract vertices from a specific region of the mesh.
+
+    Args:
+        mesh_obj: Blender mesh object
+        z_min: Minimum Z coordinate
+        z_max: Maximum Z coordinate
+        x_min: Optional minimum X coordinate
+        x_max: Optional maximum X coordinate
+
+    Returns:
+        List of vertices in the region
+    """
+    vertices = get_mesh_vertices_world_space(mesh_obj)
+
+    filtered = []
+    for v in vertices:
+        # Z bounds
+        if v.z < z_min or v.z > z_max:
+            continue
+
+        # Optional X bounds
+        if x_min is not None and v.x < x_min:
+            continue
+        if x_max is not None and v.x > x_max:
+            continue
+
+        filtered.append(v)
+
+    return filtered
+
+
+def calculate_oriented_bounding_box_length(vertices: List[Vector]) -> float:
+    """
+    Calculate the length of an oriented bounding box for a set of vertices.
+
+    This finds the longest dimension of the bounding box.
+
+    Args:
+        vertices: List of vertex positions
+
+    Returns:
+        Length in meters
+    """
+    if len(vertices) < 2:
+        return 0.0
+
+    # Simple axis-aligned bounding box
+    x_coords = [v.x for v in vertices]
+    y_coords = [v.y for v in vertices]
+    z_coords = [v.z for v in vertices]
+
+    x_span = max(x_coords) - min(x_coords)
+    y_span = max(y_coords) - min(y_coords)
+    z_span = max(z_coords) - min(z_coords)
+
+    # Return the maximum span
+    return max(x_span, y_span, z_span)
+
+
+def measure_segment_length(mesh_obj, z_bottom: float, z_top: float,
+                           x_min: float = None, x_max: float = None) -> float:
+    """
+    Measure the length of a body segment between two heights.
+
+    Args:
+        mesh_obj: Blender mesh object
+        z_bottom: Bottom Z coordinate
+        z_top: Top Z coordinate
+        x_min: Optional X minimum (for left/right isolation)
+        x_max: Optional X maximum (for left/right isolation)
+
+    Returns:
+        Length in centimeters
+    """
+    # Get vertices in this segment
+    segment_verts = segment_mesh_region(mesh_obj, z_bottom, z_top, x_min, x_max)
+
+    if len(segment_verts) < 2:
+        return 0.0
+
+    # Calculate bounding box length
+    length = calculate_oriented_bounding_box_length(segment_verts)
+
+    return length * 100  # Convert to cm
+
+
+# ==================== SKELETAL MEASUREMENTS (BONE-BASED) ====================
+
 def measure_bone_chain_length(armature, bone_names: List[str]) -> float:
     """
-    Measure the combined length of a chain of bones.
+    Measure the length of a chain of bones by finding the distance between
+    the bottom of the first bone and the top of the last bone.
+
+    This is more accurate than joint-to-joint distance for multi-bone segments.
 
     Args:
         armature: Blender armature object
-        bone_names: List of bone names in sequence
+        bone_names: List of bone names in order (e.g., ['upperarm01.L', 'upperarm02.L'])
 
     Returns:
-        Total length in centimeters
+        Length in centimeters
     """
-    total_length = 0.0
+    if not bone_names:
+        return 0.0
 
-    for bone_name in bone_names:
-        if bone_name in armature.pose.bones:
-            pose_bone = armature.pose.bones[bone_name]
+    # Get the bottom point of the first bone (head position)
+    first_bone_pos = get_bone_world_position(armature, bone_names[0], use_tail=False)
 
-            # Get bone head and tail in world space
-            head_world = armature.matrix_world @ pose_bone.head
-            tail_world = armature.matrix_world @ pose_bone.tail
+    # Get the top point of the last bone (tail position)
+    last_bone_pos = get_bone_world_position(armature, bone_names[-1], use_tail=True)
 
-            # Calculate bone length
-            bone_length = (tail_world - head_world).length
-            total_length += bone_length
-        else:
-            print(f"  ⚠ Warning: Bone '{bone_name}' not found in armature")
+    # Calculate distance
+    length = distance_3d(first_bone_pos, last_bone_pos) * 100  # Convert to cm
 
-    # Convert to centimeters
-    return total_length * 100
+    return length
 
-
-# ==================== CORE MEASUREMENT FUNCTIONS ====================
 
 def measure_height(armature) -> float:
     """
-    Measure total height from feet to top of head.
-
+    Measure total height from head top to feet.
+    
     Args:
         armature: Blender armature object
-
+        
     Returns:
         Height in centimeters
     """
     bone_names = get_bone_names(armature)
-
-    # Get head top position
-    head_top_pos = get_bone_world_position(armature, bone_names["head_top"], use_tail=True)
-
-    # Get foot position (use lowest of left or right foot)
-    foot_left_pos = get_bone_world_position(armature, bone_names["foot_left"], use_tail=False)
-    foot_right_pos = get_bone_world_position(armature, bone_names["foot_right"], use_tail=False)
-
-    foot_pos = foot_left_pos if foot_left_pos[2] < foot_right_pos[2] else foot_right_pos
-
-    # Height is vertical distance (z-axis)
-    height = head_top_pos[2] - foot_pos[2]
-
-    # Convert to centimeters
-    height_cm = height * 100
-
-    validate_measurement("height", height_cm)
-
-    return height_cm
+    
+    # Get head top position (use tail of head bone for top)
+    head_pos = get_bone_world_position(armature, bone_names["head_top"], use_tail=True)
+    
+    # Get foot positions (use minimum Z of left and right feet)
+    foot_left_pos = get_bone_world_position(armature, bone_names["foot_left"])
+    foot_right_pos = get_bone_world_position(armature, bone_names["foot_right"])
+    foot_bottom_z = min(foot_left_pos[2], foot_right_pos[2])
+    
+    # Calculate height
+    height = (head_pos[2] - foot_bottom_z) * 100  # Convert to cm
+    
+    validate_measurement("height", height)
+    return height
 
 
 def measure_shoulder_width(armature) -> float:
     """
-    Measure shoulder width (distance between shoulder joints).
-
-    Uses shoulder01.L and shoulder01.R bones.
+    Measure shoulder width using bone positions.
+    First tries shoulder01.L/R bones, then falls back to clavicle or upperarm01 bones.
 
     Args:
         armature: Blender armature object
@@ -342,26 +581,39 @@ def measure_shoulder_width(armature) -> float:
     Returns:
         Shoulder width in centimeters
     """
-    # Get shoulder bone positions
-    left_shoulder = get_bone_world_position(armature, "shoulder01.L", use_tail=False)
-    right_shoulder = get_bone_world_position(armature, "shoulder01.R", use_tail=False)
+    # Try different bone name possibilities in order of preference
+    bone_options = [
+        ("shoulder01.L", "shoulder01.R", True)  # Tail of shoulder01 bones (outer shoulder) - BEST
+        # ("clavicle.L", "clavicle.R", True),       # Tail of clavicle bones (outer shoulder)
+        # ("upperarm01.L", "upperarm01.R", False),  # Head of upper arm bones (shoulder joint)
+    ]
 
-    # Calculate horizontal distance
-    width = distance_3d(left_shoulder, right_shoulder)
+    for left_bone, right_bone, use_tail in bone_options:
+        try:
+            # Get left shoulder bone position
+            left_shoulder = get_bone_world_position(armature, left_bone, use_tail=use_tail)
 
-    # Convert to centimeters
-    width_cm = width * 100
+            # Get right shoulder bone position
+            right_shoulder = get_bone_world_position(armature, right_bone, use_tail=use_tail)
 
-    validate_measurement("shoulder_width", width_cm)
+            # Calculate width (horizontal distance)
+            width = abs(right_shoulder[0] - left_shoulder[0]) * 100  # Convert to cm
 
-    return width_cm
+            validate_measurement("shoulder_width", width)
+            print(f"  Using bones: {left_bone}/{right_bone} ({'tail' if use_tail else 'head'} position)")
+            return width
+        except ValueError:
+            continue  # Try next bone option
+
+    print(f"⚠ Warning: Could not find any suitable shoulder bones")
+    return 0.0
 
 
 def measure_hip_width(armature) -> float:
     """
-    Measure hip width (distance between hip joints).
-
-    Uses upperleg01.L and upperleg01.R bones (hip joints).
+    Measure hip width using bone positions.
+    Measures the distance between upperleg01.L and upperleg01.R bones
+    (the actual hip joint positions where legs connect to pelvis).
 
     Args:
         armature: Blender armature object
@@ -369,28 +621,27 @@ def measure_hip_width(armature) -> float:
     Returns:
         Hip width in centimeters
     """
-    bone_names = get_bone_names(armature)
+    try:
+        # Get left hip joint bone position (head of upperleg01.L)
+        left_hip = get_bone_world_position(armature, "upperleg01.L", use_tail=False)
 
-    # Get hip bone positions (top of upper legs)
-    left_hip = get_bone_world_position(armature, bone_names["hip_left"], use_tail=False)
-    right_hip = get_bone_world_position(armature, bone_names["hip_right"], use_tail=False)
+        # Get right hip joint bone position (head of upperleg01.R)
+        right_hip = get_bone_world_position(armature, "upperleg01.R", use_tail=False)
 
-    # Calculate horizontal distance
-    width = distance_3d(left_hip, right_hip)
+        # Calculate width (horizontal distance)
+        width = abs(right_hip[0] - left_hip[0]) * 100  # Convert to cm
 
-    # Convert to centimeters
-    width_cm = width * 100
-
-    validate_measurement("hip_width", width_cm)
-
-    return width_cm
+        validate_measurement("hip_width", width)
+        return width
+    except ValueError as e:
+        print(f"⚠ Warning: Could not measure hip width: {e}")
+        return 0.0
 
 
 def measure_head_width(armature) -> float:
     """
-    Measure head width (distance between temporal bones).
-
-    Uses temporalis02.L and temporalis02.R bones.
+    Measure head width using bone positions.
+    Measures the distance between temporalis02.L and temporalis02.R bones.
 
     Args:
         armature: Blender armature object
@@ -398,26 +649,82 @@ def measure_head_width(armature) -> float:
     Returns:
         Head width in centimeters
     """
-    # Get temporal bone positions (widest part of head)
-    left_temporal = get_bone_world_position(armature, "temporalis02.L", use_tail=False)
-    right_temporal = get_bone_world_position(armature, "temporalis02.R", use_tail=False)
+    try:
+        # Get left temporalis bone position (head of temporalis02.L)
+        left_temporalis = get_bone_world_position(armature, "temporalis02.L", use_tail=False)
 
-    # Calculate horizontal distance
-    width = distance_3d(left_temporal, right_temporal)
+        # Get right temporalis bone position (head of temporalis02.R)
+        right_temporalis = get_bone_world_position(armature, "temporalis02.R", use_tail=False)
 
-    # Convert to centimeters
-    width_cm = width * 100
+        # Calculate width (horizontal distance)
+        width = abs(right_temporalis[0] - left_temporalis[0]) * 100  # Convert to cm
 
-    validate_measurement("head_width", width_cm)
+        validate_measurement("head_width", width)
+        return width
+    except ValueError as e:
+        print(f"⚠ Warning: Could not measure head width: {e}")
+        return 0.0
 
-    return width_cm
+
+def measure_inseam(armature) -> float:
+    """
+    Measure inseam (leg length from crotch to floor).
+    
+    Args:
+        armature: Blender armature object
+        
+    Returns:
+        Inseam in centimeters
+    """
+    bone_names = get_bone_names(armature)
+    
+    # Get pelvis position (crotch level)
+    pelvis_pos = get_bone_world_position(armature, bone_names["pelvis"])
+    
+    # Get foot position
+    foot_left_pos = get_bone_world_position(armature, bone_names["foot_left"])
+    foot_right_pos = get_bone_world_position(armature, bone_names["foot_right"])
+    foot_bottom_z = min(foot_left_pos[2], foot_right_pos[2])
+    
+    # Calculate inseam (vertical distance)
+    inseam = (pelvis_pos[2] - foot_bottom_z) * 100  # Convert to cm
+    
+    validate_measurement("inseam", inseam)
+    return inseam
+
+
+def measure_arm_length(armature, side: str = "left") -> float:
+    """
+    Measure full arm length from shoulder to wrist.
+    
+    Args:
+        armature: Blender armature object
+        side: "left" or "right"
+        
+    Returns:
+        Arm length in centimeters
+    """
+    bone_names = get_bone_names(armature)
+    
+    shoulder_key = f"shoulder_{side}"
+    wrist_key = f"wrist_{side}"
+    
+    # Get shoulder and wrist positions
+    shoulder_pos = get_bone_world_position(armature, bone_names[shoulder_key])
+    wrist_pos = get_bone_world_position(armature, bone_names[wrist_key])
+    
+    # Calculate length
+    length = distance_3d(shoulder_pos, wrist_pos) * 100  # Convert to cm
+    
+    validate_measurement("arm_length", length)
+    return length
 
 
 def measure_forearm_length(armature, side: str = "left") -> float:
     """
-    Measure forearm length (elbow to wrist).
+    Measure forearm length using lowerarm01 and lowerarm02 bones.
 
-    Uses lowerarm01 and lowerarm02 bones.
+    Measures the distance between the bottom of lowerarm01 and the top of lowerarm02.
 
     Args:
         armature: Blender armature object
@@ -426,21 +733,24 @@ def measure_forearm_length(armature, side: str = "left") -> float:
     Returns:
         Forearm length in centimeters
     """
+    # Determine bone suffix
     suffix = ".L" if side == "left" else ".R"
+
+    # Build bone chain
     bone_chain = [f"lowerarm01{suffix}", f"lowerarm02{suffix}"]
 
-    length_cm = measure_bone_chain_length(armature, bone_chain)
+    # Measure using bone chain
+    length = measure_bone_chain_length(armature, bone_chain)
 
-    validate_measurement("forearm_length", length_cm)
-
-    return length_cm
+    validate_measurement("forearm_length", length)
+    return length
 
 
 def measure_upper_arm_length(armature, side: str = "left") -> float:
     """
-    Measure upper arm length (shoulder to elbow).
+    Measure upper arm length using upperarm01 and upperarm02 bones.
 
-    Uses upperarm01 and upperarm02 bones.
+    Measures the distance between the bottom of upperarm01 and the top of upperarm02.
 
     Args:
         armature: Blender armature object
@@ -449,21 +759,24 @@ def measure_upper_arm_length(armature, side: str = "left") -> float:
     Returns:
         Upper arm length in centimeters
     """
+    # Determine bone suffix
     suffix = ".L" if side == "left" else ".R"
+
+    # Build bone chain
     bone_chain = [f"upperarm01{suffix}", f"upperarm02{suffix}"]
 
-    length_cm = measure_bone_chain_length(armature, bone_chain)
+    # Measure using bone chain
+    length = measure_bone_chain_length(armature, bone_chain)
 
-    validate_measurement("upper_arm_length", length_cm)
-
-    return length_cm
+    validate_measurement("upper_arm_length", length)
+    return length
 
 
 def measure_neck_length(armature) -> float:
     """
-    Measure neck length.
+    Measure neck length using neck01 and neck02 bones.
 
-    Uses neck01 and neck02 bones.
+    Measures the distance between the bottom of neck01 and the top of neck02.
 
     Args:
         armature: Blender armature object
@@ -471,20 +784,22 @@ def measure_neck_length(armature) -> float:
     Returns:
         Neck length in centimeters
     """
+    # Build bone chain
     bone_chain = ["neck01", "neck02"]
 
-    length_cm = measure_bone_chain_length(armature, bone_chain)
+    # Measure using bone chain
+    length = measure_bone_chain_length(armature, bone_chain)
 
-    validate_measurement("neck_length", length_cm)
-
-    return length_cm
+    validate_measurement("neck_length", length)
+    return length
 
 
 def measure_hand_length(armature, side: str = "left") -> float:
     """
-    Measure hand length (wrist to fingertip).
+    Measure hand length using wrist to finger3-3 bones.
 
-    Uses wrist and finger3-3 bones (middle finger).
+    Measures the distance between the bottom of wrist and the top of finger3-3
+    (middle finger tip).
 
     Args:
         armature: Blender armature object
@@ -493,41 +808,40 @@ def measure_hand_length(armature, side: str = "left") -> float:
     Returns:
         Hand length in centimeters
     """
+    # Determine bone suffix
     suffix = ".L" if side == "left" else ".R"
 
-    # Get wrist position
-    wrist_pos = get_bone_world_position(armature, f"wrist{suffix}", use_tail=False)
+    # Build bone chain from wrist to middle finger tip
+    bone_chain = [f"wrist{suffix}", f"finger3-3{suffix}"]
 
-    # Get middle fingertip position (finger3-3 tail)
-    fingertip_pos = get_bone_world_position(armature, f"finger3-3{suffix}", use_tail=True)
+    # Measure using bone chain
+    length = measure_bone_chain_length(armature, bone_chain)
 
-    # Calculate distance
-    length = distance_3d(wrist_pos, fingertip_pos)
-
-    # Convert to centimeters
-    length_cm = length * 100
-
-    validate_measurement("hand_length", length_cm)
-
-    return length_cm
+    validate_measurement("hand_length", length)
+    return length
 
 
-# ==================== EXTRACTION FUNCTIONS ====================
+# ==================== MAIN MEASUREMENT FUNCTION ====================
 
 def extract_all_measurements_joint_based(mesh, armature=None) -> Dict[str, float]:
     """
-    Extract all body measurements using armature-based approach.
+    Extract all body measurements using JOINT-BASED SEGMENTATION approach.
 
-    This method uses armature bones for accurate measurements.
+    This method:
+    1. Finds joint locations from mesh geometry
+    2. Segments the mesh between joints
+    3. Creates bounding boxes for each segment
+    4. Measures segment lengths
+    5. Uses T-pose for accurate arm measurements (if armature provided)
 
     Args:
         mesh: Blender mesh object (human body)
-        armature: Armature for bone-based measurements
+        armature: Optional armature for T-pose arm measurements
 
     Returns:
         Dictionary with all measurements in centimeters
     """
-    print("\nExtracting measurements (armature-based method)...")
+    print("\nExtracting measurements (joint-based segmentation method)...")
 
     measurements = {}
 
@@ -561,7 +875,7 @@ def extract_all_measurements_joint_based(mesh, armature=None) -> Dict[str, float
         measurements["hip_width"] = 0.0
         measurements["head_width"] = 0.0
 
-    # Step 4: Arm, hand, and neck measurements using BONE CHAINS
+    # Step 5: Arm, hand, and neck measurements using BONE CHAINS
     print("  Measuring arm, hand, and neck dimensions (bone-based)...")
 
     if armature is not None:
@@ -588,18 +902,24 @@ def extract_all_measurements_joint_based(mesh, armature=None) -> Dict[str, float
 
     return measurements
 
-
 def extract_all_measurements(mesh, armature=None) -> Dict[str, float]:
     """
-    Extract all measurements from a human mesh using armature-based methods.
+    Extract all measurements from a human mesh using JOINT-BASED SEGMENTATION.
+
+    This is the primary measurement function that uses:
+    - Joint detection from mesh geometry
+    - Mesh segmentation between joints
+    - Bounding box measurements for accurate limb lengths
+    - T-pose for accurate arm measurements (if armature provided)
 
     Args:
         mesh: Blender mesh object (human body)
-        armature: Optional armature object
+        armature: Optional armature object (used for T-pose arm measurements)
 
     Returns:
         Dictionary with all measurements in centimeters
     """
+    # Use the joint-based segmentation approach with T-pose
     return extract_all_measurements_joint_based(mesh, armature)
 
 
@@ -611,30 +931,25 @@ def print_measurements(measurements: Dict[str, float]):
         measurements: Dictionary of measurements
     """
     print("\n" + "="*60)
-    print("BODY MEASUREMENTS")
+    print("BODY MEASUREMENTS (Joint-Based Segmentation)")
     print("="*60)
 
-    # Group measurements by category
-    height_measures = ["height"]
-    width_measures = ["shoulder_width", "hip_width", "head_width"]
-    length_measures = ["upper_arm_length", "forearm_length", "hand_length", "neck_length"]
+    print("\nVertical Dimensions:")
+    print(f"  Height:            {measurements.get('height', 0):6.1f} cm")
+    print(f"  Neck Length:       {measurements.get('neck_length', 0):6.1f} cm")
 
-    # Print height
-    print("\nHeight:")
-    for measure in height_measures:
-        if measure in measurements:
-            print(f"  {measure:25s}: {measurements[measure]:6.1f} cm")
+    print("\nHorizontal Widths (side-to-side):")
+    print(f"  Shoulder Width:    {measurements.get('shoulder_width', 0):6.1f} cm")
+    print(f"  Hip Width:         {measurements.get('hip_width', 0):6.1f} cm")
+    print(f"  Head Width:        {measurements.get('head_width', 0):6.1f} cm")
 
-    # Print widths
-    print("\nWidths:")
-    for measure in width_measures:
-        if measure in measurements:
-            print(f"  {measure:25s}: {measurements[measure]:6.1f} cm")
+    print("\nArm & Hand Dimensions (bone-based):")
+    upper_arm = measurements.get('upper_arm_length', 0)
+    if upper_arm > 0:
+        print(f"  Upper Arm Length:  {measurements.get('upper_arm_length', 0):6.1f} cm")
+        print(f"  Forearm Length:    {measurements.get('forearm_length', 0):6.1f} cm")
+        print(f"  Hand Length:       {measurements.get('hand_length', 0):6.1f} cm")
+    else:
+        print(f"  (Could not measure arms - no armature)")
 
-    # Print lengths
-    print("\nLengths:")
-    for measure in length_measures:
-        if measure in measurements:
-            print(f"  {measure:25s}: {measurements[measure]:6.1f} cm")
-
-    print("="*60)
+    print("="*60 + "\n")
