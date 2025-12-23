@@ -36,7 +36,7 @@ if str(parent_dir) not in sys.path:
     sys.path.insert(0, str(parent_dir))
 
 # Import utilities from parent directory
-import utils
+import utils as utils
 
 # Import measurements from same directory (measurement_functions)
 if str(script_dir) not in sys.path:

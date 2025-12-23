@@ -22,7 +22,7 @@ script_dir = Path(__file__).parent.absolute()
 if str(script_dir) not in sys.path:
     sys.path.insert(0, str(script_dir))
 
-import utils
+import utils as utils
 
 
 def parse_arguments():
@@ -30,7 +30,7 @@ def parse_arguments():
     Parse command line arguments.
     
     When running with Blender, arguments after '--' are passed to the script.
-    Example: python run_blender.py --script generate_human.py -- --config human_female.json
+    Example: python run_blender.py --script generation_scripts/generate_human.py -- --config human_female.json
     
     Returns:
         Parsed arguments

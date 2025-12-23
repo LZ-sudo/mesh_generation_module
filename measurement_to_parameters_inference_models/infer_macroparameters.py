@@ -1,18 +1,22 @@
 """
-Infer Macroparameters from Body Measurements
+Infer Macroparameters from Body Measurements using Inverse Mapping Models
 
-This script uses trained models to find the best macroparameter values
-that produce a mesh matching target body measurements.
+This script uses trained models (TabM, TabPFN, or XGBoost) to directly predict
+macroparameter values from body measurements (inverse mapping: measurements → macroparameters).
+
+No optimization is required - predictions are instantaneous.
+
+Supports:
+- TabM (single multi-output model)
+- TabPFN (5 independent models)
+- XGBoost (5 independent models)
 
 Usage:
     # From JSON file with measurements
-    python infer_macroparameters.py --input measurements.json --models macroparameters_inference_models.pkl
+    python infer_macroparameters.py --input measurements.json --models model.pkl
 
     # From CSV file (batch mode)
-    python infer_macroparameters.py --input measurements.csv --models macroparameters_inference_models.pkl --output results.csv
-
-    # With custom optimization settings
-    python infer_macroparameters.py --input measurements.json --models macroparameters_inference_models.pkl --method both
+    python infer_macroparameters.py --input measurements.csv --models model.pkl --output results.csv
 """
 
 import pandas as pd
@@ -22,7 +26,13 @@ import json
 import argparse
 import sys
 from pathlib import Path
-from scipy.optimize import minimize, differential_evolution
+
+# Try to import PyTorch for TabM models
+try:
+    import torch
+    TORCH_AVAILABLE = True
+except ImportError:
+    TORCH_AVAILABLE = False
 
 # Configuration
 MACROPARAMETERS = ['age', 'muscle', 'weight', 'height', 'proportions']
@@ -70,11 +80,15 @@ def load_models(model_path):
     """
     Load trained models from pickle file.
 
+    Supports both formats:
+    - Old format: data['models'] = dict of 5 models
+    - TabM format: data['model'] = single multi-output model
+
     Args:
         model_path: Path to pickle file with trained models
 
     Returns:
-        tuple: (models dict, macro_bounds dict)
+        tuple: (model_data dict, macro_bounds dict)
     """
     print(f"Loading models from: {model_path}")
 
@@ -84,179 +98,169 @@ def load_models(model_path):
     with open(model_path, 'rb') as f:
         data = pickle.load(f)
 
-    models = data['models']
     macro_bounds = data['macro_bounds']
 
-    print(f"Loaded {len(models)} models")
+    # Detect model format
+    if 'model' in data:
+        # TabM format: single multi-output model
+        model_type = data.get('model_type', 'TabM_MultiOutput')
+        print(f"Loaded TabM model (type: {model_type})")
+        print(f"  Ensemble size: {data.get('ensemble_size', 'unknown')}")
+
+        model_data = {
+            'type': 'tabm',
+            'model': data['model'],
+            'scalers': data.get('scalers', {}),
+            'ensemble_size': data.get('ensemble_size', 128)
+        }
+    elif 'models' in data:
+        # Old format: multiple independent models
+        models = data['models']
+        print(f"Loaded {len(models)} independent models (XGBoost/TabPFN)")
+
+        model_data = {
+            'type': 'multi',
+            'models': models
+        }
+    else:
+        raise ValueError("Unknown model format: neither 'model' nor 'models' found in pickle file")
+
     print(f"\nMacroparameter bounds:")
     for param, (min_val, max_val) in macro_bounds.items():
         print(f"  {param:12s}: [{min_val:.3f}, {max_val:.3f}]")
     print("-" * 80)
 
-    return models, macro_bounds
+    return model_data, macro_bounds
 
 
-def predict_measurements(models, macroparameters):
+def predict_macroparameters(model_data, measurements):
     """
-    Predict all measurements from given macroparameters.
+    Predict macroparameters from measurements using inverse mapping models.
+
+    Supports both TabM (single model) and multi-model (TabPFN/XGBoost) formats.
 
     Args:
-        models: Dictionary of trained models
-        macroparameters: Array or dict of macroparameter values
+        model_data: Dictionary containing model info and trained model(s)
+        measurements: Dictionary of measurement values
 
     Returns:
-        Dictionary of predicted measurements
+        Dictionary of predicted macroparameter values (as Python floats)
     """
-    # Convert to DataFrame with proper column names to avoid sklearn warning
-    if isinstance(macroparameters, dict):
-        macro_df = pd.DataFrame([macroparameters], columns=MACROPARAMETERS)
+    # Convert to DataFrame for consistency
+    measurements_df = pd.DataFrame([measurements], columns=MEASUREMENTS)
+
+    if model_data['type'] == 'tabm':
+        # TabM: single multi-output model
+        model = model_data['model']
+        scalers = model_data['scalers']
+
+        # Standardize input
+        X_scaled = scalers['X_scaler'].transform(measurements_df.values)
+
+        # Check for NaN after scaling
+        if np.isnan(X_scaled).any():
+            print(f"WARNING: NaN detected after input scaling!")
+            print(f"  Input measurements: {measurements_df.values}")
+            print(f"  Scaled values: {X_scaled}")
+
+        # Predict with TabM model
+        model.eval()
+        if TORCH_AVAILABLE:
+            with torch.no_grad():
+                X_tensor = torch.FloatTensor(X_scaled)
+                predictions = model(X_tensor, None)  # (1, k, 5)
+                predictions_mean = predictions.mean(dim=1)  # Average ensemble: (1, 5)
+                y_pred_scaled = predictions_mean.cpu().numpy()
+
+                # Check for NaN in predictions
+                if np.isnan(y_pred_scaled).any():
+                    print(f"WARNING: NaN detected in model predictions!")
+                    print(f"  Predictions (scaled): {y_pred_scaled}")
+        else:
+            raise RuntimeError("PyTorch is required for TabM models. Install with: pip install torch")
+
+        # Inverse transform predictions
+        y_pred = scalers['y_scaler'].inverse_transform(y_pred_scaled)[0]
+
+        # Check for NaN after inverse transform
+        if np.isnan(y_pred).any():
+            print(f"WARNING: NaN detected after inverse transform!")
+            print(f"  Predictions (unscaled): {y_pred}")
+
+        # Convert to dictionary
+        macroparameters = {}
+        for i, param_name in enumerate(MACROPARAMETERS):
+            macroparameters[param_name] = float(y_pred[i])
+
+    elif model_data['type'] == 'multi':
+        # Multiple independent models (TabPFN/XGBoost)
+        models = model_data['models']
+
+        macroparameters = {}
+        for param_name in MACROPARAMETERS:
+            prediction = models[param_name].predict(measurements_df.values)[0]
+            # Convert numpy float32 to Python float for JSON serialization
+            macroparameters[param_name] = float(prediction)
+
     else:
-        macro_values = np.array(macroparameters).flatten()
-        macro_df = pd.DataFrame([macro_values], columns=MACROPARAMETERS)
+        raise ValueError(f"Unknown model type: {model_data['type']}")
 
-    # Predict each measurement
-    predictions = {}
-    for measure in MEASUREMENTS:
-        predictions[measure] = models[measure].predict(macro_df)[0]
-
-    return predictions
+    return macroparameters
 
 
-def objective_function(macroparameters, models, target_measurements, weights=None):
+def find_macroparameters(model_data, macro_bounds, target_measurements,
+                        method='direct', weights=None, verbose=True):
     """
-    Objective function to minimize: weighted sum of squared errors.
+    Predict macroparameters directly from target measurements using inverse mapping.
+
+    Supports TabM (single model) and TabPFN/XGBoost (multiple models).
+
+    NOTE: The 'method' and 'weights' parameters are kept for backward compatibility
+    but are ignored since direct inverse mapping is used.
 
     Args:
-        macroparameters: Array of macroparameter values
-        models: Dictionary of trained models
-        target_measurements: Dictionary of target measurement values
-        weights: Optional weights for each measurement
-
-    Returns:
-        Total weighted error
-    """
-    # Predict measurements from macroparameters
-    predicted = predict_measurements(models, macroparameters)
-
-    # Calculate weighted squared errors
-    total_error = 0.0
-    for measure in MEASUREMENTS:
-        if measure in target_measurements:
-            error = predicted[measure] - target_measurements[measure]
-            weight = weights.get(measure, 1.0) if weights else 1.0
-            total_error += weight * (error ** 2)
-
-    return total_error
-
-
-def find_macroparameters(models, macro_bounds, target_measurements,
-                        method='differential_evolution', weights=None, verbose=True):
-    """
-    Find macroparameters that best match target measurements.
-
-    Args:
-        models: Dictionary of trained models
-        macro_bounds: Dictionary of macroparameter bounds
+        model_data: Dictionary containing model info and trained model(s)
+        macro_bounds: Dictionary of macroparameter bounds (used for validation)
         target_measurements: Dictionary of target measurements
-        method: Optimization method ('differential_evolution' or 'both')
-        weights: Optional weights for each measurement
+        method: Ignored (kept for backward compatibility)
+        weights: Ignored (kept for backward compatibility)
         verbose: Print detailed results
 
     Returns:
         Dictionary with results
     """
+    model_type_name = "TabM" if model_data['type'] == 'tabm' else "Multi-Model"
+
     if verbose:
         print("\n" + "="*80)
-        print("FINDING MACROPARAMETERS")
+        print(f"PREDICTING MACROPARAMETERS ({model_type_name} Direct Inverse Mapping)")
         print("="*80)
-        print("\nTarget Measurements:")
+        print("\nInput Measurements:")
         for measure, value in target_measurements.items():
             print(f"  {measure:25s}: {value:.2f} cm")
 
-    # Prepare bounds for optimization
-    bounds = [(macro_bounds[param][0], macro_bounds[param][1])
-              for param in MACROPARAMETERS]
+    # Direct prediction using inverse mapping
+    macroparameters = predict_macroparameters(model_data, target_measurements)
 
-    # Optimize
-    if method == 'differential_evolution':
-        if verbose:
-            print("\nOptimization method: Differential Evolution (global search)")
-        result = differential_evolution(
-            func=objective_function,
-            bounds=bounds,
-            args=(models, target_measurements, weights),
-            strategy='best1bin',
-            maxiter=1000,
-            popsize=15,
-            atol=0.01,
-            tol=0.01,
-            seed=42,
-            workers=1,
-            polish=True,
-            updating='deferred'
-        )
-        macro_values = result.x
-
-    elif method == 'both':
-        if verbose:
-            print("\nOptimization method: Hybrid (global + local)")
-            print("  Step 1: Differential Evolution...")
-        result_de = differential_evolution(
-            func=objective_function,
-            bounds=bounds,
-            args=(models, target_measurements, weights),
-            strategy='best1bin',
-            maxiter=1000,
-            popsize=15,
-            atol=0.01,
-            tol=0.01,
-            seed=42,
-            workers=1,
-            polish=True,
-            updating='deferred'
-        )
-
-        if verbose:
-            print("  Step 2: L-BFGS-B refinement...")
-        result = minimize(
-            fun=objective_function,
-            x0=result_de.x,
-            args=(models, target_measurements, weights),
-            method='L-BFGS-B',
-            bounds=bounds,
-            options={'maxiter': 1000, 'ftol': 1e-6}
-        )
-        macro_values = result.x
-
-    else:
-        raise ValueError(f"Unknown method: {method}")
-
-    # Package results
-    macroparameters = {param: macro_values[i] for i, param in enumerate(MACROPARAMETERS)}
-    predicted_measurements = predict_measurements(models, macro_values)
-
-    # Calculate errors
-    errors = {}
-    absolute_errors = []
-    for measure in MEASUREMENTS:
-        if measure in target_measurements:
-            error = predicted_measurements[measure] - target_measurements[measure]
-            errors[measure] = error
-            absolute_errors.append(abs(error))
-
-    mae = np.mean(absolute_errors)
-    max_error = np.max(absolute_errors)
+    # Clip to bounds
+    for param in MACROPARAMETERS:
+        min_val, max_val = macro_bounds[param]
+        macroparameters[param] = np.clip(macroparameters[param], min_val, max_val)
 
     result_dict = {
         'macroparameters': macroparameters,
-        'predicted_measurements': predicted_measurements,
-        'errors': errors,
-        'mae': mae,
-        'max_error': max_error
+        'predicted_measurements': {},  # Not available with inverse mapping
+        'errors': {},  # Not available with inverse mapping
+        'mae': 0.0,  # Not available with inverse mapping
+        'max_error': 0.0  # Not available with inverse mapping
     }
 
     if verbose:
-        print_results(result_dict, target_measurements, macro_bounds)
+        print("\nPredicted Macroparameters:")
+        for param, value in macroparameters.items():
+            min_val, max_val = macro_bounds[param]
+            print(f"  {param:12s}: {value:.4f}  (range: [{min_val:.3f}, {max_val:.3f}])")
+        print("="*80)
 
     return result_dict
 
