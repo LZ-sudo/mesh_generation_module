@@ -63,7 +63,7 @@ if str(parent_dir) not in sys.path:
     sys.path.insert(0, str(parent_dir))
 
 # Import from infer_macroparameters
-from infer_macroparameters import load_models, find_macroparameters, MEASUREMENTS
+from infer_macroparameters import load_models, find_macroparameters, MEASUREMENTS, parse_gender, parse_race
 
 
 def convert_numpy_types(obj):
@@ -90,7 +90,7 @@ def convert_numpy_types(obj):
         return obj
 
 
-def generate_and_measure_mesh(macroparameters, microparameters=None, rig_type='default_no_toes'):
+def generate_and_measure_mesh(macroparameters, microparameters=None, rig_type='default_no_toes', gender=0.0, race=None):
     """
     Generate a mesh with given macroparameters (and optionally microparameters) and measure it.
 
@@ -101,18 +101,23 @@ def generate_and_measure_mesh(macroparameters, microparameters=None, rig_type='d
     4. Returns the measurements
 
     Args:
-        macroparameters: Dictionary of macroparameter values
+        macroparameters: Dictionary of macroparameter values (age, muscle, weight, height, proportions)
         microparameters: Optional dictionary of microparameter values
         rig_type: Type of rig to add
+        gender: Gender value (0.0 for female, 1.0 for male), default 0.0
+        race: Race dictionary (e.g., {'asian': 1.0, 'caucasian': 0.0, 'african': 0.0}), default Asian
 
     Returns:
         Dictionary of actual measurements from the generated mesh
     """
+    # Default race if not provided
+    if race is None:
+        race = {'asian': 1.0, 'caucasian': 0.0, 'african': 0.0}
+
     # Build config for generate_human.py
-    # Fixed parameters match what was used in the lookup table training data
     config = {
         'macro_settings': {
-            'gender': macroparameters['gender'],        # Female
+            'gender': gender,
             'age': macroparameters['age'],
             'muscle': macroparameters['muscle'],
             'weight': macroparameters['weight'],
@@ -120,7 +125,7 @@ def generate_and_measure_mesh(macroparameters, microparameters=None, rig_type='d
             'proportions': macroparameters['proportions'],
             'cupsize': 0.5,       # Medium
             'firmness': 0.5,      # Medium
-            'race': macroparameters['race']
+            'race': race
         },
         'output': {
             'directory': str(parent_dir / 'output'),
@@ -299,7 +304,7 @@ except Exception as e:
     return measurements
 
 
-def run_iterative_microparameter_adjustment(target_measurements, macroparameters, rig_type='default_no_toes'):
+def run_iterative_microparameter_adjustment(target_measurements, macroparameters, rig_type='default_no_toes', gender=0.0, race=None):
     """
     Run iterative microparameter adjustment via Blender subprocess.
 
@@ -308,27 +313,31 @@ def run_iterative_microparameter_adjustment(target_measurements, macroparameters
 
     Args:
         target_measurements: Dictionary of target measurements
-        macroparameters: Dictionary of macroparameters (only the 5 optimized params)
+        macroparameters: Dictionary of macroparameters (only the 5 optimized params: age, muscle, weight, height, proportions)
         rig_type: Type of rig to use
+        gender: Gender value (0.0 for female, 1.0 for male), default 0.0
+        race: Race dictionary (e.g., {'asian': 1.0, 'caucasian': 0.0, 'african': 0.0}), default Asian
 
     Returns:
         Dictionary of adjusted microparameters (in output format with -incr/-decr suffixes)
     """
     import tempfile
 
-    # Build full macro settings (must match what generate_and_measure_mesh uses)
+    # Default race if not provided
+    if race is None:
+        race = {'asian': 1.0, 'caucasian': 0.0, 'african': 0.0}
+
+    # Build full macro settings (flat dict for adjust_microparameters.py)
     full_macros = {
-        'macro_settings': {
-            'gender': macroparameters['gender'],        # Female
-            'age': macroparameters['age'],
-            'muscle': macroparameters['muscle'],
-            'weight': macroparameters['weight'],
-            'height': macroparameters['height'],
-            'proportions': macroparameters['proportions'],
-            'cupsize': 0.5,       # Medium
-            'firmness': 0.5,      # Medium
-            'race': macroparameters['race']
-        }
+        'gender': gender,
+        'age': macroparameters['age'],
+        'muscle': macroparameters['muscle'],
+        'weight': macroparameters['weight'],
+        'height': macroparameters['height'],
+        'proportions': macroparameters['proportions'],
+        'cupsize': 0.5,       # Medium
+        'firmness': 0.5,      # Medium
+        'race': race
     }
 
     # Create temporary files for input/output
@@ -399,7 +408,7 @@ def run_iterative_microparameter_adjustment(target_measurements, macroparameters
                 path.unlink()
 
 
-def test_single_subject(subject_id, target_measurements, models, macro_bounds, method, rig_type, use_micro_adjustment=True):
+def test_single_subject(subject_id, target_measurements, models, macro_bounds, method, rig_type, use_micro_adjustment=True, gender=0.0, race=None):
     """
     Test model on a single subject's measurements.
 
@@ -411,10 +420,15 @@ def test_single_subject(subject_id, target_measurements, models, macro_bounds, m
         method: Optimization method
         rig_type: Type of rig to use
         use_micro_adjustment: Whether to apply iterative microparameter adjustment (default True)
+        gender: Gender value (0.0 for female, 1.0 for male), default 0.0
+        race: Race dictionary (e.g., {'asian': 1.0, 'caucasian': 0.0, 'african': 0.0}), default Asian
 
     Returns:
         Dictionary with test results for this subject
     """
+    # Default race if not provided
+    if race is None:
+        race = {'asian': 1.0, 'caucasian': 0.0, 'african': 0.0}
     print(f"\n{'='*80}")
     print(f"Testing Subject: {subject_id}")
     print(f"{'='*80}")
@@ -433,7 +447,9 @@ def test_single_subject(subject_id, target_measurements, models, macro_bounds, m
     print("\nGenerating and measuring mesh (macroparameters only)...")
     actual_measurements_macro = generate_and_measure_mesh(
         result['macroparameters'],
-        rig_type=rig_type
+        rig_type=rig_type,
+        gender=gender,
+        race=race
     )
 
     # Calculate errors with macros only
@@ -480,7 +496,9 @@ def test_single_subject(subject_id, target_measurements, models, macro_bounds, m
         adjusted_micros = run_iterative_microparameter_adjustment(
             target_measurements,
             result['macroparameters'],
-            rig_type=rig_type
+            rig_type=rig_type,
+            gender=gender,
+            race=race
         )
 
         print("\nAdjusted Microparameters:")
@@ -492,7 +510,9 @@ def test_single_subject(subject_id, target_measurements, models, macro_bounds, m
         actual_measurements_with_micro = generate_and_measure_mesh(
             result['macroparameters'],
             microparameters=adjusted_micros,
-            rig_type=rig_type
+            rig_type=rig_type,
+            gender=gender,
+            race=race
         )
 
         # Calculate errors with macros + micros
@@ -590,8 +610,22 @@ def save_results_to_csv(results, category, output_path):
 
     # Write CSV
     if csv_rows:
+        # Collect all unique fieldnames from all rows (handles variable microparameters)
+        all_fieldnames = set()
+        for row in csv_rows:
+            all_fieldnames.update(row.keys())
+
+        # Sort fieldnames for consistent column ordering
+        # Keep important columns first
+        priority_fields = ['category', 'subject_id', 'mae_macro_only', 'max_error_macro_only',
+                          'mae_with_micro', 'max_error_with_micro', 'improvement_percent']
+        fieldnames = [f for f in priority_fields if f in all_fieldnames]
+
+        # Add remaining fields (macros, micros, measurements) alphabetically
+        remaining_fields = sorted([f for f in all_fieldnames if f not in priority_fields])
+        fieldnames.extend(remaining_fields)
+
         with open(output_path, 'w', newline='') as f:
-            fieldnames = list(csv_rows[0].keys())
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
             writer.writerows(csv_rows)
@@ -756,8 +790,16 @@ def main():
             description = input_data.get('description', '')
             measurements_list = input_data['measurements']
 
+            # Parse gender and race from batch (applies to all subjects in batch)
+            gender_input = input_data.get('gender', 'female')
+            gender = parse_gender(gender_input)
+            race_input = input_data.get('race', 'asian')
+            race = parse_race(race_input)
+
             print(f"\nBatch Mode: {category}")
             print(f"Description: {description}")
+            print(f"Gender: {'Male' if gender > 0.5 else 'Female'}")
+            print(f"Race: {', '.join([f'{k}={v:.2f}' for k, v in race.items()])}")
             print(f"Number of subjects: {len(measurements_list)}")
 
             results = []
@@ -772,7 +814,9 @@ def main():
                     subject_id, target_measurements,
                     models, macro_bounds,
                     args.method, args.rig_type,
-                    use_micro_adjustment
+                    use_micro_adjustment,
+                    gender=gender,
+                    race=race
                 )
                 results.append(result)
 
@@ -788,7 +832,15 @@ def main():
             # Single measurement (backward compatibility)
             target_measurements = {k: v for k, v in input_data.items() if k in MEASUREMENTS}
 
+            # Parse gender and race from single measurement
+            gender_input = input_data.get('gender', 'female')
+            gender = parse_gender(gender_input)
+            race_input = input_data.get('race', 'asian')
+            race = parse_race(race_input)
+
             print("\nSingle Measurement Mode")
+            print(f"Gender: {'Male' if gender > 0.5 else 'Female'}")
+            print(f"Race: {', '.join([f'{k}={v:.2f}' for k, v in race.items()])}")
             print("\nTarget Measurements:")
             for measure, value in target_measurements.items():
                 print(f"  {measure:25s}: {value:.2f} cm")
@@ -797,7 +849,9 @@ def main():
                 'single_test', target_measurements,
                 models, macro_bounds,
                 args.method, args.rig_type,
-                use_micro_adjustment
+                use_micro_adjustment,
+                gender=gender,
+                race=race
             )
 
             # Save single result

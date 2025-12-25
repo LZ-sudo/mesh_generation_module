@@ -66,6 +66,60 @@ def convert_numpy_types(obj):
         return obj
 
 
+def parse_gender(gender_input) -> float:
+    """
+    Parse gender input to numeric value.
+
+    Args:
+        gender_input: Either a string ("male"/"female") or float (0.0-1.0)
+
+    Returns:
+        Float value: 0.0 for female, 1.0 for male
+    """
+    if isinstance(gender_input, str):
+        gender_lower = gender_input.lower()
+        if gender_lower in ['female', 'f']:
+            return 0.0
+        elif gender_lower in ['male', 'm']:
+            return 1.0
+        else:
+            raise ValueError(f"Invalid gender: {gender_input}. Use 'male' or 'female'")
+    elif isinstance(gender_input, (int, float)):
+        return float(gender_input)
+    else:
+        raise ValueError(f"Invalid gender type: {type(gender_input)}")
+
+
+def parse_race(race_input) -> dict:
+    """
+    Parse race input to numeric dictionary.
+
+    Args:
+        race_input: Either a string ("asian"/"caucasian"/"african") or dict with race values
+
+    Returns:
+        Dictionary with race values: {'asian': float, 'caucasian': float, 'african': float}
+    """
+    if isinstance(race_input, str):
+        race_lower = race_input.lower()
+        if race_lower == 'asian':
+            return {'asian': 1.0, 'caucasian': 0.0, 'african': 0.0}
+        elif race_lower == 'caucasian':
+            return {'asian': 0.0, 'caucasian': 1.0, 'african': 0.0}
+        elif race_lower == 'african':
+            return {'asian': 0.0, 'caucasian': 0.0, 'african': 1.0}
+        else:
+            raise ValueError(f"Invalid race: {race_input}. Use 'asian', 'caucasian', or 'african'")
+    elif isinstance(race_input, dict):
+        # Validate that all required keys are present
+        required_keys = {'asian', 'caucasian', 'african'}
+        if not required_keys.issubset(race_input.keys()):
+            raise ValueError(f"Race dict must contain keys: {required_keys}")
+        return race_input
+    else:
+        raise ValueError(f"Invalid race type: {type(race_input)}")
+
+
 def print_progress_bar(iteration, total, prefix='', suffix='', length=50, fill='█'):
     """Print a progress bar to console."""
     percent = f"{100 * (iteration / float(total)):.1f}"
@@ -294,16 +348,55 @@ def print_results(result, target_measurements, macro_bounds):
 
 
 def process_single(input_path, models, macro_bounds, method, weights):
-    """Process a single measurement from JSON file."""
+    """
+    Process a single measurement from JSON file.
+
+    Expected JSON format:
+    {
+      "gender": "female",  # Optional: "male" or "female" (default: "female")
+      "race": "asian",     # Optional: "asian", "caucasian", or "african" (default: "asian")
+      "measurements": {    # Can also be at top level
+        "height_cm": 165.0,
+        ...
+      }
+    }
+    """
     print(f"\nProcessing: {input_path}")
 
     with open(input_path, 'r') as f:
-        target_measurements = json.load(f)
+        input_data = json.load(f)
+
+    # Parse gender (supports both string and numeric formats)
+    gender_input = input_data.get('gender', 'female')
+    gender = parse_gender(gender_input)
+
+    # Parse race (supports both string and dict formats)
+    race_input = input_data.get('race', 'asian')
+    race = parse_race(race_input)
+
+    # Normalize race values if dict was provided
+    if isinstance(race_input, dict):
+        race_sum = sum(race.values())
+        if abs(race_sum - 1.0) > 0.01:
+            print(f"  Warning: Race values sum to {race_sum}, normalizing...")
+            race = {k: v/race_sum for k, v in race.items()}
+
+    print(f"\nSubject Details:")
+    print(f"  Gender: {'Male' if gender > 0.5 else 'Female'}")
+    print(f"  Race: {', '.join([f'{k}={v:.2f}' for k, v in race.items()])}")
+
+    # Extract measurements (can be nested under 'measurements' or at top level)
+    if 'measurements' in input_data:
+        target_measurements = input_data['measurements']
+    else:
+        # Filter out non-measurement keys
+        target_measurements = {k: v for k, v in input_data.items()
+                             if k in MEASUREMENTS}
 
     # Validate measurements
     for measure in target_measurements.keys():
         if measure not in MEASUREMENTS:
-            print(f"WARNING: Unknown measurement '{measure}' will be ignored")
+            print(f"  WARNING: Unknown measurement '{measure}' will be ignored")
 
     # Find macroparameters
     result = find_macroparameters(
@@ -316,6 +409,8 @@ def process_single(input_path, models, macro_bounds, method, weights):
 
     # Convert all numpy types to Python native types for JSON serialization
     result_dict = {
+        'gender': gender,
+        'race': race,
         'target_measurements': target_measurements,
         'macroparameters': result['macroparameters'],
         'predicted_measurements': result['predicted_measurements'],
