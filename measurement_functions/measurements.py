@@ -23,15 +23,15 @@ from mathutils import Vector
 
 # Expected ranges for adult human measurements (in cm)
 VALIDATION_RANGES = {
-    "height": (140, 220),
-    "shoulder_width": (30, 60),
-    "forearm_length": (20, 40),
-    "upper_arm_length": (25, 45),
+    "height": (130, 220),
+    "shoulder_width": (20, 60),
+    "forearm_length": (20, 60),
+    "upper_arm_length": (20, 45),
     "hand_length": (15, 25),
-    "neck_length": (8, 20),
+    "neck_length": (6, 20),
     # Width measurements
     "hip_width": (20, 50),        # Hip width (bi-iliac breadth)
-    "head_width": (12, 20)        # Head width (side to side)
+    "head_width": (10, 20)        # Head width (side to side)
 }
 
 
