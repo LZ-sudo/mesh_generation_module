@@ -11,7 +11,7 @@
   },
   "grid_params": {
     "age": {
-      "min": 0.4,
+      "min": 0.3,
       "max": 1.0,
       "step": 0.05
     },
@@ -26,8 +26,8 @@
       "step": 0.10
     },
     "height": {
-      "min": 0.35,
-      "max": 0.75,
+      "min": 0.25,
+      "max": 0.80,
       "step": 0.05
     },
     "proportions": {
