@@ -96,6 +96,13 @@ Example usage:
         help='Enable verbose output'
     )
 
+    parser.add_argument(
+        '--output-dir',
+        type=str,
+        default='./output',
+        help='Output directory for generated mesh (default: ./output). Filename will match the input config name.'
+    )
+
     return parser.parse_args(argv)
 
 
@@ -138,6 +145,27 @@ def main():
     
     try:
         config = utils.load_json_config(args.config)
+
+        # Add output section from command-line args if not in config
+        if 'output' not in config:
+            # Derive output filename from input config filename
+            config_path = Path(args.config)
+            output_filename = config_path.stem + '.fbx'  # e.g., 'example_subject_asian_female.json' -> 'example_subject_asian_female.fbx'
+
+            config['output'] = {
+                'directory': args.output_dir,
+                'filename': output_filename
+            }
+            print(f"ℹ Using output directory from arguments: {args.output_dir}")
+            print(f"ℹ Output filename derived from config: {output_filename}")
+
+        # Add export_settings if not in config (use defaults)
+        if 'export_settings' not in config:
+            config['export_settings'] = {
+                'use_mesh_modifiers': True,
+                'add_leaf_bones': True
+            }
+
         utils.validate_json_structure(config)
         validated_macro = utils.validate_macro_settings(config)
         output_path = utils.get_output_path(config)

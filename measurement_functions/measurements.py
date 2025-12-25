@@ -139,29 +139,6 @@ def distance_3d(p1: Tuple[float, float, float], p2: Tuple[float, float, float]) 
     )
 
 
-def validate_measurement(name: str, value: float) -> bool:
-    """
-    Validate that a measurement is within expected range.
-    
-    Args:
-        name: Measurement name
-        value: Measurement value in cm
-        
-    Returns:
-        True if valid, False otherwise
-    """
-    if name not in VALIDATION_RANGES:
-        print(f"⚠ Warning: No validation range for '{name}'")
-        return True
-    
-    min_val, max_val = VALIDATION_RANGES[name]
-    
-    if not (min_val <= value <= max_val):
-        print(f"⚠ Warning: {name} = {value:.1f}cm is outside expected range [{min_val}, {max_val}]")
-        return False
-    
-    return True
-
 
 # # ==================== MESH ANALYSIS HELPER FUNCTIONS ====================
 
@@ -565,8 +542,6 @@ def measure_height(armature) -> float:
     
     # Calculate height
     height = (head_pos[2] - foot_bottom_z) * 100  # Convert to cm
-    
-    validate_measurement("height", height)
     return height
 
 
@@ -599,7 +574,6 @@ def measure_shoulder_width(armature) -> float:
             # Calculate width (horizontal distance)
             width = abs(right_shoulder[0] - left_shoulder[0]) * 100  # Convert to cm
 
-            validate_measurement("shoulder_width", width)
             print(f"  Using bones: {left_bone}/{right_bone} ({'tail' if use_tail else 'head'} position)")
             return width
         except ValueError:
@@ -631,7 +605,6 @@ def measure_hip_width(armature) -> float:
         # Calculate width (horizontal distance)
         width = abs(right_hip[0] - left_hip[0]) * 100  # Convert to cm
 
-        validate_measurement("hip_width", width)
         return width
     except ValueError as e:
         print(f"⚠ Warning: Could not measure hip width: {e}")
@@ -659,7 +632,6 @@ def measure_head_width(armature) -> float:
         # Calculate width (horizontal distance)
         width = abs(right_temporalis[0] - left_temporalis[0]) * 100  # Convert to cm
 
-        validate_measurement("head_width", width)
         return width
     except ValueError as e:
         print(f"⚠ Warning: Could not measure head width: {e}")
@@ -689,7 +661,6 @@ def measure_inseam(armature) -> float:
     # Calculate inseam (vertical distance)
     inseam = (pelvis_pos[2] - foot_bottom_z) * 100  # Convert to cm
     
-    validate_measurement("inseam", inseam)
     return inseam
 
 
@@ -716,7 +687,6 @@ def measure_arm_length(armature, side: str = "left") -> float:
     # Calculate length
     length = distance_3d(shoulder_pos, wrist_pos) * 100  # Convert to cm
     
-    validate_measurement("arm_length", length)
     return length
 
 
@@ -742,7 +712,6 @@ def measure_forearm_length(armature, side: str = "left") -> float:
     # Measure using bone chain
     length = measure_bone_chain_length(armature, bone_chain)
 
-    validate_measurement("forearm_length", length)
     return length
 
 
@@ -768,7 +737,6 @@ def measure_upper_arm_length(armature, side: str = "left") -> float:
     # Measure using bone chain
     length = measure_bone_chain_length(armature, bone_chain)
 
-    validate_measurement("upper_arm_length", length)
     return length
 
 
@@ -790,7 +758,6 @@ def measure_neck_length(armature) -> float:
     # Measure using bone chain
     length = measure_bone_chain_length(armature, bone_chain)
 
-    validate_measurement("neck_length", length)
     return length
 
 
@@ -817,7 +784,6 @@ def measure_hand_length(armature, side: str = "left") -> float:
     # Measure using bone chain
     length = measure_bone_chain_length(armature, bone_chain)
 
-    validate_measurement("hand_length", length)
     return length
 
 
@@ -855,7 +821,6 @@ def extract_all_measurements_joint_based(mesh, armature=None) -> Dict[str, float
     # Step 2: Height measurement (simple)
     print("  Measuring height...")
     measurements["height"] = (joints['head_top'].z - joints['feet'].z) * 100
-    validate_measurement("height", measurements["height"])
 
     # Step 3: Width measurements using bone positions
     print("  Measuring body widths...")
