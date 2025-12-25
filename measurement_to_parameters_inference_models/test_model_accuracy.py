@@ -303,59 +303,109 @@ except Exception as e:
     return measurements
 
 
-def calculate_micro_adjustments(measurement_errors, sensitivity_matrix):
+def run_iterative_microparameter_adjustment(target_measurements, macroparameters, rig_type='default_no_toes'):
     """
-    Calculate microparameter adjustments needed to reduce measurement errors.
+    Run iterative microparameter adjustment via Blender subprocess.
+
+    This function calls adjust_microparameters.py via Blender to iteratively
+    adjust microparameters until measurements match targets.
 
     Args:
-        measurement_errors: Dict of {measurement_name: error_cm}
-        sensitivity_matrix: Dict mapping microparameter names to their sensitivities
-                          Format: {micro_name: {measurement_name: delta_cm_per_unit}}
+        target_measurements: Dictionary of target measurements
+        macroparameters: Dictionary of macroparameters (only the 5 optimized params)
+        rig_type: Type of rig to use
 
     Returns:
-        Dict of {micro_name: adjustment_value}
+        Dictionary of adjusted microparameters (in output format with -incr/-decr suffixes)
     """
-    micro_adjustments = {}
+    import tempfile
 
-    for micro_name, sensitivities in sensitivity_matrix.items():
-        # For each microparameter, calculate how much to adjust it
-        # based on the errors in measurements it affects
+    # Build full macro settings (must match what generate_and_measure_mesh uses)
+    full_macros = {
+        'gender': 0.0,        # Female
+        'age': macroparameters['age'],
+        'muscle': macroparameters['muscle'],
+        'weight': macroparameters['weight'],
+        'height': macroparameters['height'],
+        'proportions': macroparameters['proportions'],
+        'cupsize': 0.5,       # Medium
+        'firmness': 0.5,      # Medium
+        'race': {
+            'asian': 1.0,
+            'caucasian': 0.0,
+            'african': 0.0
+        }
+    }
 
-        # Simple approach: Use the measurement with largest error that this micro affects
-        best_adjustment = 0.0
-        max_relevance = 0.0
+    # Create temporary files for input/output
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+        target_path = Path(f.name)
+        json.dump(target_measurements, f, indent=2)
 
-        for measure_name, sensitivity in sensitivities.items():
-            if abs(sensitivity) < 0.01:  # Skip if micro has negligible effect
-                continue
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+        macros_path = Path(f.name)
+        json.dump(full_macros, f, indent=2)
 
-            # Get error for this measurement (remove _cm suffix if needed)
-            error = measurement_errors.get(measure_name, 0.0)
-            if error == 0.0:
-                error = measurement_errors.get(measure_name.replace('_cm', ''), 0.0)
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+        output_path = Path(f.name)
 
-            if abs(error) < 0.1:  # Skip if error is negligible
-                continue
+    try:
+        # Run Blender with adjust_microparameters.py
+        adjust_script_path = script_dir / 'adjust_microparameters.py'
 
-            # Calculate adjustment: error / sensitivity
-            # If error is positive (actual > target), we need to reduce
-            # If sensitivity is positive, decreasing micro reduces measurement
-            adjustment = -error / sensitivity
+        cmd = [
+            'python',
+            str(parent_dir / 'run_blender.py'),
+            '--script', str(adjust_script_path),
+            '--',
+            '--target', str(target_path),
+            '--macros', str(macros_path),
+            '--output', str(output_path),
+            '--rig-type', rig_type,
+            '--verbose'
+        ]
 
-            # Weight by how relevant this is (error * sensitivity strength)
-            relevance = abs(error) * abs(sensitivity)
+        result = subprocess.run(
+            cmd,
+            cwd=str(parent_dir),
+            capture_output=True,
+            text=True,
+            timeout=600  # 10 minute timeout (iterative process can take longer)
+        )
 
-            if relevance > max_relevance:
-                max_relevance = relevance
-                best_adjustment = adjustment
+        if result.returncode != 0:
+            print(f"\nERROR: Microparameter adjustment failed with code {result.returncode}", file=sys.stderr)
+            if result.stdout:
+                print("--- Adjustment Output ---", file=sys.stderr)
+                print(result.stdout, file=sys.stderr)
+            if result.stderr:
+                print("--- Adjustment Error Output ---", file=sys.stderr)
+                print(result.stderr, file=sys.stderr)
+            raise RuntimeError(f"Microparameter adjustment failed with code {result.returncode}")
 
-        # Clamp adjustment to reasonable range [-1.0, 1.0]
-        micro_adjustments[micro_name] = max(-1.0, min(1.0, best_adjustment))
+        # Print output for visibility
+        if result.stdout:
+            print(result.stdout)
 
-    return micro_adjustments
+        # Load adjusted microparameters
+        if not output_path.exists():
+            raise RuntimeError("Microparameter output JSON not created")
+
+        with open(output_path, 'r') as f:
+            adjusted_micros = json.load(f)
+
+        return adjusted_micros
+
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("Microparameter adjustment process timed out after 10 minutes")
+    finally:
+        # Clean up temporary files
+        for path in [target_path, macros_path, output_path]:
+            if path.exists():
+                path.unlink()
 
 
-def test_single_subject(subject_id, target_measurements, models, macro_bounds, method, rig_type, sensitivity_matrix=None):
+def test_single_subject(subject_id, target_measurements, models, macro_bounds, method, rig_type, use_micro_adjustment=True):
     """
     Test model on a single subject's measurements.
 
@@ -366,8 +416,7 @@ def test_single_subject(subject_id, target_measurements, models, macro_bounds, m
         macro_bounds: Bounds for macroparameters
         method: Optimization method
         rig_type: Type of rig to use
-        sensitivity_matrix: Optional sensitivity matrix for microparameter adjustments
-                          Format: {micro_name: {measurement_name: delta_cm_per_unit}}
+        use_micro_adjustment: Whether to apply iterative microparameter adjustment (default True)
 
     Returns:
         Dictionary with test results for this subject
@@ -406,7 +455,7 @@ def test_single_subject(subject_id, target_measurements, models, macro_bounds, m
             'actual': actual,
             'prediction_error': abs(predicted - target),
             'actual_error': abs(actual - target),
-            'error_value': actual - target  # Signed error for micro calculation
+            'error_value': actual - target
         }
 
     # Calculate MAE with macros only
@@ -418,7 +467,7 @@ def test_single_subject(subject_id, target_measurements, models, macro_bounds, m
     print(f"  MAE: {mae_macro:.4f} cm")
     print(f"  Max Error: {max_error_macro:.4f} cm")
 
-    # If sensitivity matrix provided, apply microparameter adjustments
+    # Build result data
     result_data = {
         'subject_id': subject_id,
         'macroparameters': result['macroparameters'],
@@ -427,24 +476,28 @@ def test_single_subject(subject_id, target_measurements, models, macro_bounds, m
         'max_error_macro_only': max_error_macro
     }
 
-    if sensitivity_matrix:
+    # Apply iterative microparameter adjustment if enabled
+    if use_micro_adjustment:
         print("\n" + "-"*80)
-        print("Applying Microparameter Adjustments")
+        print("Applying Iterative Microparameter Adjustment")
         print("-"*80)
 
-        # Calculate microparameter adjustments based on errors
-        measurement_errors = {m: e['error_value'] for m, e in errors_macro.items()}
-        micro_adjustments = calculate_micro_adjustments(measurement_errors, sensitivity_matrix)
+        # Run iterative adjustment
+        adjusted_micros = run_iterative_microparameter_adjustment(
+            target_measurements,
+            result['macroparameters'],
+            rig_type=rig_type
+        )
 
-        print("\nMicroparameter Adjustments:")
-        for micro_name, value in micro_adjustments.items():
+        print("\nAdjusted Microparameters:")
+        for micro_name, value in adjusted_micros.items():
             print(f"  {micro_name:40s}: {value:+.4f}")
 
-        # Generate and measure with macros + micros
+        # Generate and measure with macros + adjusted micros
         print("\nGenerating and measuring mesh (macroparameters + microparameters)...")
         actual_measurements_with_micro = generate_and_measure_mesh(
             result['macroparameters'],
-            microparameters=micro_adjustments,
+            microparameters=adjusted_micros,
             rig_type=rig_type
         )
 
@@ -473,13 +526,13 @@ def test_single_subject(subject_id, target_measurements, models, macro_bounds, m
         print(f"\n  Improvement: {improvement:.2f}%")
 
         # Add micro results to return data
-        result_data['microparameters'] = micro_adjustments
+        result_data['microparameters'] = adjusted_micros
         result_data['measurements_with_micro'] = errors_with_micro
         result_data['mae_with_micro'] = mae_with_micro
         result_data['max_error_with_micro'] = max_error_with_micro
         result_data['improvement_percent'] = improvement
     else:
-        # No sensitivity matrix - return macro-only results as final results
+        # No microparameter adjustment - return macro-only results as final results
         result_data['measurements'] = errors_macro
         result_data['mae'] = mae_macro
         result_data['max_error'] = max_error_macro
@@ -669,10 +722,9 @@ def main():
     )
 
     parser.add_argument(
-        '--sensitivity-matrix',
-        type=str,
-        default=None,
-        help='Path to sensitivity matrix JSON for microparameter adjustments (optional)'
+        '--no-micro-adjustment',
+        action='store_true',
+        help='Disable iterative microparameter adjustment (test macros only)'
     )
 
     args = parser.parse_args()
@@ -694,16 +746,12 @@ def main():
         print("\nLoading models...")
         models, macro_bounds = load_models(args.models)
 
-        # Load sensitivity matrix if provided
-        sensitivity_matrix = None
-        if args.sensitivity_matrix:
-            sensitivity_path = Path(args.sensitivity_matrix)
-            if not sensitivity_path.exists():
-                raise FileNotFoundError(f"Sensitivity matrix file not found: {sensitivity_path}")
-
-            with open(sensitivity_path, 'r') as f:
-                sensitivity_matrix = json.load(f)
-            print(f"Loaded sensitivity matrix: {len(sensitivity_matrix)} microparameters")
+        # Determine whether to use microparameter adjustment
+        use_micro_adjustment = not args.no_micro_adjustment
+        if use_micro_adjustment:
+            print("Iterative microparameter adjustment: ENABLED")
+        else:
+            print("Iterative microparameter adjustment: DISABLED (testing macros only)")
 
         # Determine if batch or single
         is_batch = 'measurements' in input_data and isinstance(input_data['measurements'], list)
@@ -730,7 +778,7 @@ def main():
                     subject_id, target_measurements,
                     models, macro_bounds,
                     args.method, args.rig_type,
-                    sensitivity_matrix
+                    use_micro_adjustment
                 )
                 results.append(result)
 
@@ -755,7 +803,7 @@ def main():
                 'single_test', target_measurements,
                 models, macro_bounds,
                 args.method, args.rig_type,
-                sensitivity_matrix
+                use_micro_adjustment
             )
 
             # Save single result
