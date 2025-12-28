@@ -59,7 +59,7 @@ MACROPARAMETERS = ['age', 'muscle', 'weight', 'height', 'proportions']
 MEASUREMENTS = [
     'height_cm', 'shoulder_width_cm', 'hip_width_cm', 'head_width_cm',
     'neck_length_cm', 'upper_arm_length_cm', 'forearm_length_cm', 'hand_length_cm',
-    'upper_leg_length_cm', 'lower_leg_length_cm', 'foot_length_cm'
+    'upper_leg_length_cm', 'lower_leg_length_cm'
 ]
 
 
@@ -114,7 +114,7 @@ def train_tabm_model(X_train, y_train, X_test, y_test, use_cuda=True,
     Uses ensemble of MLPs with weight sharing for efficient, regularized training.
 
     Args:
-        X_train: Training measurements (n_samples, 11) - DataFrame
+        X_train: Training measurements (n_samples, 10) - DataFrame
         y_train: Training macroparameters (n_samples, 5) - DataFrame
         X_test: Test measurements - DataFrame
         y_test: Test macroparameters - DataFrame

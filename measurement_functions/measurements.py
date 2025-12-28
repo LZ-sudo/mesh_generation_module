@@ -25,8 +25,7 @@ VALIDATION_RANGES = {
     "head_width": (10, 20),       # Head width (side to side)
     # Leg measurements
     "upper_leg_length": (30, 60),
-    "lower_leg_length": (30, 60),
-    "foot_length": (20, 35)
+    "lower_leg_length": (30, 60)
 }
 
 
@@ -832,41 +831,6 @@ def measure_lower_leg_length(armature, side: str = "left") -> float:
     return length
 
 
-def measure_foot_length(armature, mesh_obj, side: str = "left") -> float:
-    """
-    Measure foot length using the extremities of the foot bone.
-
-    Measures the distance between the minimum and maximum vertices of the foot bone
-    along the Y-axis (front-to-back direction).
-
-    Args:
-        armature: Blender armature object
-        mesh_obj: Blender mesh object (used for vertex group analysis)
-        side: "left" or "right"
-
-    Returns:
-        Foot length in centimeters
-    """
-    # Determine bone suffix
-    suffix = ".L" if side == "left" else ".R"
-    bone_name = f"foot{suffix}"
-
-    # Get the extremity vertices along the Y-axis (front-to-back)
-    min_vert, max_vert = get_bone_extremity_vertices(mesh_obj, bone_name, axis='y')
-
-    if min_vert is None or max_vert is None:
-        print(f"⚠ Warning: Could not measure foot length for {bone_name}")
-        return 0.0
-
-    # Calculate distance between extremities
-    length = distance_3d(
-        (min_vert.x, min_vert.y, min_vert.z),
-        (max_vert.x, max_vert.y, max_vert.z)
-    ) * 100  # Convert to cm
-
-    return length
-
-
 # ==================== MAIN MEASUREMENT FUNCTION ====================
 
 def extract_all_measurements_joint_based(mesh, armature=None) -> Dict[str, float]:
@@ -943,8 +907,8 @@ def extract_all_measurements_joint_based(mesh, armature=None) -> Dict[str, float
         measurements["hand_length"] = 0.0
         measurements["neck_length"] = 0.0
 
-    # Step 6: Leg and foot measurements using BONE CHAINS
-    print("  Measuring leg and foot dimensions (bone-based)...")
+    # Step 6: Leg measurements using BONE CHAINS
+    print("  Measuring leg dimensions (bone-based)...")
 
     if armature is not None:
         # Measure upper leg using upperleg01 and upperleg02
@@ -953,14 +917,10 @@ def extract_all_measurements_joint_based(mesh, armature=None) -> Dict[str, float
         # Measure lower leg using lowerleg01 and lowerleg02
         measurements["lower_leg_length"] = measure_lower_leg_length(armature, side="left")
 
-        # Measure foot using foot bone extremities
-        measurements["foot_length"] = measure_foot_length(armature, mesh, side="left")
-
     else:
         print("  ⚠ Warning: No armature available for leg measurements")
         measurements["upper_leg_length"] = 0.0
         measurements["lower_leg_length"] = 0.0
-        measurements["foot_length"] = 0.0
 
     print("✓ All measurements extracted")
 
@@ -1016,12 +976,11 @@ def print_measurements(measurements: Dict[str, float]):
     else:
         print(f"  (Could not measure arms - no armature)")
 
-    print("\nLeg & Foot Dimensions (bone-based):")
+    print("\nLeg Dimensions (bone-based):")
     upper_leg = measurements.get('upper_leg_length', 0)
     if upper_leg > 0:
         print(f"  Upper Leg Length:  {measurements.get('upper_leg_length', 0):6.1f} cm")
         print(f"  Lower Leg Length:  {measurements.get('lower_leg_length', 0):6.1f} cm")
-        print(f"  Foot Length:       {measurements.get('foot_length', 0):6.1f} cm")
     else:
         print(f"  (Could not measure legs - no armature)")
 

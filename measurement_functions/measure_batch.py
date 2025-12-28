@@ -166,8 +166,7 @@ def initialize_csv(output_path: str, param_list: list) -> tuple:
         "forearm_length_cm",
         "hand_length_cm",
         "upper_leg_length_cm",
-        "lower_leg_length_cm",
-        "foot_length_cm"
+        "lower_leg_length_cm"
     ]
 
     columns = param_columns + measurement_columns
@@ -182,7 +181,7 @@ def initialize_csv(output_path: str, param_list: list) -> tuple:
     print(f"✓ Initialized CSV: {output_path}")
     print(f"  Columns: {len(columns)}")
     print(f"    Parameters: {len(param_columns)} (6 fixed + 5 grid)")
-    print(f"    Measurements: {len(measurement_columns)} (8 upper body + 3 lower body)")
+    print(f"    Measurements: {len(measurement_columns)} (8 upper body + 2 leg)")
 
     return csv_file, csv_writer
 
@@ -362,8 +361,7 @@ def write_measurement_row(csv_writer, params: dict, measured: dict, csv_file=Non
         "forearm_length_cm": measured["forearm_length"],
         "hand_length_cm": measured["hand_length"],
         "upper_leg_length_cm": measured["upper_leg_length"],
-        "lower_leg_length_cm": measured["lower_leg_length"],
-        "foot_length_cm": measured["foot_length"]
+        "lower_leg_length_cm": measured["lower_leg_length"]
     }
 
     csv_writer.writerow(row)
