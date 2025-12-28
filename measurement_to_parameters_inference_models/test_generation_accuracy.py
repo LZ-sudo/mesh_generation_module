@@ -821,7 +821,7 @@ def main():
                 results.append(result)
 
             # Save CSV
-            csv_path = str(input_path).replace('.json', '_batch_results.csv')
+            csv_path = str(input_path).replace('.json', '_results.csv')
             save_results_to_csv(results, category, csv_path)
             print(f"\n\nDetailed results saved to: {csv_path}")
 

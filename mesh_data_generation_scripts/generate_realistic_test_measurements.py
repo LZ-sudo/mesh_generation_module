@@ -15,7 +15,8 @@ from pathlib import Path
 # Measurements
 MEASUREMENTS = [
     'height_cm', 'shoulder_width_cm', 'hip_width_cm', 'head_width_cm',
-    'neck_length_cm', 'upper_arm_length_cm', 'forearm_length_cm', 'hand_length_cm'
+    'neck_length_cm', 'upper_arm_length_cm', 'forearm_length_cm', 'hand_length_cm',
+    'upper_leg_length_cm', 'lower_leg_length_cm', 'foot_length_cm'
 ]
 
 

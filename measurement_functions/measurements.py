@@ -1,16 +1,7 @@
 """
 Measurement extraction functions for human models.
-
-This module provides functions to extract body measurements from a rigged
-human mesh in Blender using PURE MESH-BASED METHODS (no bone dependency):
-
-Approach:
-1. Find anatomical landmarks directly from mesh vertices
-2. Use horizontal plane slicing for circumferences
-3. Use bounding boxes and vertex extrema for lengths and widths
-4. Calculate distances along mesh surface where appropriate
-
 All measurements are returned in centimeters.
+
 """
 
 import bpy
@@ -31,7 +22,11 @@ VALIDATION_RANGES = {
     "neck_length": (6, 20),
     # Width measurements
     "hip_width": (20, 50),        # Hip width (bi-iliac breadth)
-    "head_width": (10, 20)        # Head width (side to side)
+    "head_width": (10, 20),       # Head width (side to side)
+    # Leg measurements
+    "upper_leg_length": (30, 60),
+    "lower_leg_length": (30, 60),
+    "foot_length": (20, 35)
 }
 
 
@@ -638,56 +633,56 @@ def measure_head_width(armature) -> float:
         return 0.0
 
 
-def measure_inseam(armature) -> float:
-    """
-    Measure inseam (leg length from crotch to floor).
+# def measure_inseam(armature) -> float:
+#     """
+#     Measure inseam (leg length from crotch to floor).
     
-    Args:
-        armature: Blender armature object
+#     Args:
+#         armature: Blender armature object
         
-    Returns:
-        Inseam in centimeters
-    """
-    bone_names = get_bone_names(armature)
+#     Returns:
+#         Inseam in centimeters
+#     """
+#     bone_names = get_bone_names(armature)
     
-    # Get pelvis position (crotch level)
-    pelvis_pos = get_bone_world_position(armature, bone_names["pelvis"])
+#     # Get pelvis position (crotch level)
+#     pelvis_pos = get_bone_world_position(armature, bone_names["pelvis"])
     
-    # Get foot position
-    foot_left_pos = get_bone_world_position(armature, bone_names["foot_left"])
-    foot_right_pos = get_bone_world_position(armature, bone_names["foot_right"])
-    foot_bottom_z = min(foot_left_pos[2], foot_right_pos[2])
+#     # Get foot position
+#     foot_left_pos = get_bone_world_position(armature, bone_names["foot_left"])
+#     foot_right_pos = get_bone_world_position(armature, bone_names["foot_right"])
+#     foot_bottom_z = min(foot_left_pos[2], foot_right_pos[2])
     
-    # Calculate inseam (vertical distance)
-    inseam = (pelvis_pos[2] - foot_bottom_z) * 100  # Convert to cm
+#     # Calculate inseam (vertical distance)
+#     inseam = (pelvis_pos[2] - foot_bottom_z) * 100  # Convert to cm
     
-    return inseam
+#     return inseam
 
 
-def measure_arm_length(armature, side: str = "left") -> float:
-    """
-    Measure full arm length from shoulder to wrist.
+# def measure_arm_length(armature, side: str = "left") -> float:
+#     """
+#     Measure full arm length from shoulder to wrist.
     
-    Args:
-        armature: Blender armature object
-        side: "left" or "right"
+#     Args:
+#         armature: Blender armature object
+#         side: "left" or "right"
         
-    Returns:
-        Arm length in centimeters
-    """
-    bone_names = get_bone_names(armature)
+#     Returns:
+#         Arm length in centimeters
+#     """
+#     bone_names = get_bone_names(armature)
     
-    shoulder_key = f"shoulder_{side}"
-    wrist_key = f"wrist_{side}"
+#     shoulder_key = f"shoulder_{side}"
+#     wrist_key = f"wrist_{side}"
     
-    # Get shoulder and wrist positions
-    shoulder_pos = get_bone_world_position(armature, bone_names[shoulder_key])
-    wrist_pos = get_bone_world_position(armature, bone_names[wrist_key])
+#     # Get shoulder and wrist positions
+#     shoulder_pos = get_bone_world_position(armature, bone_names[shoulder_key])
+#     wrist_pos = get_bone_world_position(armature, bone_names[wrist_key])
     
-    # Calculate length
-    length = distance_3d(shoulder_pos, wrist_pos) * 100  # Convert to cm
+#     # Calculate length
+#     length = distance_3d(shoulder_pos, wrist_pos) * 100  # Convert to cm
     
-    return length
+#     return length
 
 
 def measure_forearm_length(armature, side: str = "left") -> float:
@@ -787,6 +782,91 @@ def measure_hand_length(armature, side: str = "left") -> float:
     return length
 
 
+def measure_upper_leg_length(armature, side: str = "left") -> float:
+    """
+    Measure upper leg length using upperleg01 and upperleg02 bones.
+
+    Measures the distance between the bottom of upperleg01 and the top of upperleg02.
+
+    Args:
+        armature: Blender armature object
+        side: "left" or "right"
+
+    Returns:
+        Upper leg length in centimeters
+    """
+    # Determine bone suffix
+    suffix = ".L" if side == "left" else ".R"
+
+    # Build bone chain
+    bone_chain = [f"upperleg01{suffix}", f"upperleg02{suffix}"]
+
+    # Measure using bone chain
+    length = measure_bone_chain_length(armature, bone_chain)
+
+    return length
+
+
+def measure_lower_leg_length(armature, side: str = "left") -> float:
+    """
+    Measure lower leg length using lowerleg01 and lowerleg02 bones.
+
+    Measures the distance between the bottom of lowerleg01 and the top of lowerleg02.
+
+    Args:
+        armature: Blender armature object
+        side: "left" or "right"
+
+    Returns:
+        Lower leg length in centimeters
+    """
+    # Determine bone suffix
+    suffix = ".L" if side == "left" else ".R"
+
+    # Build bone chain
+    bone_chain = [f"lowerleg01{suffix}", f"lowerleg02{suffix}"]
+
+    # Measure using bone chain
+    length = measure_bone_chain_length(armature, bone_chain)
+
+    return length
+
+
+def measure_foot_length(armature, mesh_obj, side: str = "left") -> float:
+    """
+    Measure foot length using the extremities of the foot bone.
+
+    Measures the distance between the minimum and maximum vertices of the foot bone
+    along the Y-axis (front-to-back direction).
+
+    Args:
+        armature: Blender armature object
+        mesh_obj: Blender mesh object (used for vertex group analysis)
+        side: "left" or "right"
+
+    Returns:
+        Foot length in centimeters
+    """
+    # Determine bone suffix
+    suffix = ".L" if side == "left" else ".R"
+    bone_name = f"foot{suffix}"
+
+    # Get the extremity vertices along the Y-axis (front-to-back)
+    min_vert, max_vert = get_bone_extremity_vertices(mesh_obj, bone_name, axis='y')
+
+    if min_vert is None or max_vert is None:
+        print(f"⚠ Warning: Could not measure foot length for {bone_name}")
+        return 0.0
+
+    # Calculate distance between extremities
+    length = distance_3d(
+        (min_vert.x, min_vert.y, min_vert.z),
+        (max_vert.x, max_vert.y, max_vert.z)
+    ) * 100  # Convert to cm
+
+    return length
+
+
 # ==================== MAIN MEASUREMENT FUNCTION ====================
 
 def extract_all_measurements_joint_based(mesh, armature=None) -> Dict[str, float]:
@@ -863,6 +943,25 @@ def extract_all_measurements_joint_based(mesh, armature=None) -> Dict[str, float
         measurements["hand_length"] = 0.0
         measurements["neck_length"] = 0.0
 
+    # Step 6: Leg and foot measurements using BONE CHAINS
+    print("  Measuring leg and foot dimensions (bone-based)...")
+
+    if armature is not None:
+        # Measure upper leg using upperleg01 and upperleg02
+        measurements["upper_leg_length"] = measure_upper_leg_length(armature, side="left")
+
+        # Measure lower leg using lowerleg01 and lowerleg02
+        measurements["lower_leg_length"] = measure_lower_leg_length(armature, side="left")
+
+        # Measure foot using foot bone extremities
+        measurements["foot_length"] = measure_foot_length(armature, mesh, side="left")
+
+    else:
+        print("  ⚠ Warning: No armature available for leg measurements")
+        measurements["upper_leg_length"] = 0.0
+        measurements["lower_leg_length"] = 0.0
+        measurements["foot_length"] = 0.0
+
     print("✓ All measurements extracted")
 
     return measurements
@@ -916,5 +1015,14 @@ def print_measurements(measurements: Dict[str, float]):
         print(f"  Hand Length:       {measurements.get('hand_length', 0):6.1f} cm")
     else:
         print(f"  (Could not measure arms - no armature)")
+
+    print("\nLeg & Foot Dimensions (bone-based):")
+    upper_leg = measurements.get('upper_leg_length', 0)
+    if upper_leg > 0:
+        print(f"  Upper Leg Length:  {measurements.get('upper_leg_length', 0):6.1f} cm")
+        print(f"  Lower Leg Length:  {measurements.get('lower_leg_length', 0):6.1f} cm")
+        print(f"  Foot Length:       {measurements.get('foot_length', 0):6.1f} cm")
+    else:
+        print(f"  (Could not measure legs - no armature)")
 
     print("="*60 + "\n")
