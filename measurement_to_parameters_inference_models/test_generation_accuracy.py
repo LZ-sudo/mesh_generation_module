@@ -782,18 +782,20 @@ def main():
             print("Iterative microparameter adjustment: DISABLED (testing macros only)")
 
         # Determine if batch or single
-        is_batch = 'measurements' in input_data and isinstance(input_data['measurements'], list)
+        # Support both 'measurements' and 'test_cases' keys for batch data
+        is_batch = ('test_cases' in input_data and isinstance(input_data['test_cases'], list))
 
         if is_batch:
             # Batch processing
-            category = input_data.get('category', 'unknown')
-            description = input_data.get('description', '')
-            measurements_list = input_data['measurements']
+            category = input_data.get('category', 'batch')
+            description = input_data.get('description')
+            # Support both key formats
+            measurements_list = input_data.get('test_cases')
 
             # Parse gender and race from batch (applies to all subjects in batch)
-            gender_input = input_data.get('gender', 'female')
+            gender_input = input_data.get('gender')
             gender = parse_gender(gender_input)
-            race_input = input_data.get('race', 'asian')
+            race_input = input_data.get('race')
             race = parse_race(race_input)
 
             print(f"\nBatch Mode: {category}")

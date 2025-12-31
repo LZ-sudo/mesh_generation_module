@@ -120,12 +120,23 @@ def sample_from_training_data(df, n_samples=20, method='stratified'):
     return test_cases
 
 
-def generate_test_json(test_cases, output_path, description=""):
+def generate_test_json(test_cases, output_path, description="", gender=None, race=None):
     """Generate JSON file with test measurements."""
     data = {
         "description": description,
         "test_cases": test_cases
     }
+
+    # Add gender if provided
+    if gender is not None:
+        data["gender"] = "male" if gender > 0.5 else "female"
+
+    # Add race if provided
+    if race is not None:
+        # Find the dominant race (highest value)
+        if isinstance(race, dict):
+            dominant_race = max(race.items(), key=lambda x: x[1])[0]
+            data["race"] = dominant_race
 
     with open(output_path, 'w') as f:
         json.dump(data, f, indent=2)
@@ -193,6 +204,30 @@ def main():
     # Analyze training data bounds
     df, bounds = analyze_measurement_bounds(args.input)
 
+    # Extract gender and race from the training data
+    # Assumes all rows have same gender/race (from same lookup table)
+    gender = df['gender'].iloc[0] if 'gender' in df.columns else None
+
+    # Race can be in either format: separate columns or single column
+    race = None
+    if 'asian' in df.columns and 'caucasian' in df.columns and 'african' in df.columns:
+        race = {
+            'asian': float(df['asian'].iloc[0]),
+            'caucasian': float(df['caucasian'].iloc[0]),
+            'african': float(df['african'].iloc[0])
+        }
+
+    # Determine gender and race strings for description
+    gender_str = "male" if gender and gender > 0.5 else "female"
+    race_str = "Unknown"
+    if race:
+        dominant_race = max(race.items(), key=lambda x: x[1])[0]
+        race_str = dominant_race.capitalize()
+
+    print(f"\nExtracted from training data:")
+    print(f"  Gender: {gender_str}")
+    print(f"  Race: {race_str}")
+
     # Generate test cases
     print(f"\n" + "=" * 100)
     print(f"GENERATING TEST CASES ({args.method.upper()} SAMPLING)")
@@ -216,12 +251,12 @@ def main():
 
     # Generate JSON
     description = (
-        f"Realistic test measurements for Asian female body models. "
+        f"Realistic test measurements for {race_str} {gender_str} body models. "
         f"Sampled from training data using {args.method} sampling method. "
         f"All measurements are within the training distribution bounds."
     )
 
-    generate_test_json(test_cases, args.output, description)
+    generate_test_json(test_cases, args.output, description, gender=gender, race=race)
 
     print("\n" + "=" * 100)
     print("COMPLETE")

@@ -105,15 +105,15 @@ def load_data(csv_path):
 
 
 def train_tabm_model(X_train, y_train, X_test, y_test, use_cuda=True,
-                     learning_rate=1e-3, n_epochs=150, batch_size=256,
-                     ensemble_size=128, weight_decay=5e-6):
+                     learning_rate=1e-3, n_epochs=150, batch_size=128,
+                     ensemble_size=64, weight_decay=5e-6):
     """
     Train TabM model for multi-output regression.
 
     Trains a SINGLE TabM model that predicts all 5 macroparameters simultaneously.
     Uses ensemble of MLPs with weight sharing for efficient, regularized training.
 
-    Args:
+    Args:`  
         X_train: Training measurements (n_samples, 10) - DataFrame
         y_train: Training macroparameters (n_samples, 5) - DataFrame
         X_test: Test measurements - DataFrame
@@ -309,11 +309,26 @@ def train_tabm_model(X_train, y_train, X_test, y_test, use_cuda=True,
     model.eval()
     X_test_scaled = X_scaler.transform(X_test.values)
 
+    # Process test set in batches to avoid OOM errors
     with torch.no_grad():
-        X_test_tensor = torch.FloatTensor(X_test_scaled).to(device)
-        test_preds = model(X_test_tensor, None)  # (n_test, k, 5)
-        test_preds_mean = test_preds.mean(dim=1)  # Average ensemble: (n_test, 5)
-        y_pred_scaled = test_preds_mean.cpu().numpy()
+        test_batch_size = min(batch_size, len(X_test_scaled))
+        y_pred_scaled_list = []
+
+        for i in range(0, len(X_test_scaled), test_batch_size):
+            batch_end = min(i + test_batch_size, len(X_test_scaled))
+            X_batch = X_test_scaled[i:batch_end]
+
+            X_test_tensor = torch.FloatTensor(X_batch).to(device)
+            test_preds = model(X_test_tensor, None)  # (batch, k, 5)
+            test_preds_mean = test_preds.mean(dim=1)  # Average ensemble: (batch, 5)
+            y_pred_scaled_list.append(test_preds_mean.cpu().numpy())
+
+            # Free GPU memory immediately
+            del X_test_tensor, test_preds, test_preds_mean
+            if device == 'cuda':
+                torch.cuda.empty_cache()
+
+        y_pred_scaled = np.vstack(y_pred_scaled_list)
 
     # Inverse transform predictions
     y_pred = y_scaler.inverse_transform(y_pred_scaled)
