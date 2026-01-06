@@ -71,6 +71,10 @@ MICROPARAMETER_CATEGORIES = {
     ],
     'lower_leg_length_cm': [
         'measure-lowerleg-height'  # Moved from height_cm
+    ],
+    'shoulder_to_waist_cm': [
+        'measure-napetowaist-dist',
+        'measure-waisttohip-dist'
     ]
 }
 
@@ -87,9 +91,11 @@ PHASE_1_CATEGORIES = [
     'upper_arm_length_cm',
     'forearm_length_cm',
     'hand_length_cm',
-    # Leg segments (new measurements)
+    # Leg segments
     'upper_leg_length_cm',
-    'lower_leg_length_cm'
+    'lower_leg_length_cm',
+    # Torso length
+    'shoulder_to_waist_cm'
 ]
 
 PHASE_2_CATEGORIES = [

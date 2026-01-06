@@ -173,7 +173,8 @@ Example input JSON format:
     "forearm_length_cm": 24.7,
     "hand_length_cm": 18.2,
     "upper_leg_length_cm": 42.5,
-    "lower_leg_length_cm": 38.0
+    "lower_leg_length_cm": 38.0,
+    "shoulder_to_waist_cm": 45.8
   }
 }
 
