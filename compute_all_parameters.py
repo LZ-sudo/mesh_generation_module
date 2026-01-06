@@ -169,10 +169,11 @@ Example input JSON format:
     "shoulder_width_cm": 38.5,
     "hip_width_cm": 35.2,
     "head_width_cm": 14.8,
-    "neck_length_cm": 10.5,
     "upper_arm_length_cm": 28.3,
     "forearm_length_cm": 24.7,
-    "hand_length_cm": 18.2
+    "hand_length_cm": 18.2,
+    "upper_leg_length_cm": 42.5,
+    "lower_leg_length_cm": 38.0
   }
 }
 

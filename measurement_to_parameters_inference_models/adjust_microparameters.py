@@ -40,10 +40,7 @@ DAMPING_DECAY = 0.9
 # Each measurement is associated with specific microparameters (base names only)
 MICROPARAMETER_CATEGORIES = {
     'height_cm': [
-        'measure-lowerleg-height',
-        'measure-upperleg-height',
-        'measure-napetowaist-dist',
-        'measure-waisttohip-dist'
+        'measure-neck-height'  # Neck height adjusts final height in phase 2
     ],
     'shoulder_width_cm': [
         'torso-scale-horiz',
@@ -58,7 +55,7 @@ MICROPARAMETER_CATEGORIES = {
         'head-scale-depth'
     ],
     'neck_length_cm': [
-        'measure-neck-height'
+        'measure-neck-height'  # Used when neck measurement is available
     ],
     'upper_arm_length_cm': [
         'measure-upperarm-length'
@@ -68,20 +65,40 @@ MICROPARAMETER_CATEGORIES = {
     ],
     'hand_length_cm': [
         'measure-hand-length'
+    ],
+    'upper_leg_length_cm': [
+        'measure-upperleg-height'  # Moved from height_cm
+    ],
+    'lower_leg_length_cm': [
+        'measure-lowerleg-height'  # Moved from height_cm
     ]
 }
 
-# Category processing order (adjust height first, then widths, then extremities)
-CATEGORY_ORDER = [
-    'height_cm',
+# Two-phase category processing order
+# Phase 1: Adjust all reliable CV measurements (the "anchors")
+# Phase 2: Adjust height using neck to reconcile any height discrepancy
+
+PHASE_1_CATEGORIES = [
+    # Body dimensions
     'shoulder_width_cm',
     'hip_width_cm',
     'head_width_cm',
-    'neck_length_cm',
+    # Arm segments
     'upper_arm_length_cm',
     'forearm_length_cm',
-    'hand_length_cm'
+    'hand_length_cm',
+    # Leg segments (new measurements)
+    'upper_leg_length_cm',
+    'lower_leg_length_cm'
 ]
+
+PHASE_2_CATEGORIES = [
+    # Final height adjustment using neck (after other proportions are locked)
+    'height_cm'
+]
+
+# Legacy single-phase order (for backwards compatibility if neck_length is provided)
+CATEGORY_ORDER = PHASE_1_CATEGORIES + ['neck_length_cm'] + PHASE_2_CATEGORIES
 
 
 # ============================================================================
@@ -458,7 +475,10 @@ def adjust_all_microparameters(
     verbose: bool = True
 ) -> Dict[str, float]:
     """
-    Adjust all microparameters to match target measurements.
+    Adjust all microparameters to match target measurements using two-phase approach.
+
+    Phase 1: Adjust all reliable CV measurements (body/limb proportions)
+    Phase 2: Adjust height using neck to reconcile any height discrepancy
 
     Args:
         target_measurements: Dictionary of target measurements
@@ -471,7 +491,7 @@ def adjust_all_microparameters(
     """
     if verbose:
         print("\n" + "="*80)
-        print("MICROPARAMETER ADJUSTMENT")
+        print("MICROPARAMETER ADJUSTMENT (TWO-PHASE APPROACH)")
         print("="*80)
 
     # Initialize microparameters (base names with signed values)
@@ -480,8 +500,50 @@ def adjust_all_microparameters(
     # Convergence tracking
     convergence_summary = {}
 
-    # Process each category in order
-    for category in CATEGORY_ORDER:
+    # PHASE 1: Adjust all reliable measurements (anchors)
+    if verbose:
+        print("\n" + "-"*80)
+        print("PHASE 1: Adjusting reliable CV measurements (anchors)")
+        print("-"*80)
+
+    for category in PHASE_1_CATEGORIES:
+        if category not in target_measurements:
+            if verbose:
+                print(f"\nSkipping {category} (no target measurement provided)")
+            continue
+
+        target = target_measurements[category]
+        microparameters, converged, iterations = adjust_category(
+            category, target, microparameters, macroparameters, rig_type, verbose
+        )
+        convergence_summary[category] = {
+            'converged': converged,
+            'iterations': iterations
+        }
+
+    # Handle neck_length if provided (rare case - only when CV can measure it)
+    if 'neck_length_cm' in target_measurements:
+        if verbose:
+            print("\n" + "-"*80)
+            print("ADJUSTING NECK LENGTH (provided by CV)")
+            print("-"*80)
+
+        target = target_measurements['neck_length_cm']
+        microparameters, converged, iterations = adjust_category(
+            'neck_length_cm', target, microparameters, macroparameters, rig_type, verbose
+        )
+        convergence_summary['neck_length_cm'] = {
+            'converged': converged,
+            'iterations': iterations
+        }
+
+    # PHASE 2: Adjust height using neck (after other proportions are locked)
+    if verbose:
+        print("\n" + "-"*80)
+        print("PHASE 2: Adjusting height via neck (final reconciliation)")
+        print("-"*80)
+
+    for category in PHASE_2_CATEGORIES:
         if category not in target_measurements:
             if verbose:
                 print(f"\nSkipping {category} (no target measurement provided)")

@@ -12,10 +12,10 @@ import numpy as np
 import json
 from pathlib import Path
 
-# Measurements
+# Measurements (neck_length_cm excluded - not reliably measurable from CV)
 MEASUREMENTS = [
     'height_cm', 'shoulder_width_cm', 'hip_width_cm', 'head_width_cm',
-    'neck_length_cm', 'upper_arm_length_cm', 'forearm_length_cm', 'hand_length_cm',
+    'upper_arm_length_cm', 'forearm_length_cm', 'hand_length_cm',
     'upper_leg_length_cm', 'lower_leg_length_cm'
 ]
 
