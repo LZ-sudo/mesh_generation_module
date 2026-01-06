@@ -25,7 +25,9 @@ VALIDATION_RANGES = {
     "head_width": (10, 20),       # Head width (side to side)
     # Leg measurements
     "upper_leg_length": (30, 60),
-    "lower_leg_length": (30, 60)
+    "lower_leg_length": (30, 60),
+    # Torso measurements
+    "shoulder_to_waist": (20, 60)  # Shoulder to waist/hip distance (torso length)
 }
 
 
@@ -203,98 +205,6 @@ def get_bone_extremity_vertices(mesh_obj, bone_name: str, axis: str = 'x') -> Tu
     max_vert = max(vertices, key=lambda v: v[axis_idx])
 
     return (min_vert, max_vert)
-
-
-# ==================== POSE MANIPULATION ====================
-
-def set_armature_to_tpose(armature):
-    """
-    Set armature to T-pose by rotating shoulder bones to horizontal.
-
-    This makes arm measurements more accurate by extending arms perpendicular to body.
-
-    Args:
-        armature: Blender armature object
-
-    Returns:
-        Dictionary with original rotations for restoration
-    """
-    import bpy
-    from mathutils import Euler
-    import math
-
-    if armature is None or armature.type != 'ARMATURE':
-        print("⚠ Warning: No armature provided for T-pose")
-        return {}
-
-    # Store original pose
-    original_rotations = {}
-
-    # Enter pose mode
-    bpy.context.view_layer.objects.active = armature
-    bpy.ops.object.mode_set(mode='POSE')
-
-    # Common shoulder bone name patterns
-    shoulder_patterns = {
-        'left': ['upperarm01.L', 'upper_arm.L', 'shoulder.L', 'arm.L'],
-        'right': ['upperarm01.R', 'upper_arm.R', 'shoulder.R', 'arm.R']
-    }
-
-    # Find and rotate shoulder bones
-    for side, patterns in shoulder_patterns.items():
-        for pattern in patterns:
-            if pattern in armature.pose.bones:
-                bone = armature.pose.bones[pattern]
-
-                # Store original rotation
-                original_rotations[pattern] = bone.rotation_euler.copy()
-
-                # Set to T-pose (arms horizontal)
-                # Left arm: rotate up, Right arm: rotate up
-                if side == 'left':
-                    bone.rotation_euler = Euler((0, 0, math.radians(90)), 'XYZ')
-                else:
-                    bone.rotation_euler = Euler((0, 0, math.radians(-90)), 'XYZ')
-
-                print(f"  Set {pattern} to T-pose")
-                break  # Found the bone, move to next side
-
-    # Update armature
-    bpy.context.view_layer.update()
-
-    # Return to object mode
-    bpy.ops.object.mode_set(mode='OBJECT')
-
-    return original_rotations
-
-
-def restore_armature_pose(armature, original_rotations):
-    """
-    Restore armature to original pose.
-
-    Args:
-        armature: Blender armature object
-        original_rotations: Dictionary of original rotations from set_armature_to_tpose
-    """
-    import bpy
-
-    if not original_rotations or armature is None:
-        return
-
-    # Enter pose mode
-    bpy.context.view_layer.objects.active = armature
-    bpy.ops.object.mode_set(mode='POSE')
-
-    # Restore rotations
-    for bone_name, rotation in original_rotations.items():
-        if bone_name in armature.pose.bones:
-            armature.pose.bones[bone_name].rotation_euler = rotation
-
-    # Update armature
-    bpy.context.view_layer.update()
-
-    # Return to object mode
-    bpy.ops.object.mode_set(mode='OBJECT')
 
 
 # ==================== JOINT-BASED SEGMENTATION & BOUNDING BOX MEASUREMENTS ====================
@@ -632,58 +542,6 @@ def measure_head_width(armature) -> float:
         return 0.0
 
 
-# def measure_inseam(armature) -> float:
-#     """
-#     Measure inseam (leg length from crotch to floor).
-    
-#     Args:
-#         armature: Blender armature object
-        
-#     Returns:
-#         Inseam in centimeters
-#     """
-#     bone_names = get_bone_names(armature)
-    
-#     # Get pelvis position (crotch level)
-#     pelvis_pos = get_bone_world_position(armature, bone_names["pelvis"])
-    
-#     # Get foot position
-#     foot_left_pos = get_bone_world_position(armature, bone_names["foot_left"])
-#     foot_right_pos = get_bone_world_position(armature, bone_names["foot_right"])
-#     foot_bottom_z = min(foot_left_pos[2], foot_right_pos[2])
-    
-#     # Calculate inseam (vertical distance)
-#     inseam = (pelvis_pos[2] - foot_bottom_z) * 100  # Convert to cm
-    
-#     return inseam
-
-
-# def measure_arm_length(armature, side: str = "left") -> float:
-#     """
-#     Measure full arm length from shoulder to wrist.
-    
-#     Args:
-#         armature: Blender armature object
-#         side: "left" or "right"
-        
-#     Returns:
-#         Arm length in centimeters
-#     """
-#     bone_names = get_bone_names(armature)
-    
-#     shoulder_key = f"shoulder_{side}"
-#     wrist_key = f"wrist_{side}"
-    
-#     # Get shoulder and wrist positions
-#     shoulder_pos = get_bone_world_position(armature, bone_names[shoulder_key])
-#     wrist_pos = get_bone_world_position(armature, bone_names[wrist_key])
-    
-#     # Calculate length
-#     length = distance_3d(shoulder_pos, wrist_pos) * 100  # Convert to cm
-    
-#     return length
-
-
 def measure_forearm_length(armature, side: str = "left") -> float:
     """
     Measure forearm length using lowerarm01 and lowerarm02 bones.
@@ -831,6 +689,57 @@ def measure_lower_leg_length(armature, side: str = "left") -> float:
     return length
 
 
+def measure_shoulder_to_waist_distance(armature, side: str = "right") -> float:
+    """
+    Measure the Euclidean distance from the outermost edge of the shoulder
+    to the outermost edge of the pelvis (shoulder to waist/hip distance).
+
+    This represents the torso length on one side of the body, measured from
+    the outer shoulder point to the hip level. This is a key measurement for
+    CV-based body proportion estimation.
+
+    Args:
+        armature: Blender armature object
+        side: "left" or "right" (default: "right")
+
+    Returns:
+        Distance in centimeters
+    """
+    # Determine bone suffix
+    suffix = ".R" if side == "right" else ".L"
+
+    # Define bone names
+    shoulder_bone_name = f"shoulder01{suffix}"
+    pelvis_bone_name = f"pelvis{suffix}"
+
+    # Check if bones exist
+    if shoulder_bone_name not in armature.pose.bones:
+        print(f"  ⚠ Warning: Bone '{shoulder_bone_name}' not found")
+        return 0.0
+    if pelvis_bone_name not in armature.pose.bones:
+        print(f"  ⚠ Warning: Bone '{pelvis_bone_name}' not found")
+        return 0.0
+
+    try:
+        # Get world space positions
+        # Mediapipe landmarks correspond to TAIL positions (outermost points)
+        shoulder_pos = get_bone_world_position(armature, shoulder_bone_name, use_tail=True)
+        pelvis_pos = get_bone_world_position(armature, pelvis_bone_name, use_tail=True)
+
+        # Calculate full 3D Euclidean distance (matches Mediapipe 3D landmarks)
+        # Use the same distance_3d function as bone chain measurements
+        distance_blender = distance_3d(shoulder_pos, pelvis_pos)
+
+        # Convert to centimeters
+        distance_cm = distance_blender * 100.0
+
+        return distance_cm
+
+    except ValueError as e:
+        print(f"  ⚠ Warning: Error measuring shoulder to waist distance: {e}")
+        return 0.0
+
+
 # ==================== MAIN MEASUREMENT FUNCTION ====================
 
 def extract_all_measurements_joint_based(mesh, armature=None) -> Dict[str, float]:
@@ -842,11 +751,11 @@ def extract_all_measurements_joint_based(mesh, armature=None) -> Dict[str, float
     2. Segments the mesh between joints
     3. Creates bounding boxes for each segment
     4. Measures segment lengths
-    5. Uses T-pose for accurate arm measurements (if armature provided)
+    5. Uses armature bone chains in default pose (if armature provided)
 
     Args:
         mesh: Blender mesh object (human body)
-        armature: Optional armature for T-pose arm measurements
+        armature: Optional armature for bone-based measurements (in default pose)
 
     Returns:
         Dictionary with all measurements in centimeters
@@ -922,6 +831,17 @@ def extract_all_measurements_joint_based(mesh, armature=None) -> Dict[str, float
         measurements["upper_leg_length"] = 0.0
         measurements["lower_leg_length"] = 0.0
 
+    # Step 7: Torso measurements using BONE POSITIONS
+    print("  Measuring torso dimensions (bone-based)...")
+
+    if armature is not None:
+        # Measure shoulder to waist distance (torso length)
+        measurements["shoulder_to_waist"] = measure_shoulder_to_waist_distance(armature, side="right")
+
+    else:
+        print("  ⚠ Warning: No armature available for torso measurements")
+        measurements["shoulder_to_waist"] = 0.0
+
     print("✓ All measurements extracted")
 
     return measurements
@@ -934,16 +854,16 @@ def extract_all_measurements(mesh, armature=None) -> Dict[str, float]:
     - Joint detection from mesh geometry
     - Mesh segmentation between joints
     - Bounding box measurements for accurate limb lengths
-    - T-pose for accurate arm measurements (if armature provided)
+    - Armature bone chains in default pose (if armature provided)
 
     Args:
         mesh: Blender mesh object (human body)
-        armature: Optional armature object (used for T-pose arm measurements)
+        armature: Optional armature object (used for bone-based measurements in default pose)
 
     Returns:
         Dictionary with all measurements in centimeters
     """
-    # Use the joint-based segmentation approach with T-pose
+    # Use the joint-based segmentation approach (default pose)
     return extract_all_measurements_joint_based(mesh, armature)
 
 
@@ -983,5 +903,12 @@ def print_measurements(measurements: Dict[str, float]):
         print(f"  Lower Leg Length:  {measurements.get('lower_leg_length', 0):6.1f} cm")
     else:
         print(f"  (Could not measure legs - no armature)")
+
+    print("\nTorso Dimensions (bone-based):")
+    shoulder_to_waist = measurements.get('shoulder_to_waist', 0)
+    if shoulder_to_waist > 0:
+        print(f"  Shoulder to Waist: {measurements.get('shoulder_to_waist', 0):6.1f} cm")
+    else:
+        print(f"  (Could not measure torso - no armature)")
 
     print("="*60 + "\n")
