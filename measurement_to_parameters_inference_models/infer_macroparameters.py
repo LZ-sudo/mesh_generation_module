@@ -2,14 +2,15 @@
 Infer Macroparameters from Body Measurements using Inverse Mapping Models
 
 This script uses trained models (TabM, TabPFN, or XGBoost) to directly predict
-macroparameter values from body measurements (inverse mapping: measurements → macroparameters).
+skeletal macroparameter values (age, height, proportions) from body measurements.
+Muscle and weight are set to default values (0.5) for consistency.
 
 No optimization is required - predictions are instantaneous.
 
 Supports:
-- TabM (single multi-output model)
-- TabPFN (5 independent models)
-- XGBoost (5 independent models)
+- TabM (single multi-output model) - predicts 3 skeletal parameters
+- TabPFN (3 independent models) - legacy support
+- XGBoost (3 independent models) - legacy support
 
 Usage:
     # From JSON file with measurements
@@ -37,7 +38,7 @@ except ImportError:
     TORCH_AVAILABLE = False
 
 # Configuration
-MACROPARAMETERS = ['age', 'muscle', 'weight', 'height', 'proportions']
+MACROPARAMETERS = ['age', 'height', 'proportions']
 MEASUREMENTS = [
     'height_cm', 'shoulder_width_cm', 'hip_width_cm', 'head_width_cm',
     'upper_arm_length_cm', 'forearm_length_cm', 'hand_length_cm',
@@ -201,8 +202,8 @@ def predict_macroparameters(model_data, measurements):
         if TORCH_AVAILABLE:
             with torch.no_grad():
                 X_tensor = torch.FloatTensor(X_scaled)
-                predictions = model(X_tensor, None)  # (1, k, 5)
-                predictions_mean = predictions.mean(dim=1)  # Average ensemble: (1, 5)
+                predictions = model(X_tensor, None)  # (1, k, 3)
+                predictions_mean = predictions.mean(dim=1)  # Average ensemble: (1, 3)
                 y_pred_scaled = predictions_mean.cpu().numpy()
 
                 # Check for NaN in predictions

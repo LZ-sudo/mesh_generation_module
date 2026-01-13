@@ -78,7 +78,8 @@ def generate_and_measure_mesh(macroparameters, microparameters=None, rig_type='d
     4. Returns the measurements
 
     Args:
-        macroparameters: Dictionary of macroparameter values (age, muscle, weight, height, proportions)
+        macroparameters: Dictionary of macroparameter values (age, height, proportions)
+                        muscle and weight will default to 0.5 if not provided
         microparameters: Optional dictionary of microparameter values
         rig_type: Type of rig to add
         gender: Gender value (0.0 for female, 1.0 for male), default 0.0
@@ -96,8 +97,8 @@ def generate_and_measure_mesh(macroparameters, microparameters=None, rig_type='d
         'macro_settings': {
             'gender': gender,
             'age': macroparameters['age'],
-            'muscle': macroparameters['muscle'],
-            'weight': macroparameters['weight'],
+            'muscle': 0.5,
+            'weight': 0.5,
             'height': macroparameters['height'],
             'proportions': macroparameters['proportions'],
             'cupsize': 0.5,       # Medium
@@ -308,8 +309,8 @@ def run_iterative_microparameter_adjustment(target_measurements, macroparameters
     full_macros = {
         'gender': gender,
         'age': macroparameters['age'],
-        'muscle': macroparameters['muscle'],
-        'weight': macroparameters['weight'],
+        'muscle': 0.5,
+        'weight': 0.5,
         'height': macroparameters['height'],
         'proportions': macroparameters['proportions'],
         'cupsize': 0.5,       # Medium

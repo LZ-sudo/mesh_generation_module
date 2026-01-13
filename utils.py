@@ -829,7 +829,7 @@ def export_fbx(basemesh, armature, output_path: str, export_settings: Dict[str, 
         'bake_anim_step': 1.0,
         'bake_anim_simplify_factor': 1.0,
         'path_mode': 'AUTO',
-        'embed_textures': False,
+        'embed_textures': True,  # Embed textures in FBX for portability
         'batch_mode': 'OFF',
         'use_batch_own_dir': True,
         'axis_forward': '-Z',

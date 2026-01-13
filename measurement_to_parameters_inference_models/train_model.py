@@ -6,8 +6,9 @@ for tabular data that efficiently imitates an ensemble of MLPs through parallel 
 and weight sharing. Published at ICLR 2025.
 
 This script trains a SINGLE TabM model to perform multi-output regression, predicting
-all 5 macroparameters simultaneously from 8 measurements. Unlike previous approaches
-(5 independent models), TabM learns joint relationships between outputs.
+3 skeletal macroparameters (age, height, proportions) from 10 measurements. Unlike previous
+approaches (5 independent models), this focuses only on skeletal structure parameters,
+excluding muscle and weight which are conflated in length-based measurements.
 
 Usage:
     # Train model on your data (with GPU)
@@ -20,11 +21,12 @@ Usage:
     python train_model.py --input lookup_tables/lookup_table_female_asian_lhs.csv --epochs 200
 
 Key advantages of TabM over previous approaches:
-- Single model learns correlations between all 5 macroparameters
+- Single model learns correlations between skeletal macroparameters
 - Built-in ensemble regularization prevents overfitting on synthetic data
 - Efficient training on large datasets (100K+ samples)
 - GPU acceleration for fast training
 - No catastrophic forgetting issues (trains from scratch)
+- Focuses on skeletal structure (age, height, proportions) for better accuracy
 """
 
 import pandas as pd
@@ -55,7 +57,8 @@ except ImportError as e:
     print("Install with: pip install tabm torch scikit-learn tqdm")
 
 # Configuration
-MACROPARAMETERS = ['age', 'muscle', 'weight', 'height', 'proportions']
+# Only predicting skeletal structure parameters (muscle=0.5, weight=0.5 used as defaults)
+MACROPARAMETERS = ['age', 'height', 'proportions']
 MEASUREMENTS = [
     'height_cm', 'shoulder_width_cm', 'hip_width_cm', 'head_width_cm',
     'upper_arm_length_cm', 'forearm_length_cm', 'hand_length_cm',
@@ -110,12 +113,12 @@ def train_tabm_model(X_train, y_train, X_test, y_test, use_cuda=True,
     """
     Train TabM model for multi-output regression.
 
-    Trains a SINGLE TabM model that predicts all 5 macroparameters simultaneously.
+    Trains a SINGLE TabM model that predicts 3 skeletal macroparameters simultaneously.
     Uses ensemble of MLPs with weight sharing for efficient, regularized training.
 
-    Args:`  
+    Args:`
         X_train: Training measurements (n_samples, 10) - DataFrame
-        y_train: Training macroparameters (n_samples, 5) - DataFrame
+        y_train: Training macroparameters (n_samples, 3) - DataFrame
         X_test: Test measurements - DataFrame
         y_test: Test macroparameters - DataFrame
         use_cuda: Whether to use CUDA acceleration (default: True)
@@ -195,9 +198,9 @@ def train_tabm_model(X_train, y_train, X_test, y_test, use_cuda=True,
     # Create TabM model
     print("\nInitializing TabM model...")
     model = TabM.make(
-        n_num_features=X_train.shape[1],  # 8 measurements
+        n_num_features=X_train.shape[1],  # 10 measurements
         cat_cardinalities=[],              # No categorical features
-        d_out=y_train.shape[1],            # 5 macroparameters
+        d_out=y_train.shape[1],            # 3 macroparameters (age, height, proportions)
         k=ensemble_size                    # Ensemble size
     )
     model = model.to(device)
