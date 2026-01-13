@@ -14,11 +14,14 @@ Usage:
     # Train model on your data (with GPU)
     python train_model.py --input lookup_tables/lookup_table_female_asian_lhs.csv
 
-    # Train with custom learning rate and ensemble size
-    python train_model.py --input lookup_tables/lookup_table_female_asian_lhs.csv --learning-rate 5e-3 --ensemble-size 64
+    # Train with measurement noise for robustness (recommended)
+    python train_model.py --input lookup_tables/lookup_table_female_asian_lhs.csv --measurement-noise 0.5
+
+    # Train with custom hyperparameters
+    python train_model.py --input lookup_tables/lookup_table_female_asian_lhs.csv --learning-rate 5e-3 --ensemble-size 64 --measurement-noise 0.5
 
     # Train with more epochs
-    python train_model.py --input lookup_tables/lookup_table_female_asian_lhs.csv --epochs 200
+    python train_model.py --input lookup_tables/lookup_table_female_asian_lhs.csv --epochs 200 --measurement-noise 0.5
 
 Key advantages of TabM over previous approaches:
 - Single model learns correlations between skeletal macroparameters
@@ -109,7 +112,7 @@ def load_data(csv_path):
 
 def train_tabm_model(X_train, y_train, X_test, y_test, use_cuda=True,
                      learning_rate=1e-3, n_epochs=150, batch_size=128,
-                     ensemble_size=64, weight_decay=5e-6):
+                     ensemble_size=64, weight_decay=5e-6, measurement_noise_std=0.0):
     """
     Train TabM model for multi-output regression.
 
@@ -127,6 +130,8 @@ def train_tabm_model(X_train, y_train, X_test, y_test, use_cuda=True,
         batch_size: Batch size for training (default: 256)
         ensemble_size: Number of ensemble members (k parameter) (default: 128)
         weight_decay: L2 regularization weight decay (default: 5e-6)
+        measurement_noise_std: Std dev of Gaussian noise to add to measurements during training (cm)
+                              For robustness to real-world measurement errors (default: 0.0 = no noise)
 
     Returns:
         Tuple of (model, scalers, performance metrics)
@@ -156,6 +161,7 @@ def train_tabm_model(X_train, y_train, X_test, y_test, use_cuda=True,
     print(f"  Epochs: {n_epochs}")
     print(f"  Batch size: {batch_size}")
     print(f"  Ensemble size (k): {ensemble_size}")
+    print(f"  Measurement noise: ±{measurement_noise_std:.2f} cm (training only)")
     print(f"  Architecture: Single model predicting all {y_train.shape[1]} macroparameters jointly")
 
     print(f"\nDataset:")
@@ -232,6 +238,11 @@ def train_tabm_model(X_train, y_train, X_test, y_test, use_cuda=True,
         for X_batch, y_batch in tqdm(train_loader, desc=f"  Epoch {epoch}/{n_epochs}", leave=False):
             X_batch = X_batch.to(device)
             y_batch = y_batch.to(device)
+
+            # Add Gaussian noise to measurements for robustness (data augmentation)
+            if measurement_noise_std > 0:
+                noise = torch.randn_like(X_batch) * measurement_noise_std
+                X_batch = X_batch + noise
 
             optimizer.zero_grad()
 
@@ -516,6 +527,13 @@ Examples:
         help='L2 regularization weight decay (default: 5e-6)'
     )
 
+    parser.add_argument(
+        '--measurement-noise',
+        type=float,
+        default=0.0,
+        help='Std deviation of Gaussian noise to add to measurements during training (cm). Improves robustness to real-world measurement errors. Recommended: 0.5 (default: 0.0 = no noise)'
+    )
+
     args = parser.parse_args()
 
     # Check TabM availability
@@ -536,6 +554,7 @@ Examples:
     print(f"  Epochs: {args.epochs}")
     print(f"  Batch size: {args.batch_size}")
     print(f"  Ensemble size: {args.ensemble_size}")
+    print(f"  Measurement noise: ±{args.measurement_noise:.2f} cm")
     print(f"  Random seed: {args.random_seed}")
     print(f"  CUDA: {'Disabled (CPU only)' if args.no_cuda else 'Enabled (if available)'}")
 
@@ -568,7 +587,8 @@ Examples:
             n_epochs=args.epochs,
             batch_size=args.batch_size,
             ensemble_size=args.ensemble_size,
-            weight_decay=args.weight_decay
+            weight_decay=args.weight_decay,
+            measurement_noise_std=args.measurement_noise
         )
 
         # Save model

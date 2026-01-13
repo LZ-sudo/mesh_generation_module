@@ -101,7 +101,7 @@ def validate_config(config: dict) -> bool:
         raise ValueError(f"Missing fixed parameters: {missing_fixed}")
     
     # Validate grid parameters
-    required_grid = {"age", "muscle", "weight", "height", "proportions"}
+    required_grid = {"age", "height", "proportions"}
     missing_grid = required_grid - set(config["grid_params"].keys())
     if missing_grid:
         raise ValueError(f"Missing grid parameters: {missing_grid}")
@@ -206,7 +206,7 @@ def generate_parameter_lhs(config: dict, n_samples: int = 9900, seed: int = 42) 
     grid_params = config["grid_params"]
 
     # Extract parameter names and bounds in consistent order
-    param_names = ['age', 'muscle', 'weight', 'height', 'proportions']
+    param_names = ['age', 'height', 'proportions']
     bounds = []
 
     for param_name in param_names:
@@ -358,7 +358,7 @@ def print_summary(param_list: list, method: str = 'grid'):
             print(f"  {key}: {value}")
 
     # Collect parameter ranges
-    macro_params = ["age", "muscle", "weight", "height", "proportions"]
+    macro_params = ["age", "height", "proportions"]
 
     param_label = "Sampled Parameters:" if method == 'lhs' else "Grid Parameters:"
     print(f"\n{param_label}")
