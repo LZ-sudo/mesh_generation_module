@@ -749,7 +749,7 @@ def configure_fk_ik_hybrid_rig(armature, instrumented_arm: str = "left"):
     print("="*70 + "\n")
 
 
-def export_fbx(basemesh, armature, output_path: str, export_settings: Dict[str, Any] = None):
+def export_fbx(basemesh, armature, output_path: str, export_settings: Dict[str, Any] = None, additional_objects: list = None):
     """
     Export the human mesh and rig to FBX format.
 
@@ -758,6 +758,7 @@ def export_fbx(basemesh, armature, output_path: str, export_settings: Dict[str, 
         armature: Armature/rig object
         output_path: Path to save FBX file
         export_settings: Optional dictionary of export settings
+        additional_objects: Optional list of additional objects to export (e.g., hair, clothes)
     """
     import bpy
 
@@ -777,12 +778,27 @@ def export_fbx(basemesh, armature, output_path: str, export_settings: Dict[str, 
     bpy.context.view_layer.objects.active = basemesh
     bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
 
-    # Select both mesh and armature for export
+    # Apply transforms to additional objects (hair, clothes, etc.)
+    if additional_objects:
+        for obj in additional_objects:
+            if obj:
+                obj.select_set(True)
+                bpy.context.view_layer.objects.active = obj
+                bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
+
+    # Select all objects for export
     bpy.ops.object.select_all(action='DESELECT')
     basemesh.select_set(True)
     if armature:
         armature.select_set(True)
         bpy.context.view_layer.objects.active = armature  # Set armature as active
+
+    # Select additional objects
+    if additional_objects:
+        for obj in additional_objects:
+            if obj:
+                obj.select_set(True)
+                print(f"  Including additional object: {obj.name}")
 
     # Default export settings optimized for rigged characters
     default_settings = {

@@ -13,14 +13,21 @@ mesh_generation_module/
 │   ├── train_model.py              # Train TabM regression model
 │   ├── test_generation_accuracy.py # Model accuracy testing
 │   ├── infer_macroparameters.py    # Infer macros from measurements
-│   └── adjust_microparameters.py   # Fine-tune microparameters    
+│   └── adjust_microparameters.py   # Fine-tune microparameters
 ├── mesh_data_generation_scripts/   # Data generation utilities
 │   ├── generate_realistic_test_measurements.py  # Test data generator
 │   └── build_lookup_table.py       # Lookup table generator (For training TabM model)
+├── mesh_hair_generation/           # Hair asset application
+│   └── mpfb_hair_assets_application.py  # Hair asset library
 ├── configs/                        # Configuration files
 │   └── lookup_table_config_*.json  # Lookup table configurations
 ├── lookup_tables/                  # Generated measurement databases
 │   └── lookup_table_*.csv          # Parameter → measurement mappings
+├── mpfb_hair_assets/               # MakeHuman hair assets (.mhclo)
+│   └── [HairName]/                 # Asset folders (e.g., Short_Hair_B)
+│       ├── [HairName].mhclo        # Asset definition
+│       ├── [HairName].obj          # 3D mesh geometry
+│       └── [HairName].mhmat        # Material definition
 ├── run_blender.py                  # Blender launcher utility
 ├── generate_human.py               # Single character generation
 ├── compute_all_parameters.py       # End-to-end parameter computation
@@ -34,6 +41,7 @@ mesh_generation_module/
 - **Cross-Platform**: Works on Windows, macOS, and Linux
 - **Headless Operation**: No GUI required for batch processing
 - **Rigging Support**: Automatic skeletal rig with multiple rig types (default, default_no_toes, game_engine)
+- **Hair Assets**: Apply MakeHuman hair with automatic rigging and bone weight transfer
 - **FBX Export**: Compatible with Unity, Unreal Engine, and other 3D applications
 
 ### Measurement System
@@ -68,7 +76,7 @@ mesh_generation_module/
 
 ### Prerequisites
 
-1. **Blender 4.5.3 LTS** - Download from [blender.org](https://download.blender.org/release/Blender4.5/blender-4.5.3-windows-x64.msi)
+1. **Blender 5.0.1** - Download from [blender.org](https://www.blender.org/download/)
 2. **MPFB2 Addon** - Install from Blender Extensions:
    - Open Blender → Edit → Preferences → Extensions
    - Search for "MPFB" and click Install
@@ -276,6 +284,40 @@ python run_blender.py --script generate_human.py -- --config human.json --rig-ty
 # Optimized for game engines
 python run_blender.py --script generate_human.py -- --config human.json --rig-type game_engine
 ```
+
+### Hair Assets
+
+Apply MakeHuman hair assets (.mhclo format) with automatic rigging for dynamic movement in game engines:
+
+```bash
+# Generate human with hair
+python run_blender.py --script generate_human.py -- --config human.json --hair Short_Hair_B
+```
+
+**Setting up hair assets:**
+
+1. Download hair assets from [MakeHuman Community Assets](http://www.makehumancommunity.org/content/user_contributed_assets.html)
+2. Create folder structure: `mpfb_hair_assets/[HairName]/`
+3. Place three required files in the folder:
+   - `[HairName].mhclo` - Asset definition
+   - `[HairName].obj` - 3D mesh geometry
+   - `[HairName].mhmat` - Material definition
+
+**Available hair assets:**
+
+List available hair assets programmatically:
+
+```python
+from mesh_hair_generation import mpfb_hair_assets_application as hair_lib
+assets = hair_lib.list_available_hair_assets()
+print(assets)  # e.g., ['Short_Hair_B', 'Long_Hair_A', ...]
+```
+
+**Features:**
+- Automatic rigging with bone weight transfer from human
+- 137-bone skeleton for realistic dynamic movement
+- Compatible with Unreal Engine physics and cloth simulation
+- Exports with proper parent-child hierarchy
 
 ### Two-Phase Microparameter Adjustment
 

@@ -103,6 +103,13 @@ Example usage:
         help='Output directory for generated mesh (default: ./output). Filename will match the input config name.'
     )
 
+    parser.add_argument(
+        '--hair',
+        type=str,
+        default=None,
+        help='Hair asset name to apply from mpfb_hair_assets folder (e.g., "Short_Hair_B"). Optional.'
+    )
+
     return parser.parse_args(argv)
 
 
@@ -268,17 +275,57 @@ def main():
         print("\n" + "-"*70)
         print("STEP 5: Skipping Rig (--no-rig specified)")
         print("-"*70)
-    
+
+    # Apply hair asset if requested
+    hair_obj = None
+    if args.hair:
+        print("\n" + "-"*70)
+        print("STEP 5.5: Applying Hair Asset")
+        print("-"*70)
+
+        if not armature:
+            print("⚠ Warning: Cannot apply hair without rig. Use --rig-type to add a rig.")
+            print("Skipping hair application...")
+        else:
+            try:
+                # Import hair application library
+                sys.path.insert(0, str(script_dir / "mesh_hair_generation"))
+                import mpfb_hair_assets_application as hair_lib
+
+                # Apply hair asset
+                hair_obj = hair_lib.apply_hair_asset(
+                    human_obj=basemesh,
+                    armature_obj=armature,
+                    hair_asset_name=args.hair,
+                    verbose=args.verbose
+                )
+
+                if hair_obj:
+                    print(f"✓ Hair asset '{args.hair}' applied successfully")
+                else:
+                    print(f"⚠ Warning: Failed to apply hair asset '{args.hair}'")
+
+            except Exception as e:
+                print(f"⚠ Warning: Error applying hair asset: {e}")
+                if args.verbose:
+                    import traceback
+                    traceback.print_exc()
+
     # Export FBX
     print("\n" + "-"*70)
     print("STEP 6: Exporting FBX")
     print("-"*70)
-    
+
     try:
         # Get export settings from config if provided
         export_settings = config.get("export_settings", {})
-        
-        utils.export_fbx(basemesh, armature, output_path, export_settings)
+
+        # Prepare list of additional objects (hair, clothes, etc.)
+        additional_objects = []
+        if hair_obj:
+            additional_objects.append(hair_obj)
+
+        utils.export_fbx(basemesh, armature, output_path, export_settings, additional_objects)
         
     except Exception as e:
         print(f"\n✗ Error exporting FBX: {e}")

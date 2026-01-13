@@ -268,7 +268,7 @@ Example usage:
             print(f"  {measure:25s}: {value:.2f} cm")
 
         # Load models
-        print(f"\nLoading models from: {args.models}")
+        # print(f"\nLoading models from: {args.models}")
         models, macro_bounds = load_models(args.models)
 
         # Step 1: Infer macroparameters
