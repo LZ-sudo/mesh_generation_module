@@ -64,30 +64,7 @@ if str(parent_dir) not in sys.path:
 
 # Import from infer_macroparameters
 from infer_macroparameters import load_models, find_macroparameters, MEASUREMENTS, parse_gender, parse_race
-
-
-def convert_numpy_types(obj):
-    """
-    Recursively convert numpy types to native Python types for JSON serialization.
-
-    Args:
-        obj: Object that may contain numpy types
-
-    Returns:
-        Object with numpy types converted to Python native types
-    """
-    if isinstance(obj, dict):
-        return {key: convert_numpy_types(value) for key, value in obj.items()}
-    elif isinstance(obj, list):
-        return [convert_numpy_types(item) for item in obj]
-    elif isinstance(obj, np.integer):
-        return int(obj)
-    elif isinstance(obj, np.floating):
-        return float(obj)
-    elif isinstance(obj, np.ndarray):
-        return obj.tolist()
-    else:
-        return obj
+from utils import convert_numpy_types
 
 
 def generate_and_measure_mesh(macroparameters, microparameters=None, rig_type='default_no_toes', gender=0.0, race=None):

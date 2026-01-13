@@ -27,6 +27,8 @@ import argparse
 import sys
 from pathlib import Path
 
+from utils import convert_numpy_types
+
 # Try to import PyTorch for TabM models
 try:
     import torch
@@ -41,30 +43,6 @@ MEASUREMENTS = [
     'upper_arm_length_cm', 'forearm_length_cm', 'hand_length_cm',
     'upper_leg_length_cm', 'lower_leg_length_cm', 'shoulder_to_waist_cm'
 ]
-
-
-def convert_numpy_types(obj):
-    """
-    Recursively convert numpy types to native Python types for JSON serialization.
-
-    Args:
-        obj: Object that may contain numpy types
-
-    Returns:
-        Object with numpy types converted to Python native types
-    """
-    if isinstance(obj, dict):
-        return {key: convert_numpy_types(value) for key, value in obj.items()}
-    elif isinstance(obj, list):
-        return [convert_numpy_types(item) for item in obj]
-    elif isinstance(obj, np.integer):
-        return int(obj)
-    elif isinstance(obj, np.floating):
-        return float(obj)
-    elif isinstance(obj, np.ndarray):
-        return obj.tolist()
-    else:
-        return obj
 
 
 def parse_gender(gender_input) -> float:

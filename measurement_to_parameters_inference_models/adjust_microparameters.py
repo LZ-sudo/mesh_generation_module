@@ -174,8 +174,6 @@ def create_measurement_extractor(measurement_name: str) -> Callable:
 # ============================================================================
 # MPFB2 UTILITIES
 # ============================================================================
-# NOTE: get_mpfb_module_path() is now imported from utils.py (see top of file)
-
 
 def apply_microparameters_to_mesh(basemesh, micros: Dict[str, float], verbose: bool = False):
     """
