@@ -22,6 +22,9 @@ parent_dir = script_dir.parent.absolute()
 if str(parent_dir) not in sys.path:
     sys.path.insert(0, str(parent_dir))
 
+# Import utilities from parent directory
+from utils import _get_mpfb_module_path as get_mpfb_module_path
+
 
 # ============================================================================
 # CONFIGURATION
@@ -171,31 +174,7 @@ def create_measurement_extractor(measurement_name: str) -> Callable:
 # ============================================================================
 # MPFB2 UTILITIES
 # ============================================================================
-
-def get_mpfb_module_path():
-    """
-    Determine the correct MPFB module path for the current Blender version.
-
-    Returns:
-        str: Either 'bl_ext.user_default.mpfb' for Blender 4.2+ or 'mpfb' for older versions
-    """
-    import sys
-
-    # Check if using new extension system (Blender 4.2+)
-    if 'bl_ext.user_default.mpfb' in sys.modules:
-        return 'bl_ext.user_default.mpfb'
-
-    # Check if using legacy addon system
-    if 'mpfb' in sys.modules:
-        return 'mpfb'
-
-    # Try importing to detect which format is available
-    try:
-        import bl_ext.user_default.mpfb
-        return 'bl_ext.user_default.mpfb'
-    except ImportError:
-        # Fall back to legacy format
-        return 'mpfb'
+# NOTE: get_mpfb_module_path() is now imported from utils.py (see top of file)
 
 
 def apply_microparameters_to_mesh(basemesh, micros: Dict[str, float], verbose: bool = False):

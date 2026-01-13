@@ -17,30 +17,103 @@ from typing import Dict, Any, Tuple
 # when this module is imported outside of Blender environment
 
 
+def _ensure_extensions_loaded():
+    """
+    Ensure extensions are loaded in headless mode (Blender 5.0+).
+
+    In Blender 5.0, extensions are not automatically loaded when running
+    in --background mode. This function adds the extension path to sys.path
+    so that extensions can be imported.
+
+    Returns:
+        bool: True if extensions were successfully enabled, False otherwise
+    """
+    import sys
+    import os
+
+    # Check if MPFB extension is already loaded
+    if 'bl_ext.user_default.mpfb' in sys.modules:
+        return True  # Already loaded
+
+    # Check if legacy addon is loaded
+    if 'mpfb' in sys.modules:
+        return True  # Already loaded (legacy format)
+
+    # Try to enable extensions in headless mode
+    try:
+        import bpy
+
+        # Check Blender version - extensions introduced in 4.2
+        if bpy.app.version < (4, 2, 0):
+            return False  # Old Blender version, doesn't use extensions
+
+        # In Blender 5.0+, extensions are stored in user extensions directory
+        # We need to manually add this path to sys.path in headless mode
+
+        # Get the extensions directory path
+        # Extensions are typically in: %APPDATA%\Blender Foundation\Blender\5.0\extensions\user_default
+        import platform
+
+        if platform.system() == "Windows":
+            appdata = os.environ.get('APPDATA')
+            if appdata:
+                version_str = f"{bpy.app.version[0]}.{bpy.app.version[1]}"
+                extensions_path = os.path.join(appdata, "Blender Foundation", "Blender", version_str, "extensions", "user_default")
+
+                if os.path.exists(extensions_path) and extensions_path not in sys.path:
+                    sys.path.insert(0, extensions_path)
+
+        elif platform.system() == "Darwin":  # macOS
+            home = os.path.expanduser("~")
+            version_str = f"{bpy.app.version[0]}.{bpy.app.version[1]}"
+            extensions_path = os.path.join(home, "Library", "Application Support", "Blender", version_str, "extensions", "user_default")
+
+            if os.path.exists(extensions_path) and extensions_path not in sys.path:
+                sys.path.insert(0, extensions_path)
+
+        else:  # Linux
+            home = os.path.expanduser("~")
+            version_str = f"{bpy.app.version[0]}.{bpy.app.version[1]}"
+            extensions_path = os.path.join(home, ".config", "blender", version_str, "extensions", "user_default")
+
+            if os.path.exists(extensions_path) and extensions_path not in sys.path:
+                sys.path.insert(0, extensions_path)
+
+        # Try importing the extension now that the path is added
+        try:
+            import bl_ext.user_default.mpfb
+            return True
+        except ImportError:
+            return False
+
+    except Exception:
+        return False
+
+
 def _get_mpfb_module_path():
     """
     Determine the correct MPFB module path for the current Blender version.
 
-    Returns:
-        str: Either 'bl_ext.user_default.mpfb' for Blender 4.2+ or 'mpfb' for older versions
+    In Blender 5.0+, extensions can be installed from different repositories:
+    - bl_ext.blender_org.mpfb (official Blender Extensions repository)
+
     """
     import sys
 
-    # Check if using new extension system (Blender 4.2+)
-    if 'bl_ext.user_default.mpfb' in sys.modules:
-        return 'bl_ext.user_default.mpfb'
+    # Ensure extensions are loaded in headless mode (Blender 5.0+)
+    _ensure_extensions_loaded()
 
-    # Check if using legacy addon system
-    if 'mpfb' in sys.modules:
-        return 'mpfb'
+    # Priority order for checking:
+    # 1. Official Blender repository (most common in Blender 5.0+)
+    if 'bl_ext.blender_org.mpfb' in sys.modules:
+        return 'bl_ext.blender_org.mpfb'
 
-    # Try importing to detect which format is available
+    # 2. Importing
     try:
-        import bl_ext.user_default.mpfb
-        return 'bl_ext.user_default.mpfb'
+        import bl_ext.blender_org.mpfb
+        return 'bl_ext.blender_org.mpfb'
     except ImportError:
-        # Fall back to legacy format
-        return 'mpfb'
+        pass
 
 
 def load_json_config(json_path: str) -> Dict[str, Any]:
@@ -270,33 +343,32 @@ def check_mpfb2_installed() -> bool:
     try:
         import sys
 
-        # In Blender 4.2+, extensions are loaded as bl_ext.user_default.mpfb
-        # In older versions, it might be just mpfb
-        if 'bl_ext.user_default.mpfb' in sys.modules:
-            print("✓ MPFB2 extension detected (Blender 4.2+ format)")
-            return True
-        elif 'mpfb' in sys.modules:
-            print("✓ MPFB2 addon detected (legacy format)")
+        # Ensure extensions are loaded in headless mode (Blender 5.0+)
+        _ensure_extensions_loaded()
+
+        # Check for MPFB2 in different possible locations
+        # 1. Official Blender repository (most common in Blender 5.0+)
+        if 'bl_ext.blender_org.mpfb' in sys.modules:
+            print("✓ MPFB2 extension detected (Official Blender repository)")
             return True
 
-        # Try importing the extension format (Blender 4.2+)
+        # Try importing in order of preference
+        # Try official repository first
         try:
-            import bl_ext.user_default.mpfb
-            print("✓ MPFB2 extension imported successfully")
+            import bl_ext.blender_org.mpfb
+            print("✓ MPFB2 extension imported successfully (Official repository)")
             return True
         except ImportError:
             pass
 
-        # Try legacy format
-        import mpfb
-        print("✓ MPFB2 addon imported successfully")
-        return True
+        # Nothing worked
+        raise ImportError("MPFB2 not found in any location")
 
     except ImportError as e:
         print(f"✗ ERROR: MPFB2 addon not found! ({e})")
         print("\nPlease install MPFB2:")
         print("1. Open Blender normally")
-        print("2. Go to Edit → Preferences → Extensions")
+        print("2. Go to Edit → Preferences → Get Extensions")
         print("3. Search for 'MPFB' and click Install")
         print("4. Restart Blender")
         return False
