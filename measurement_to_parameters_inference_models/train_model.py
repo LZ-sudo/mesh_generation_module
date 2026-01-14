@@ -32,10 +32,8 @@ Key advantages of TabM over previous approaches:
 - Focuses on skeletal structure (age, height, proportions) for better accuracy
 """
 
-import pandas as pd
 import numpy as np
 import pickle
-import json
 import argparse
 import sys
 import time
@@ -44,6 +42,12 @@ from sklearn.model_selection import train_test_split
 from sklearn.model_selection import train_test_split as split_data
 from sklearn.metrics import mean_absolute_error, r2_score
 import traceback
+
+# Import shared training utilities
+from model_training_utils import (
+    load_config, create_embeddings, load_data,
+    build_tabm_kwargs, standardize_data, create_data_loaders
+)
 
 # Try to import TabM and PyTorch utilities
 try:
@@ -55,12 +59,6 @@ try:
     from sklearn.preprocessing import StandardScaler
     from tqdm import tqdm
 
-    # feature embedding imports
-    from rtdl_num_embeddings import PiecewiseLinearEmbeddings, compute_bins
-    from rtdl_num_embeddings import LinearReLUEmbeddings
-    from rtdl_num_embeddings import PeriodicEmbeddings
-    
-
     TABM_AVAILABLE = True
     CUDA_AVAILABLE = torch.cuda.is_available()
 except ImportError as e:
@@ -70,205 +68,7 @@ except ImportError as e:
     print("Install with: pip install tabm torch scikit-learn tqdm")
 
 
-def load_config(config_path):
-    """
-    Load training configuration from JSON file.
-
-    Args:
-        config_path: Path to JSON config file
-
-    Returns:
-        Dictionary with configuration settings
-    """
-    print(f"Loading configuration from: {config_path}")
-
-    if not Path(config_path).exists():
-        raise FileNotFoundError(f"Config file not found: {config_path}")
-
-    with open(config_path, 'r') as f:
-        config = json.load(f)
-
-    print(f"  Config version: {config.get('version', 'unknown')}")
-    print(f"  Description: {config.get('description', 'N/A')}")
-
-    return config
-
-
-def create_embeddings(config, X_train, y_train):
-    """
-    Create feature embeddings based on configuration.
-
-    Args:
-        config: Configuration dictionary with 'embeddings' section
-        X_train: Training features (DataFrame)
-        y_train: Training targets (DataFrame)
-
-    Returns:
-        Embedding module or None
-    """
-    embedding_config = config.get('embeddings', {})
-    embedding_type = embedding_config.get('type', 'piecewise_linear')
-
-    print(f"\nCreating {embedding_type} embeddings...")
-
-    if embedding_type == 'piecewise_linear':
-        try:
-            
-            pl_config = embedding_config['piecewise_linear']
-            bin_method = pl_config.get('bin_method', 'tree')
-
-            # Compute bins
-            print(f"  Computing bins using method: {bin_method}")
-            if bin_method == 'tree':
-                # Target-aware tree-based bins
-                tree_kwargs = pl_config.get('tree_kwargs', {
-                    'min_samples_leaf': 64,
-                    'min_impurity_decrease': 1e-4
-                })
-                bin_target = pl_config.get('bin_target', 'height')
-
-                if bin_target not in y_train.columns:
-                    print(f"  WARNING: Target '{bin_target}' not found, using first target")
-                    bin_target = y_train.columns[0]
-
-                print(f"  Using target: {bin_target}")
-                # Convert to PyTorch tensors (compute_bins requires tensors)
-                X_tensor = torch.FloatTensor(X_train.values)
-                y_tensor = torch.FloatTensor(y_train[bin_target].values)
-
-                bins = compute_bins(
-                    X_tensor,
-                    y=y_tensor,
-                    regression=True,
-                    tree_kwargs=tree_kwargs
-                )
-            else:
-                # Quantile-based bins
-                X_tensor = torch.FloatTensor(X_train.values)
-                bins = compute_bins(X_tensor)
-
-            # Create embeddings
-            d_embedding = pl_config.get('d_embedding', 12)
-            activation = pl_config.get('activation', False)
-            version = pl_config.get('version', 'B')
-
-            print(f"  d_embedding: {d_embedding}, activation: {activation}, version: {version}")
-
-            embeddings = PiecewiseLinearEmbeddings(
-                bins,
-                d_embedding=d_embedding,
-                activation=activation,
-                version=version
-            )
-
-            total_bins = sum(len(b) - 1 for b in bins)
-            print(f"  Created embeddings with {total_bins} total bins across {len(bins)} features")
-
-            return embeddings
-
-        except ImportError as e:
-            print(f"  ERROR: rtdl_num_embeddings not installed: {e}")
-            print(f"  Install with: pip install rtdl_num_embeddings scikit-learn")
-            return None
-
-    elif embedding_type == 'periodic':
-        try:
-            per_config = embedding_config['periodic']
-            d_embedding = per_config.get('d_embedding', 24)
-            lite = per_config.get('lite', True)
-            freq_scale = per_config.get('frequency_init_scale', None)
-
-            kwargs = {
-                'n_features': X_train.shape[1],
-                'd_embedding': d_embedding,
-                'lite': lite
-            }
-            if freq_scale is not None:
-                kwargs['frequency_init_scale'] = freq_scale
-
-            print(f"  d_embedding: {d_embedding}, lite: {lite}")
-
-            embeddings = PeriodicEmbeddings(**kwargs)
-            print(f"  Created periodic embeddings")
-
-            return embeddings
-
-        except ImportError as e:
-            print(f"  ERROR: rtdl_num_embeddings not installed: {e}")
-            print(f"  Install with: pip install rtdl_num_embeddings")
-            return None
-
-    elif embedding_type == 'linear_relu':
-        try:
-            lr_config = embedding_config['linear_relu']
-            d_embedding = lr_config.get('d_embedding', 32)
-
-            print(f"  d_embedding: {d_embedding}")
-
-            embeddings = LinearReLUEmbeddings(
-                n_features=X_train.shape[1],
-                d_embedding=d_embedding
-            )
-            print(f"  Created linear+ReLU embeddings")
-
-            return embeddings
-
-        except ImportError as e:
-            print(f"  ERROR: rtdl_num_embeddings not installed: {e}")
-            print(f"  Install with: pip install rtdl_num_embeddings")
-            return None
-
-    elif embedding_type == 'none' or embedding_type is None:
-        print(f"  No embeddings will be used (not recommended)")
-        return None
-
-    else:
-        print(f"  WARNING: Unknown embedding type '{embedding_type}', using no embeddings")
-        return None
-
-
-def load_data(csv_path):
-    """Load training data from lookup table CSV."""
-    print(f"Loading data from: {csv_path}")
-
-    if not Path(csv_path).exists():
-        raise FileNotFoundError(f"CSV file not found: {csv_path}")
-
-    df = pd.read_csv(csv_path)
-
-    # Verify required columns exist
-    missing_macros = set(MACROPARAMETERS) - set(df.columns)
-    if missing_macros:
-        raise ValueError(f"Missing macroparameter columns: {missing_macros}")
-
-    missing_measures = set(MEASUREMENTS) - set(df.columns)
-    if missing_measures:
-        raise ValueError(f"Missing measurement columns: {missing_measures}")
-
-    # Extract features (measurements) and targets (macroparameters)
-    # INVERSE MAPPING: measurements -> macroparameters
-    X = df[MEASUREMENTS]
-    y = df[MACROPARAMETERS]
-
-    # Calculate bounds for macroparameters
-    macro_bounds = {}
-    for param in MACROPARAMETERS:
-        macro_bounds[param] = (y[param].min(), y[param].max())
-
-    print(f"Loaded {len(df)} samples")
-    print(f"\nMacroparameter bounds:")
-    for param, (min_val, max_val) in macro_bounds.items():
-        print(f"  {param:12s}: [{min_val:.3f}, {max_val:.3f}]")
-
-    print(f"\nMeasurement statistics:")
-    print(X.describe())
-
-    print("-" * 80)
-
-    return X, y, macro_bounds
-
-
-def train_tabm_model(X_train, y_train, X_test, y_test, config, use_cuda=True):
+def train_tabm_model(X_train, y_train, X_test, y_test, config, macroparameters, use_cuda=True):
     """
     Train TabM model for multi-output regression using configuration.
 
@@ -281,6 +81,7 @@ def train_tabm_model(X_train, y_train, X_test, y_test, config, use_cuda=True):
         X_test: Test measurements - DataFrame
         y_test: Test macroparameters - DataFrame
         config: Configuration dictionary with 'training', 'model', 'embeddings' sections
+        macroparameters: List of macroparameter names
         use_cuda: Whether to use CUDA acceleration (default: True)
 
     Returns:
@@ -341,7 +142,8 @@ def train_tabm_model(X_train, y_train, X_test, y_test, config, use_cuda=True):
 
     # Create feature embeddings BEFORE preprocessing
     # (embeddings need raw data for bin computation)
-    num_embeddings = create_embeddings(config, X_train, y_train)
+    embedding_config = config.get('embeddings', {})
+    num_embeddings = create_embeddings(embedding_config, X_train, y_train)
 
     # Standardize features and targets
     print("\nPreprocessing data...")
@@ -540,7 +342,7 @@ def train_tabm_model(X_train, y_train, X_test, y_test, config, use_cuda=True):
     maes = []
     r2s = []
 
-    for i, param in enumerate(MACROPARAMETERS):
+    for i, param in enumerate(macroparameters):
         y_true_param = y_test[param].values
         y_pred_param = y_pred[:, i]
 
@@ -561,7 +363,7 @@ def train_tabm_model(X_train, y_train, X_test, y_test, config, use_cuda=True):
     performance = {
         'per_parameter': {
             param: {'mae': mae, 'r2': r2}
-            for param, mae, r2 in zip(MACROPARAMETERS, maes, r2s)
+            for param, mae, r2 in zip(macroparameters, maes, r2s)
         },
         'overall_mae': overall_mae,
         'overall_r2': overall_r2,
@@ -579,7 +381,7 @@ def train_tabm_model(X_train, y_train, X_test, y_test, config, use_cuda=True):
     return model, scalers, performance, config
 
 
-def save_model(model, scalers, macro_bounds, performance, config, output_path):
+def save_model(model, scalers, macro_bounds, performance, config, macroparameters, measurements, output_path):
     """
     Save trained TabM model to pickle file.
 
@@ -589,6 +391,8 @@ def save_model(model, scalers, macro_bounds, performance, config, output_path):
         macro_bounds: Dictionary of macroparameter bounds
         performance: Performance metrics
         config: Configuration dictionary used for training
+        macroparameters: List of macroparameter names
+        measurements: List of measurement names
         output_path: Path to save model file
     """
     output_path = Path(output_path)
@@ -604,8 +408,8 @@ def save_model(model, scalers, macro_bounds, performance, config, output_path):
         'model': model,
         'scalers': scalers,
         'macro_bounds': macro_bounds,
-        'macroparameters': MACROPARAMETERS,
-        'measurements': MEASUREMENTS,
+        'macroparameters': macroparameters,
+        'measurements': measurements,
         'performance': performance,
         'model_type': 'TabM_MultiOutput',
         'training_date': time.strftime('%Y-%m-%d %H:%M:%S'),
@@ -723,12 +527,11 @@ Configuration:
 
         # Load data
         print("\n" + "=" * 80)
-        # Update MACROPARAMETERS and MEASUREMENTS from config if specified
-        global MACROPARAMETERS, MEASUREMENTS
-        MACROPARAMETERS = data_cfg.get('macroparameters')
-        MEASUREMENTS = data_cfg.get('measurements')
+        # Get macroparameters and measurements from config
+        macroparameters = data_cfg.get('macroparameters')
+        measurements = data_cfg.get('measurements')
 
-        X, y, macro_bounds = load_data(args.input)
+        X, y, macro_bounds = load_data(args.input, macroparameters, measurements)
 
         print(f"\n[OK] Loaded {len(X)} samples - TabM can handle large datasets efficiently!")
 
@@ -752,11 +555,13 @@ Configuration:
         model, scalers, performance, config = train_tabm_model(
             X_train, y_train, X_test, y_test,
             config=config,
+            macroparameters=macroparameters,
             use_cuda=use_cuda
         )
 
         # Save model
-        save_model(model, scalers, macro_bounds, performance, config, args.output)
+        save_model(model, scalers, macro_bounds, performance, config,
+                  macroparameters, measurements, args.output)
 
         print("\n" + "=" * 80)
         print("TRAINING COMPLETE")

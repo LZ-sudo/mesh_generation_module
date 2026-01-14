@@ -28,7 +28,6 @@ Output:
     - param_importances.png: Parameter importance analysis
 """
 
-import pandas as pd
 import numpy as np
 import json
 import argparse
@@ -36,9 +35,14 @@ import sys
 import time
 from pathlib import Path
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_absolute_error
 import traceback
+
+# Import shared training utilities
+from model_training_utils import (
+    load_config, create_embeddings, load_data,
+    build_tabm_kwargs, standardize_data, create_data_loaders
+)
 
 try:
     import optuna
@@ -53,10 +57,7 @@ try:
     from tabm import TabM
     import torch
     import torch.nn as nn
-    from torch.utils.data import TensorDataset, DataLoader
     from torch.optim import AdamW
-    from tqdm import tqdm
-    from rtdl_num_embeddings import PiecewiseLinearEmbeddings, PeriodicEmbeddings, compute_bins
     TABM_AVAILABLE = True
     CUDA_AVAILABLE = torch.cuda.is_available()
 except ImportError as e:
@@ -64,90 +65,6 @@ except ImportError as e:
     CUDA_AVAILABLE = False
     print(f"ERROR: Required dependencies not installed: {e}")
     print("Install with: pip install tabm torch rtdl_num_embeddings scikit-learn")
-
-
-def load_base_config(config_path):
-    """Load base configuration to use as starting point."""
-    with open(config_path, 'r') as f:
-        return json.load(f)
-
-
-def load_data(csv_path, config):
-    """Load and prepare dataset."""
-    print(f"Loading data from: {csv_path}")
-    df = pd.read_csv(csv_path)
-
-    macroparams = config['data']['macroparameters']
-    measurements = config['data']['measurements']
-
-    # Extract features and targets
-    X = df[measurements].copy()
-    y = df[macroparams].copy()
-
-    # Compute bounds for macroparameters
-    macro_bounds = {param: (y[param].min(), y[param].max()) for param in macroparams}
-
-    print(f"  Loaded {len(X)} samples")
-    print(f"  Features: {X.shape[1]} measurements")
-    print(f"  Targets: {y.shape[1]} macroparameters")
-
-    return X, y, macro_bounds
-
-
-def create_embeddings(embedding_config, X_train, y_train):
-    """Create feature embeddings based on configuration."""
-    embedding_type = embedding_config.get('type', 'piecewise_linear')
-
-    if embedding_type == 'piecewise_linear':
-        pl_config = embedding_config['piecewise_linear']
-
-        # Compute tree-based bins
-        tree_kwargs = pl_config.get('tree_kwargs', {
-            'min_samples_leaf': 64,
-            'min_impurity_decrease': 1e-4
-        })
-        bin_target = pl_config.get('bin_target', 'height')
-
-        if bin_target not in y_train.columns:
-            bin_target = y_train.columns[0]
-
-        X_tensor = torch.FloatTensor(X_train.values)
-        y_tensor = torch.FloatTensor(y_train[bin_target].values)
-
-        bins = compute_bins(
-            X_tensor,
-            y=y_tensor,
-            regression=True,
-            tree_kwargs=tree_kwargs
-        )
-
-        embeddings = PiecewiseLinearEmbeddings(
-            bins,
-            d_embedding=pl_config['d_embedding'],
-            activation=pl_config.get('activation', False),
-            version=pl_config.get('version', 'B')
-        )
-
-        return embeddings
-
-    elif embedding_type == 'periodic':
-        per_config = embedding_config['periodic']
-
-        kwargs = {
-            'n_features': X_train.shape[1],
-            'd_embedding': per_config['d_embedding'],
-            'lite': per_config.get('lite', True)
-        }
-
-        freq_scale = per_config.get('frequency_init_scale')
-        if freq_scale is not None:
-            kwargs['frequency_init_scale'] = freq_scale
-
-        embeddings = PeriodicEmbeddings(**kwargs)
-        return embeddings
-
-    else:
-        return None
 
 
 def train_trial_model(X_train, y_train, X_val, y_val, trial_config, device='cuda'):
@@ -175,46 +92,27 @@ def train_trial_model(X_train, y_train, X_val, y_val, trial_config, device='cuda
     dropout = model_cfg.get('dropout')
 
     # Create embeddings BEFORE preprocessing
-    num_embeddings = create_embeddings(embed_cfg, X_train, y_train)
+    num_embeddings = create_embeddings(embed_cfg, X_train, y_train, verbose=False)
 
     # Standardize data
-    X_scaler = StandardScaler()
-    y_scaler = StandardScaler()
+    X_train_scaled, y_train_scaled, X_val_scaled, y_val_scaled, X_scaler, y_scaler = \
+        standardize_data(X_train, y_train, X_val, y_val)
 
-    X_train_scaled = X_scaler.fit_transform(X_train.values)
-    y_train_scaled = y_scaler.fit_transform(y_train.values)
-    X_val_scaled = X_scaler.transform(X_val.values)
-    y_val_scaled = y_scaler.transform(y_val.values)
-
-    # Create datasets
-    train_dataset = TensorDataset(
-        torch.FloatTensor(X_train_scaled),
-        torch.FloatTensor(y_train_scaled)
-    )
-    val_dataset = TensorDataset(
-        torch.FloatTensor(X_val_scaled),
-        torch.FloatTensor(y_val_scaled)
+    # Create data loaders
+    train_loader, val_loader = create_data_loaders(
+        X_train_scaled, y_train_scaled, X_val_scaled, y_val_scaled, batch_size
     )
 
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
-
-    # Create model
-    tabm_kwargs = {
-        'n_num_features': X_train.shape[1],
-        'cat_cardinalities': [],
-        'd_out': y_train.shape[1],
-        'k': ensemble_size
-    }
-
-    if num_embeddings is not None:
-        tabm_kwargs['num_embeddings'] = num_embeddings
-    if n_blocks is not None:
-        tabm_kwargs['n_blocks'] = n_blocks
-    if d_block is not None:
-        tabm_kwargs['d_block'] = d_block
-    if dropout is not None:
-        tabm_kwargs['dropout'] = dropout
+    # Build TabM kwargs and create model
+    tabm_kwargs = build_tabm_kwargs(
+        n_features=X_train.shape[1],
+        n_targets=y_train.shape[1],
+        ensemble_size=ensemble_size,
+        num_embeddings=num_embeddings,
+        n_blocks=n_blocks,
+        d_block=d_block,
+        dropout=dropout
+    )
 
     model = TabM.make(**tabm_kwargs).to(device)
 
@@ -388,8 +286,12 @@ def run_optimization(
     print("=" * 80)
 
     # Load base configuration and data
-    base_config = load_base_config(base_config_path)
-    X, y, macro_bounds = load_data(input_csv, base_config)
+    base_config = load_config(base_config_path, verbose=True)
+
+    macroparams = base_config['data']['macroparameters']
+    measurements = base_config['data']['measurements']
+
+    X, y, macro_bounds = load_data(input_csv, macroparams, measurements, verbose=True)
 
     # Split data: train/val/test
     test_size = base_config['data'].get('test_size', 0.2)

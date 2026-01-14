@@ -81,32 +81,36 @@ The configuration is stored in `tabm_config.json` with the following sections:
 
 ## Automated Hyperparameter Optimization
 
-The `train_model.py` script includes integrated hyperparameter optimization using Optuna's TPE (Tree-structured Parzen Estimator) sampler.
+The `optimize_hyperparameters.py` script uses Optuna's TPE (Tree-structured Parzen Estimator) sampler to find optimal hyperparameters.
 
 ### Quick Start
 
 ```bash
-# Optimization + Training in one command (recommended)
-python train_model.py \
+# Step 1: Run hyperparameter optimization
+python optimize_hyperparameters.py \
   --input lookup_table.csv \
   --config _tabm_config.json \
-  --output model.pkl \
-  --optimization-trials 30 \
-  --optimization-output optimization_results/
+  --n-trials 30 \
+  --output best_config.json
+
+# Step 2: Train model with optimized config
+python train_model.py \
+  --input lookup_table.csv \
+  --config best_config.json \
+  --output model.pkl
 
 # Resume interrupted optimization
-python train_model.py \
+python optimize_hyperparameters.py \
   --input lookup_table.csv \
   --config _tabm_config.json \
-  --output model.pkl \
-  --optimization-trials 50 \
+  --n-trials 50 \
   --study-name my_study \
   --resume
 
 # Direct training without optimization (if you already have good hyperparameters)
 python train_model.py \
   --input lookup_table.csv \
-  --config best_config.json \
+  --config _tabm_config.json \
   --output model.pkl
 ```
 
@@ -143,39 +147,41 @@ More trials = better optimization but longer runtime. Each trial trains a model 
 
 ### Output Files
 
-The `--optimization-output` directory contains:
+The optimization script creates the following files in the current directory:
 
 ```
-optimization_results/
-├── <study_name>.db              # SQLite database with all trial results
-├── best_config.json             # Best hyperparameter configuration
-├── optimization_history.png     # Optimization progress visualization
-└── param_importances.png        # Which parameters mattered most
+<study_name>.db              # SQLite database with all trial results (default: tabm_optimization.db)
+best_config.json             # Best hyperparameter configuration (or custom --output path)
+optimization_history.png     # Optimization progress visualization
+param_importances.png        # Which parameters mattered most
 ```
 
-The final trained model is saved to the `--output` path (outside optimization directory).
+### Workflow
 
-### Automatic Training After Optimization
-
-**No manual step needed!** When you run with `--optimization-trials`, the script:
+The training workflow consists of two separate steps:
 
 1. **Optimization phase** (1-2 hours for 30 trials):
+   ```bash
+   python optimize_hyperparameters.py --input data.csv --config _tabm_config.json --n-trials 30
+   ```
    - Runs N trials with reduced epochs (50) for fast evaluation
-   - Saves all artifacts to `--optimization-output` directory
+   - Saves best_config.json with optimal hyperparameters
+   - Creates visualization plots
 
 2. **Training phase** (10-20 minutes):
-   - Automatically trains final model with best config
+   ```bash
+   python train_model.py --input data.csv --config best_config.json --output model.pkl
+   ```
+   - Trains final model with best config
    - Uses full epochs (150) for production quality
-   - Saves model to `--output` path
-
-This is a **single command** that handles both optimization and training!
+   - Saves trained model
 
 ### Tips for Best Results
 
-1. **Organize by demographic**: Use separate output directories for different populations:
+1. **Organize by demographic**: Use separate study names for different populations:
    ```bash
-   python train_model.py --input female_asian.csv --optimization-trials 30 --optimization-output results/female_asian/
-   python train_model.py --input male_asian.csv --optimization-trials 30 --optimization-output results/male_asian/
+   python optimize_hyperparameters.py --input female_asian.csv --study-name female_asian_opt --n-trials 30
+   python optimize_hyperparameters.py --input male_asian.csv --study-name male_asian_opt --n-trials 30
    ```
 
 2. **Fix ensemble_size**: Keep `k` at 32 or 64 in base config (TabM recommendation: don't tune during optimization)
@@ -186,7 +192,7 @@ This is a **single command** that handles both optimization and training!
 
 5. **Resume if interrupted**: Use `--resume` flag to continue from last completed trial:
    ```bash
-   python train_model.py --input data.csv --optimization-trials 50 --study-name my_study --resume
+   python optimize_hyperparameters.py --input data.csv --study-name my_study --n-trials 50 --resume
    ```
 
 6. **Start conservative**: Begin with 30 trials, extend to 50 if needed (each trial ~2-3 min on GPU)
