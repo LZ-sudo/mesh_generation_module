@@ -25,8 +25,8 @@ import argparse
 import gc
 import time
 from pathlib import Path
-from itertools import product
-import numpy as np
+import importlib
+import traceback
 
 # Add parent directory to path to import utils
 # (since measure_batch.py is now in measurement_functions subdirectory)
@@ -42,62 +42,6 @@ import utils as utils
 if str(script_dir) not in sys.path:
     sys.path.insert(0, str(script_dir))
 import measurements
-
-
-def parse_arguments():
-    """
-    Parse command line arguments.
-    
-    Returns:
-        Parsed arguments
-    """
-    # Find where Blender arguments end and script arguments begin
-    argv = sys.argv
-    if "--" in argv:
-        argv = argv[argv.index("--") + 1:]
-    else:
-        argv = []
-    
-    parser = argparse.ArgumentParser(
-        description='Batch process human models and extract measurements'
-    )
-
-    parser.add_argument(
-        '--param-list',
-        type=str,
-        required=True,
-        help='Path to JSON file containing list of parameter combinations'
-    )
-
-    parser.add_argument(
-        '--output',
-        type=str,
-        default='output/lookup_table.csv',
-        help='Path for output CSV file'
-    )
-
-    parser.add_argument(
-        '--rig-type',
-        type=str,
-        default='default_no_toes',
-        choices=['default', 'default_no_toes', 'game_engine'],
-        help='Type of rig to add'
-    )
-
-    parser.add_argument(
-        '--no-delete',
-        action='store_true',
-        help='Do not delete models after measurement (for debugging)'
-    )
-
-    parser.add_argument(
-        '--checkpoint-interval',
-        type=int,
-        default=50,
-        help='Save CSV every N models (default: 50)'
-    )
-
-    return parser.parse_args(argv)
 
 
 def load_parameter_list(param_list_path: str) -> list:
@@ -200,7 +144,6 @@ def process_single_model(params: dict, rig_type: str, quiet: bool = True) -> dic
         Dictionary with measurements
     """
     import bpy
-    import importlib
 
     # Get MPFB module path
     mpfb_path = utils._get_mpfb_module_path()
@@ -423,6 +366,60 @@ def cleanup_scene(basemesh, armature):
     # Force Python garbage collection to free memory immediately
     gc.collect()
 
+def parse_arguments():
+    """
+    Parse command line arguments.
+    
+    Returns:
+        Parsed arguments
+    """
+    # Find where Blender arguments end and script arguments begin
+    argv = sys.argv
+    if "--" in argv:
+        argv = argv[argv.index("--") + 1:]
+    else:
+        argv = []
+    
+    parser = argparse.ArgumentParser(
+        description='Batch process human models and extract measurements'
+    )
+
+    parser.add_argument(
+        '--param-list',
+        type=str,
+        required=True,
+        help='Path to JSON file containing list of parameter combinations'
+    )
+
+    parser.add_argument(
+        '--output',
+        type=str,
+        default='output/lookup_table.csv',
+        help='Path for output CSV file'
+    )
+
+    parser.add_argument(
+        '--rig-type',
+        type=str,
+        default='default_no_toes',
+        choices=['default', 'default_no_toes', 'game_engine'],
+        help='Type of rig to add'
+    )
+
+    parser.add_argument(
+        '--no-delete',
+        action='store_true',
+        help='Do not delete models after measurement (for debugging)'
+    )
+
+    parser.add_argument(
+        '--checkpoint-interval',
+        type=int,
+        default=50,
+        help='Save CSV every N models (default: 50)'
+    )
+
+    return parser.parse_args(argv)
 
 def main():
     """Main execution function."""
@@ -581,7 +578,6 @@ def main():
         
     except Exception as e:
         print(f"\n✗ Fatal error: {e}")
-        import traceback
         traceback.print_exc()
         
         # Try to close CSV if it was opened

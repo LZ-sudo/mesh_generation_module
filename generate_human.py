@@ -16,6 +16,8 @@ import sys
 import os
 import argparse
 from pathlib import Path
+import traceback
+import importlib
 
 # Add the script directory to Python path to import utils
 script_dir = Path(__file__).parent.absolute()
@@ -195,7 +197,6 @@ def main():
     print("-"*70)
 
     try:
-        import importlib
 
         # Get correct MPFB module path (supports both Blender 4.2+ and legacy)
         mpfb_path = utils._get_mpfb_module_path()
@@ -207,7 +208,6 @@ def main():
 
     except Exception as e:
         print(f"\n✗ Error creating human mesh: {e}")
-        import traceback
         traceback.print_exc()
         sys.exit(1)
     
@@ -224,7 +224,7 @@ def main():
         utils.apply_macro_settings_to_human(basemesh, validated_macro, bake=not has_micros)
     except Exception as e:
         print(f"\n✗ Error applying macro settings: {e}")
-        import traceback
+        
         traceback.print_exc()
         sys.exit(1)
 
@@ -239,7 +239,7 @@ def main():
             print(f"✓ Applied {len(config['micro_settings'])} microparameters")
         except Exception as e:
             print(f"\n⚠ Warning: Failed to apply microparameters: {e}")
-            import traceback
+            
             if args.verbose:
                 traceback.print_exc()
 
@@ -262,13 +262,13 @@ def main():
                     utils.configure_fk_ik_hybrid_rig(armature, args.instrumented_arm)
                 except Exception as e:
                     print(f"\n⚠ Warning: Failed to configure FK/IK hybrid rig: {e}")
-                    import traceback
+                    
                     if args.verbose:
                         traceback.print_exc()
         except Exception as e:
             print(f"\n⚠ Warning: Failed to add rig: {e}")
             print("Continuing without rig...")
-            import traceback
+            
             if args.verbose:
                 traceback.print_exc()
     else:
@@ -308,7 +308,7 @@ def main():
             except Exception as e:
                 print(f"⚠ Warning: Error applying hair asset: {e}")
                 if args.verbose:
-                    import traceback
+                    
                     traceback.print_exc()
 
     # Export FBX
@@ -329,7 +329,7 @@ def main():
         
     except Exception as e:
         print(f"\n✗ Error exporting FBX: {e}")
-        import traceback
+        
         traceback.print_exc()
         sys.exit(1)
     
@@ -356,6 +356,6 @@ if __name__ == "__main__":
         sys.exit(130)
     except Exception as e:
         print(f"\n✗ Unexpected error: {e}")
-        import traceback
+        
         traceback.print_exc()
         sys.exit(1)

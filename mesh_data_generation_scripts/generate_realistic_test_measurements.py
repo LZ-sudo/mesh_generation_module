@@ -10,6 +10,7 @@ This script samples measurements from the actual training data to ensure:
 import pandas as pd
 import numpy as np
 import json
+import argparse
 from pathlib import Path
 
 # Measurements (neck_length_cm excluded - not reliably measurable from CV)
@@ -146,8 +147,7 @@ def generate_test_json(test_cases, output_path, description="", gender=None, rac
 
 
 def main():
-    import argparse
-
+    
     parser = argparse.ArgumentParser(
         description='Generate realistic test measurements from training data'
     )

@@ -51,9 +51,10 @@ import json
 import sys
 import subprocess
 import argparse
+import tempfile
+import traceback
 import csv
 from pathlib import Path
-import numpy as np
 from statistics import mean, median, stdev
 
 # Add parent directory to path for imports
@@ -299,7 +300,6 @@ def run_iterative_microparameter_adjustment(target_measurements, macroparameters
     Returns:
         Dictionary of adjusted microparameters (in output format with -incr/-decr suffixes)
     """
-    import tempfile
 
     # Default race if not provided
     if race is None:
@@ -851,7 +851,6 @@ def main():
 
     except Exception as e:
         print(f"\nERROR: {e}", file=sys.stderr)
-        import traceback
         traceback.print_exc()
         return 1
 

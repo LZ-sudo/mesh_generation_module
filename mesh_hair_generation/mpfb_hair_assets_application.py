@@ -25,6 +25,8 @@ Example usage:
 from pathlib import Path
 import sys
 from typing import Optional, Tuple
+import importlib
+import traceback
 
 # Add parent directory to path for utils import
 # (this file is in mesh_hair_generation, utils is in parent dir)
@@ -107,7 +109,6 @@ def add_hair_to_human(human_obj, hair_asset_path: Path, verbose: bool = False):
     """
     try:
         import bpy
-        import importlib
 
         # Get MPFB module path
         mpfb_path = utils._get_mpfb_module_path()
@@ -149,7 +150,6 @@ def add_hair_to_human(human_obj, hair_asset_path: Path, verbose: bool = False):
     except Exception as e:
         print(f"✗ Error adding hair asset: {e}")
         if verbose:
-            import traceback
             traceback.print_exc()
         raise
 
@@ -238,7 +238,6 @@ def setup_hair_rigging(hair_obj, human_obj, armature_obj, verbose: bool = False)
     except Exception as e:
         print(f"✗ Error setting up hair rigging: {e}")
         if verbose:
-            import traceback
             traceback.print_exc()
         return False
 
@@ -313,7 +312,6 @@ def apply_hair_asset(
     except Exception as e:
         print(f"✗ Error applying hair asset: {e}")
         if verbose:
-            import traceback
             traceback.print_exc()
         return None
 

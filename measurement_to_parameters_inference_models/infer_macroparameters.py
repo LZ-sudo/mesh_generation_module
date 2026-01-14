@@ -26,6 +26,7 @@ import pickle
 import json
 import argparse
 import sys
+import traceback
 from pathlib import Path
 
 from utils import convert_numpy_types
@@ -557,7 +558,6 @@ Examples:
 
     except Exception as e:
         print(f"\nERROR: {e}", file=sys.stderr)
-        import traceback
         traceback.print_exc()
         return 1
 

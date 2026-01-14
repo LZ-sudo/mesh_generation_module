@@ -11,6 +11,8 @@ This module provides helper functions for:
 import json
 import os
 import sys
+import importlib
+import platform
 from typing import Dict, Any, Tuple
 
 # NOTE: bpy and mpfb imports are done inside functions to avoid import errors
@@ -28,8 +30,6 @@ def _ensure_extensions_loaded():
     Returns:
         bool: True if extensions were successfully enabled, False otherwise
     """
-    import sys
-    import os
 
     # Check if MPFB extension is already loaded
     if 'bl_ext.user_default.mpfb' in sys.modules:
@@ -52,7 +52,6 @@ def _ensure_extensions_loaded():
 
         # Get the extensions directory path
         # Extensions are typically in: %APPDATA%\Blender Foundation\Blender\5.0\extensions\user_default
-        import platform
 
         if platform.system() == "Windows":
             appdata = os.environ.get('APPDATA')
@@ -98,7 +97,7 @@ def _get_mpfb_module_path():
     - bl_ext.blender_org.mpfb (official Blender Extensions repository)
 
     """
-    import sys
+
 
     # Ensure extensions are loaded in headless mode (Blender 5.0+)
     _ensure_extensions_loaded()
@@ -341,7 +340,7 @@ def check_mpfb2_installed() -> bool:
         True if MPFB2 is available, False otherwise
     """
     try:
-        import sys
+    
 
         # Ensure extensions are loaded in headless mode (Blender 5.0+)
         _ensure_extensions_loaded()
@@ -384,7 +383,6 @@ def apply_macro_settings_to_human(basemesh, macro_settings: Dict[str, Any], bake
         bake: Whether to bake targets after applying (default True).
               Set to False if microparameters will be applied afterward.
     """
-    import importlib
     import bpy
 
     mpfb_path = _get_mpfb_module_path()
@@ -451,7 +449,6 @@ def apply_microparameters_to_human(basemesh, micro_settings: Dict[str, float], b
             print("No microparameters to apply")
         return
 
-    import importlib
     import bpy
 
     mpfb_path = _get_mpfb_module_path()
@@ -503,7 +500,6 @@ def add_standard_rig(basemesh, rig_type: str = "default") -> Tuple[Any, Any]:
     Returns:
         Tuple of (armature_object, basemesh)
     """
-    import importlib
 
     mpfb_path = _get_mpfb_module_path()
     HumanService = importlib.import_module(f'{mpfb_path}.services.humanservice').HumanService

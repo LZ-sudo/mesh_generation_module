@@ -21,6 +21,7 @@ import json
 import sys
 import subprocess
 import argparse
+import traceback
 from pathlib import Path
 from itertools import product
 import numpy as np
@@ -553,7 +554,6 @@ Examples:
         
     except Exception as e:
         print(f"\n[ERROR] {e}")
-        import traceback
         traceback.print_exc()
         return 1
 

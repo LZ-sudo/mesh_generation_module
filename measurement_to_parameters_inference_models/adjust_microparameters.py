@@ -15,6 +15,8 @@ import gc
 from pathlib import Path
 from typing import Dict, Tuple, Callable
 import importlib
+import argparse
+import traceback
 
 # Add parent directory to path for imports
 script_dir = Path(__file__).parent.absolute()
@@ -22,8 +24,8 @@ parent_dir = script_dir.parent.absolute()
 if str(parent_dir) not in sys.path:
     sys.path.insert(0, str(parent_dir))
 
-# Import utilities from parent directory
 from utils import _get_mpfb_module_path as get_mpfb_module_path
+from measurement_functions.measurements import extract_all_measurements
 
 
 # ============================================================================
@@ -125,7 +127,6 @@ def extract_measurements_with_cm_suffix(mesh, armature) -> Dict[str, float]:
     Returns:
         Dictionary with measurements like {'height_cm': 165.0, 'shoulder_width_cm': 38.5, ...}
     """
-    from measurement_functions.measurements import extract_all_measurements
 
     # Extract measurements (returns keys like 'height', 'shoulder_width', etc.)
     raw_measurements = extract_all_measurements(mesh, armature)
@@ -585,7 +586,6 @@ def adjust_all_microparameters(
 
 def main():
     """Main execution when run via Blender subprocess."""
-    import argparse
 
     # Parse arguments
     argv = sys.argv
@@ -644,6 +644,5 @@ if __name__ == "__main__":
         sys.exit(130)
     except Exception as e:
         print(f"\n✗ Error: {e}")
-        import traceback
         traceback.print_exc()
         sys.exit(1)

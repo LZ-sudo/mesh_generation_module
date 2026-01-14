@@ -41,7 +41,9 @@ import sys
 import time
 from pathlib import Path
 from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split as split_data
 from sklearn.metrics import mean_absolute_error, r2_score
+import traceback
 
 # Try to import TabM and PyTorch utilities
 try:
@@ -52,6 +54,13 @@ try:
     from torch.optim import AdamW
     from sklearn.preprocessing import StandardScaler
     from tqdm import tqdm
+
+    # feature embedding imports
+    from rtdl_num_embeddings import PiecewiseLinearEmbeddings, compute_bins
+    from rtdl_num_embeddings import LinearReLUEmbeddings
+    from rtdl_num_embeddings import PeriodicEmbeddings
+    
+
     TABM_AVAILABLE = True
     CUDA_AVAILABLE = torch.cuda.is_available()
 except ImportError as e:
@@ -60,14 +69,6 @@ except ImportError as e:
     print(f"ERROR: tabm or dependencies not installed: {e}")
     print("Install with: pip install tabm torch scikit-learn tqdm")
 
-# # Configuration
-# # Only predicting skeletal structure parameters (muscle=0.5, weight=0.5 used as defaults)
-# MACROPARAMETERS = ['age', 'height', 'proportions']
-# MEASUREMENTS = [
-#     'height_cm', 'shoulder_width_cm', 'hip_width_cm', 'head_width_cm',
-#     'upper_arm_length_cm', 'forearm_length_cm', 'hand_length_cm',
-#     'upper_leg_length_cm', 'lower_leg_length_cm', 'shoulder_to_waist_cm'
-# ]
 
 def load_config(config_path):
     """
@@ -112,9 +113,7 @@ def create_embeddings(config, X_train, y_train):
 
     if embedding_type == 'piecewise_linear':
         try:
-            from rtdl_num_embeddings import PiecewiseLinearEmbeddings, compute_bins
-            import torch
-
+            
             pl_config = embedding_config['piecewise_linear']
             bin_method = pl_config.get('bin_method', 'tree')
 
@@ -174,8 +173,6 @@ def create_embeddings(config, X_train, y_train):
 
     elif embedding_type == 'periodic':
         try:
-            from rtdl_num_embeddings import PeriodicEmbeddings
-
             per_config = embedding_config['periodic']
             d_embedding = per_config.get('d_embedding', 24)
             lite = per_config.get('lite', True)
@@ -203,8 +200,6 @@ def create_embeddings(config, X_train, y_train):
 
     elif embedding_type == 'linear_relu':
         try:
-            from rtdl_num_embeddings import LinearReLUEmbeddings
-
             lr_config = embedding_config['linear_relu']
             d_embedding = lr_config.get('d_embedding', 32)
 
@@ -357,7 +352,6 @@ def train_tabm_model(X_train, y_train, X_test, y_test, config, use_cuda=True):
     y_train_scaled = y_scaler.fit_transform(y_train.values)
 
     # Split training into train/validation
-    from sklearn.model_selection import train_test_split as split_data
     X_train_fit, X_val_fit, y_train_fit, y_val_fit = split_data(
         X_train_scaled, y_train_scaled, test_size=val_size, random_state=42
     )
@@ -775,7 +769,6 @@ Configuration:
 
     except Exception as e:
         print(f"\nERROR: {e}", file=sys.stderr)
-        import traceback
         traceback.print_exc()
         return 1
 

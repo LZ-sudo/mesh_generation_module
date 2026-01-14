@@ -19,6 +19,7 @@ import subprocess
 import argparse
 import tempfile
 from pathlib import Path
+import traceback
 
 # Add measurement_to_parameters_inference_models to path
 script_dir = Path(__file__).parent.absolute()
@@ -340,7 +341,6 @@ Example usage:
 
     except Exception as e:
         print(f"\n✗ ERROR: {e}", file=sys.stderr)
-        import traceback
         traceback.print_exc()
         return 1
 
