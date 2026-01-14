@@ -79,19 +79,135 @@ The configuration is stored in `tabm_config.json` with the following sections:
 - Lower performance than advanced embeddings
 - Use for quick testing only
 
-## Hyperparameter Tuning
+## Automated Hyperparameter Optimization
 
-For optimal results, tune hyperparameters using Optuna TPE sampler (50-100 trials):
+The `train_model.py` script includes integrated hyperparameter optimization using Optuna's TPE (Tree-structured Parzen Estimator) sampler.
+
+### Quick Start
+
+```bash
+# Optimization + Training in one command (recommended)
+python train_model.py \
+  --input lookup_table.csv \
+  --config _tabm_config.json \
+  --output model.pkl \
+  --optimization-trials 30 \
+  --optimization-output optimization_results/
+
+# Resume interrupted optimization
+python train_model.py \
+  --input lookup_table.csv \
+  --config _tabm_config.json \
+  --output model.pkl \
+  --optimization-trials 50 \
+  --study-name my_study \
+  --resume
+
+# Direct training without optimization (if you already have good hyperparameters)
+python train_model.py \
+  --input lookup_table.csv \
+  --config best_config.json \
+  --output model.pkl
+```
+
+### What Gets Optimized
+
+The optimization searches over the **6 core hyperparameters** recommended by the TabM paper:
+
+**Model Architecture:**
+- `n_blocks`: [1, 4] - Number of residual blocks
+- `d_block`: [64, 1024, step=16] - Hidden dimension per block
+
+**Training:**
+- `learning_rate`: [1e-4, 5e-3] log-uniform
+- `weight_decay`: {0} ∪ [1e-4, 1e-1] log-uniform
+
+**Feature Embeddings (PiecewiseLinear only):**
+- `d_embedding`: [8, 32, step=4] - Embedding dimension
+- `min_samples_leaf`: [32, 128, step=16] - Tree granularity (n_bins)
+
+**Fixed in base config (not optimized):**
+- `ensemble_size` (k) - Usually 32 or 64 (TabM recommendation: don't tune)
+- `embedding_type` - Fixed to piecewise_linear for height-prioritized inference
+- `batch_size` - From base config
+- `dropout` - From base config
+- `measurement_noise_std` - From base config
+
+### Number of Trials
+
+Follow TabM paper recommendations:
+- **Small datasets (<50k samples)**: 50-100 trials
+- **Large datasets (150k+ samples)**: 30-50 trials
+
+More trials = better optimization but longer runtime. Each trial trains a model from scratch.
+
+### Output Files
+
+The `--optimization-output` directory contains:
+
+```
+optimization_results/
+├── <study_name>.db              # SQLite database with all trial results
+├── best_config.json             # Best hyperparameter configuration
+├── optimization_history.png     # Optimization progress visualization
+└── param_importances.png        # Which parameters mattered most
+```
+
+The final trained model is saved to the `--output` path (outside optimization directory).
+
+### Automatic Training After Optimization
+
+**No manual step needed!** When you run with `--optimization-trials`, the script:
+
+1. **Optimization phase** (1-2 hours for 30 trials):
+   - Runs N trials with reduced epochs (50) for fast evaluation
+   - Saves all artifacts to `--optimization-output` directory
+
+2. **Training phase** (10-20 minutes):
+   - Automatically trains final model with best config
+   - Uses full epochs (150) for production quality
+   - Saves model to `--output` path
+
+This is a **single command** that handles both optimization and training!
+
+### Tips for Best Results
+
+1. **Organize by demographic**: Use separate output directories for different populations:
+   ```bash
+   python train_model.py --input female_asian.csv --optimization-trials 30 --optimization-output results/female_asian/
+   python train_model.py --input male_asian.csv --optimization-trials 30 --optimization-output results/male_asian/
+   ```
+
+2. **Fix ensemble_size**: Keep `k` at 32 or 64 in base config (TabM recommendation: don't tune during optimization)
+
+3. **Height prioritization**: Base config already has `bin_target: "height"` for height-aware feature embeddings
+
+4. **Monitor per-target MAE**: The script logs MAE for each macroparameter (age, height, proportions) during optimization
+
+5. **Resume if interrupted**: Use `--resume` flag to continue from last completed trial:
+   ```bash
+   python train_model.py --input data.csv --optimization-trials 50 --study-name my_study --resume
+   ```
+
+6. **Start conservative**: Begin with 30 trials, extend to 50 if needed (each trial ~2-3 min on GPU)
+
+### Manual Hyperparameter Tuning (Alternative)
+
+If you prefer manual tuning, here are the recommended search ranges from the TabM paper:
 
 | Parameter | Range |
 |-----------|-------|
-| `k` | Usually fixed at 32 or 64 |
+| `k` (ensemble_size) | Usually fixed at 32 or 64 |
 | `n_blocks` | UniformInt[1, 4] |
 | `d_block` | UniformInt[64, 1024, step=16] |
 | `lr` | LogUniform[1e-4, 5e-3] |
 | `weight_decay` | {0, LogUniform[1e-4, 1e-1]} |
 | `d_embedding` | UniformInt[8, 32, step=4] |
 | `frequency_init_scale` | LogUniform[0.01, 1.0] (periodic only) |
+| `min_samples_leaf` | UniformInt[32, 128] (tree bins) |
+| `batch_size` | Categorical[64, 128, 256] |
+
+**Note:** The automated optimization uses these exact ranges from the TabM paper.
 
 ## Saved Model Contents
 
