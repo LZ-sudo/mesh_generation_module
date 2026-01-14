@@ -1,0 +1,72 @@
+{
+  "description": "TabM training configuration for macroparameter inference",
+  "version": "1.0",
+
+  "data": {
+    "macroparameters": ["age", "height", "proportions"],
+    "measurements": [
+      "height_cm",
+      "shoulder_width_cm",
+      "hip_width_cm",
+      "head_width_cm",
+      "upper_arm_length_cm",
+      "forearm_length_cm",
+      "hand_length_cm",
+      "upper_leg_length_cm",
+      "lower_leg_length_cm",
+      "shoulder_to_waist_cm"
+    ],
+    "test_size": 0.2,
+    "val_size": 0.2,
+    "random_seed": 42
+  },
+
+  "embeddings": {
+    "type": "piecewise_linear",
+    "piecewise_linear": {
+      "d_embedding": 12,
+      "activation": false,
+      "version": "B",
+      "bin_method": "tree",
+      "tree_kwargs": {
+        "min_samples_leaf": 64,
+        "min_impurity_decrease": 0.0001
+      },
+      "bin_target": "height"
+    },
+    "periodic": {
+      "d_embedding": 24,
+      "lite": true,
+      "frequency_init_scale": null
+    },
+    "linear_relu": {
+      "d_embedding": 32
+    }
+  },
+
+  "model": {
+    "ensemble_size": 32,
+    "n_blocks": null,
+    "d_block": null,
+    "dropout": null
+  },
+
+  "training": {
+    "learning_rate": 0.002,
+    "weight_decay": 0.0003,
+    "n_epochs": 10,
+    "batch_size": 64,
+    "early_stopping_patience": 15,
+    "gradient_clip_norm": 1.0,
+    "measurement_noise_std": 0.5
+  },
+
+  "notes": {
+    "embeddings": "Feature embeddings are CRITICAL for good performance. Type can be 'piecewise_linear', 'periodic', or 'linear_relu'",
+    "learning_rate": "TabM paper default: 0.002. Tune in range LogUniform[1e-4, 5e-3]",
+    "weight_decay": "TabM paper default: 0.0003. Tune in range {0, LogUniform[1e-4, 1e-1]}",
+    "d_embedding": "Tune in range UniformInt[8, 32, step=4] for piecewise_linear",
+    "n_bins": "Tree-based bins adapt to data. For quantile bins, tune UniformInt[2, 128]",
+    "measurement_noise": "Recommended: 0.5 cm for robustness to real-world measurement errors"
+  }
+}

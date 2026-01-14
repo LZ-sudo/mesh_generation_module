@@ -35,6 +35,7 @@ Key advantages of TabM over previous approaches:
 import pandas as pd
 import numpy as np
 import pickle
+import json
 import argparse
 import sys
 import time
@@ -59,14 +60,176 @@ except ImportError as e:
     print(f"ERROR: tabm or dependencies not installed: {e}")
     print("Install with: pip install tabm torch scikit-learn tqdm")
 
-# Configuration
-# Only predicting skeletal structure parameters (muscle=0.5, weight=0.5 used as defaults)
-MACROPARAMETERS = ['age', 'height', 'proportions']
-MEASUREMENTS = [
-    'height_cm', 'shoulder_width_cm', 'hip_width_cm', 'head_width_cm',
-    'upper_arm_length_cm', 'forearm_length_cm', 'hand_length_cm',
-    'upper_leg_length_cm', 'lower_leg_length_cm', 'shoulder_to_waist_cm'
-]
+# # Configuration
+# # Only predicting skeletal structure parameters (muscle=0.5, weight=0.5 used as defaults)
+# MACROPARAMETERS = ['age', 'height', 'proportions']
+# MEASUREMENTS = [
+#     'height_cm', 'shoulder_width_cm', 'hip_width_cm', 'head_width_cm',
+#     'upper_arm_length_cm', 'forearm_length_cm', 'hand_length_cm',
+#     'upper_leg_length_cm', 'lower_leg_length_cm', 'shoulder_to_waist_cm'
+# ]
+
+def load_config(config_path):
+    """
+    Load training configuration from JSON file.
+
+    Args:
+        config_path: Path to JSON config file
+
+    Returns:
+        Dictionary with configuration settings
+    """
+    print(f"Loading configuration from: {config_path}")
+
+    if not Path(config_path).exists():
+        raise FileNotFoundError(f"Config file not found: {config_path}")
+
+    with open(config_path, 'r') as f:
+        config = json.load(f)
+
+    print(f"  Config version: {config.get('version', 'unknown')}")
+    print(f"  Description: {config.get('description', 'N/A')}")
+
+    return config
+
+
+def create_embeddings(config, X_train, y_train):
+    """
+    Create feature embeddings based on configuration.
+
+    Args:
+        config: Configuration dictionary with 'embeddings' section
+        X_train: Training features (DataFrame)
+        y_train: Training targets (DataFrame)
+
+    Returns:
+        Embedding module or None
+    """
+    embedding_config = config.get('embeddings', {})
+    embedding_type = embedding_config.get('type', 'piecewise_linear')
+
+    print(f"\nCreating {embedding_type} embeddings...")
+
+    if embedding_type == 'piecewise_linear':
+        try:
+            from rtdl_num_embeddings import PiecewiseLinearEmbeddings, compute_bins
+            import torch
+
+            pl_config = embedding_config['piecewise_linear']
+            bin_method = pl_config.get('bin_method', 'tree')
+
+            # Compute bins
+            print(f"  Computing bins using method: {bin_method}")
+            if bin_method == 'tree':
+                # Target-aware tree-based bins
+                tree_kwargs = pl_config.get('tree_kwargs', {
+                    'min_samples_leaf': 64,
+                    'min_impurity_decrease': 1e-4
+                })
+                bin_target = pl_config.get('bin_target', 'height')
+
+                if bin_target not in y_train.columns:
+                    print(f"  WARNING: Target '{bin_target}' not found, using first target")
+                    bin_target = y_train.columns[0]
+
+                print(f"  Using target: {bin_target}")
+                # Convert to PyTorch tensors (compute_bins requires tensors)
+                X_tensor = torch.FloatTensor(X_train.values)
+                y_tensor = torch.FloatTensor(y_train[bin_target].values)
+
+                bins = compute_bins(
+                    X_tensor,
+                    y=y_tensor,
+                    regression=True,
+                    tree_kwargs=tree_kwargs
+                )
+            else:
+                # Quantile-based bins
+                X_tensor = torch.FloatTensor(X_train.values)
+                bins = compute_bins(X_tensor)
+
+            # Create embeddings
+            d_embedding = pl_config.get('d_embedding', 12)
+            activation = pl_config.get('activation', False)
+            version = pl_config.get('version', 'B')
+
+            print(f"  d_embedding: {d_embedding}, activation: {activation}, version: {version}")
+
+            embeddings = PiecewiseLinearEmbeddings(
+                bins,
+                d_embedding=d_embedding,
+                activation=activation,
+                version=version
+            )
+
+            total_bins = sum(len(b) - 1 for b in bins)
+            print(f"  Created embeddings with {total_bins} total bins across {len(bins)} features")
+
+            return embeddings
+
+        except ImportError as e:
+            print(f"  ERROR: rtdl_num_embeddings not installed: {e}")
+            print(f"  Install with: pip install rtdl_num_embeddings scikit-learn")
+            return None
+
+    elif embedding_type == 'periodic':
+        try:
+            from rtdl_num_embeddings import PeriodicEmbeddings
+
+            per_config = embedding_config['periodic']
+            d_embedding = per_config.get('d_embedding', 24)
+            lite = per_config.get('lite', True)
+            freq_scale = per_config.get('frequency_init_scale', None)
+
+            kwargs = {
+                'n_features': X_train.shape[1],
+                'd_embedding': d_embedding,
+                'lite': lite
+            }
+            if freq_scale is not None:
+                kwargs['frequency_init_scale'] = freq_scale
+
+            print(f"  d_embedding: {d_embedding}, lite: {lite}")
+
+            embeddings = PeriodicEmbeddings(**kwargs)
+            print(f"  Created periodic embeddings")
+
+            return embeddings
+
+        except ImportError as e:
+            print(f"  ERROR: rtdl_num_embeddings not installed: {e}")
+            print(f"  Install with: pip install rtdl_num_embeddings")
+            return None
+
+    elif embedding_type == 'linear_relu':
+        try:
+            from rtdl_num_embeddings import LinearReLUEmbeddings
+
+            lr_config = embedding_config['linear_relu']
+            d_embedding = lr_config.get('d_embedding', 32)
+
+            print(f"  d_embedding: {d_embedding}")
+
+            embeddings = LinearReLUEmbeddings(
+                n_features=X_train.shape[1],
+                d_embedding=d_embedding
+            )
+            print(f"  Created linear+ReLU embeddings")
+
+            return embeddings
+
+        except ImportError as e:
+            print(f"  ERROR: rtdl_num_embeddings not installed: {e}")
+            print(f"  Install with: pip install rtdl_num_embeddings")
+            return None
+
+    elif embedding_type == 'none' or embedding_type is None:
+        print(f"  No embeddings will be used (not recommended)")
+        return None
+
+    else:
+        print(f"  WARNING: Unknown embedding type '{embedding_type}', using no embeddings")
+        return None
 
 
 def load_data(csv_path):
@@ -110,32 +273,41 @@ def load_data(csv_path):
     return X, y, macro_bounds
 
 
-def train_tabm_model(X_train, y_train, X_test, y_test, use_cuda=True,
-                     learning_rate=1e-3, n_epochs=150, batch_size=128,
-                     ensemble_size=64, weight_decay=5e-6, measurement_noise_std=0.0):
+def train_tabm_model(X_train, y_train, X_test, y_test, config, use_cuda=True):
     """
-    Train TabM model for multi-output regression.
+    Train TabM model for multi-output regression using configuration.
 
-    Trains a SINGLE TabM model that predicts 3 skeletal macroparameters simultaneously.
+    Trains a SINGLE TabM model that predicts skeletal macroparameters simultaneously.
     Uses ensemble of MLPs with weight sharing for efficient, regularized training.
 
-    Args:`
-        X_train: Training measurements (n_samples, 10) - DataFrame
-        y_train: Training macroparameters (n_samples, 3) - DataFrame
+    Args:
+        X_train: Training measurements (n_samples, n_features) - DataFrame
+        y_train: Training macroparameters (n_samples, n_targets) - DataFrame
         X_test: Test measurements - DataFrame
         y_test: Test macroparameters - DataFrame
+        config: Configuration dictionary with 'training', 'model', 'embeddings' sections
         use_cuda: Whether to use CUDA acceleration (default: True)
-        learning_rate: Learning rate for AdamW optimizer (default: 1e-3)
-        n_epochs: Maximum number of epochs (default: 150)
-        batch_size: Batch size for training (default: 256)
-        ensemble_size: Number of ensemble members (k parameter) (default: 128)
-        weight_decay: L2 regularization weight decay (default: 5e-6)
-        measurement_noise_std: Std dev of Gaussian noise to add to measurements during training (cm)
-                              For robustness to real-world measurement errors (default: 0.0 = no noise)
 
     Returns:
-        Tuple of (model, scalers, performance metrics)
+        Tuple of (model, scalers, performance metrics, config_used)
     """
+    # Extract configuration
+    train_cfg = config.get('training', {})
+    model_cfg = config.get('model', {})
+
+    learning_rate = train_cfg.get('learning_rate', 2e-3)
+    weight_decay = train_cfg.get('weight_decay', 3e-4)
+    n_epochs = train_cfg.get('n_epochs', 150)
+    batch_size = train_cfg.get('batch_size', 128)
+    patience = train_cfg.get('early_stopping_patience', 15)
+    gradient_clip_norm = train_cfg.get('gradient_clip_norm', 1.0)
+    measurement_noise_std = train_cfg.get('measurement_noise_std', 0.0)
+    val_size = config.get('data', {}).get('val_size', 0.2)
+
+    ensemble_size = model_cfg.get('ensemble_size', 64)
+    n_blocks = model_cfg.get('n_blocks', None)
+    d_block = model_cfg.get('d_block', None)
+    dropout = model_cfg.get('dropout', None)
     print("\n" + "=" * 80)
     print("TRAINING TabM MODEL (Multi-Output Regression)")
     print("=" * 80)
@@ -172,6 +344,10 @@ def train_tabm_model(X_train, y_train, X_test, y_test, use_cuda=True,
 
     start_time = time.time()
 
+    # Create feature embeddings BEFORE preprocessing
+    # (embeddings need raw data for bin computation)
+    num_embeddings = create_embeddings(config, X_train, y_train)
+
     # Standardize features and targets
     print("\nPreprocessing data...")
     X_scaler = StandardScaler()
@@ -180,10 +356,10 @@ def train_tabm_model(X_train, y_train, X_test, y_test, use_cuda=True,
     X_train_scaled = X_scaler.fit_transform(X_train.values)
     y_train_scaled = y_scaler.fit_transform(y_train.values)
 
-    # Split training into train/validation (80/20)
+    # Split training into train/validation
     from sklearn.model_selection import train_test_split as split_data
     X_train_fit, X_val_fit, y_train_fit, y_val_fit = split_data(
-        X_train_scaled, y_train_scaled, test_size=0.2, random_state=42
+        X_train_scaled, y_train_scaled, test_size=val_size, random_state=42
     )
 
     print(f"  Train samples: {len(X_train_fit)}, Validation samples: {len(X_val_fit)}")
@@ -201,14 +377,30 @@ def train_tabm_model(X_train, y_train, X_test, y_test, use_cuda=True,
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
 
-    # Create TabM model
+    # Create TabM model with embeddings and optional architecture params
     print("\nInitializing TabM model...")
-    model = TabM.make(
-        n_num_features=X_train.shape[1],  # 10 measurements
-        cat_cardinalities=[],              # No categorical features
-        d_out=y_train.shape[1],            # 3 macroparameters (age, height, proportions)
-        k=ensemble_size                    # Ensemble size
-    )
+
+    # Build TabM.make() arguments
+    tabm_kwargs = {
+        'n_num_features': X_train.shape[1],
+        'cat_cardinalities': [],
+        'd_out': y_train.shape[1],
+        'k': ensemble_size
+    }
+
+    # Add embeddings if created
+    if num_embeddings is not None:
+        tabm_kwargs['num_embeddings'] = num_embeddings
+
+    # Add optional architecture params if specified
+    if n_blocks is not None:
+        tabm_kwargs['n_blocks'] = n_blocks
+    if d_block is not None:
+        tabm_kwargs['d_block'] = d_block
+    if dropout is not None:
+        tabm_kwargs['dropout'] = dropout
+
+    model = TabM.make(**tabm_kwargs)
     model = model.to(device)
 
     print(f"  Model parameters: {sum(p.numel() for p in model.parameters()):,}")
@@ -222,11 +414,10 @@ def train_tabm_model(X_train, y_train, X_test, y_test, use_cuda=True,
 
     # Training loop
     print(f"\nStarting training for up to {n_epochs} epochs...")
-    print("  Using early stopping based on validation loss (patience=15)")
+    print(f"  Using early stopping based on validation loss (patience={patience})")
 
     best_val_loss = float('inf')
     patience_counter = 0
-    patience = 15
     best_state = None
     best_epoch = 0
 
@@ -257,7 +448,7 @@ def train_tabm_model(X_train, y_train, X_test, y_test, use_cuda=True,
             loss = criterion(predictions, y_expanded)
 
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=gradient_clip_norm)
             optimizer.step()
 
             train_losses.append(loss.item())
@@ -391,10 +582,10 @@ def train_tabm_model(X_train, y_train, X_test, y_test, use_cuda=True,
         'y_scaler': y_scaler
     }
 
-    return model, scalers, performance
+    return model, scalers, performance, config
 
 
-def save_model(model, scalers, macro_bounds, performance, output_path):
+def save_model(model, scalers, macro_bounds, performance, config, output_path):
     """
     Save trained TabM model to pickle file.
 
@@ -403,6 +594,7 @@ def save_model(model, scalers, macro_bounds, performance, output_path):
         scalers: Dictionary with 'X_scaler' and 'y_scaler'
         macro_bounds: Dictionary of macroparameter bounds
         performance: Performance metrics
+        config: Configuration dictionary used for training
         output_path: Path to save model file
     """
     output_path = Path(output_path)
@@ -423,7 +615,8 @@ def save_model(model, scalers, macro_bounds, performance, output_path):
         'performance': performance,
         'model_type': 'TabM_MultiOutput',
         'training_date': time.strftime('%Y-%m-%d %H:%M:%S'),
-        'ensemble_size': performance.get('ensemble_size', 128)
+        'ensemble_size': performance.get('ensemble_size', 128),
+        'config': config  # Save configuration for reproducibility
     }
 
     with open(output_path, 'wb') as f:
@@ -444,17 +637,22 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Train with default settings (uses GPU if available)
-  python train_model.py --input lookup_tables/lookup_table_female_asian_lhs.csv
+  # Train with default config (uses tabm_config.json)
+  python measurement_to_parameters_inference_models/train_model.py --input lookup_tables/lookup_table_female_asian_lhs.csv
 
-  # Train with custom hyperparameters
-  python train_model.py --input lookup_tables/lookup_table_female_asian_lhs.csv --learning-rate 5e-3 --ensemble-size 64
+  # Train with custom config file
+  python measurement_to_parameters_inference_models/train_model.py --input data.csv --config my_config.json
 
-  # Train with more epochs
-  python train_model.py --input lookup_tables/lookup_table_female_asian_lhs.csv --epochs 200
+  # Train with custom output path
+  python measurement_to_parameters_inference_models/train_model.py --input data.csv --output my_model.pkl
 
   # Force CPU-only (not recommended for large datasets)
-  python train_model.py --input lookup_tables/lookup_table_female_asian_lhs.csv --no-cuda
+  python measurement_to_parameters_inference_models/train_model.py --input data.csv --no-cuda
+
+Configuration:
+  All training hyperparameters are specified in the JSON config file.
+  Edit tabm_config.json to change learning rate, ensemble size, embeddings, etc.
+  See tabm_config.json for detailed parameter descriptions and tuning ranges.
         """
     )
 
@@ -473,65 +671,16 @@ Examples:
     )
 
     parser.add_argument(
-        '--test-size',
-        type=float,
-        default=0.2,
-        help='Fraction of data to use for testing (default: 0.2)'
-    )
-
-    parser.add_argument(
-        '--random-seed',
-        type=int,
-        default=42,
-        help='Random seed for reproducibility (default: 42)'
+        '--config',
+        type=str,
+        default='_tabm_config.json',
+        help='Path to JSON configuration file (default: _tabm_config.json in same directory)'
     )
 
     parser.add_argument(
         '--no-cuda',
         action='store_true',
         help='Disable CUDA acceleration and use CPU only'
-    )
-
-    parser.add_argument(
-        '--learning-rate',
-        type=float,
-        default=1e-3,
-        help='Learning rate for AdamW optimizer (default: 1e-3)'
-    )
-
-    parser.add_argument(
-        '--epochs',
-        type=int,
-        default=150,
-        help='Maximum number of training epochs (default: 150). Early stopping with patience=15.'
-    )
-
-    parser.add_argument(
-        '--batch-size',
-        type=int,
-        default=128,
-        help='Batch size for training (default: 128)'
-    )
-
-    parser.add_argument(
-        '--ensemble-size',
-        type=int,
-        default=64,
-        help='Ensemble size (k parameter) - number of ensemble members (default: 64)'
-    )
-
-    parser.add_argument(
-        '--weight-decay',
-        type=float,
-        default=5e-6,
-        help='L2 regularization weight decay (default: 5e-6)'
-    )
-
-    parser.add_argument(
-        '--measurement-noise',
-        type=float,
-        default=0.0,
-        help='Std deviation of Gaussian noise to add to measurements during training (cm). Improves robustness to real-world measurement errors. Recommended: 0.5 (default: 0.0 = no noise)'
     )
 
     args = parser.parse_args()
@@ -545,31 +694,58 @@ Examples:
     print("=" * 80)
     print("TabM TRAINING FOR INVERSE MAPPING")
     print("=" * 80)
-    print(f"\nConfiguration:")
-    print(f"  Input: {args.input}")
-    print(f"  Output: {args.output}")
-    print(f"  Test split: {args.test_size * 100:.0f}%")
-    print(f"  Learning rate: {args.learning_rate}")
-    print(f"  Weight decay: {args.weight_decay}")
-    print(f"  Epochs: {args.epochs}")
-    print(f"  Batch size: {args.batch_size}")
-    print(f"  Ensemble size: {args.ensemble_size}")
-    print(f"  Measurement noise: ±{args.measurement_noise:.2f} cm")
-    print(f"  Random seed: {args.random_seed}")
-    print(f"  CUDA: {'Disabled (CPU only)' if args.no_cuda else 'Enabled (if available)'}")
 
     try:
+        # Load configuration
+        print("\n" + "=" * 80)
+        config_path = Path(args.config)
+        if not config_path.is_absolute():
+            # Look for config in same directory as script
+            script_dir = Path(__file__).parent
+            config_path = script_dir / args.config
+
+        config = load_config(config_path)
+
+        # Extract key settings for display
+        data_cfg = config.get('data', {})
+        train_cfg = config.get('training', {})
+        model_cfg = config.get('model', {})
+        embed_cfg = config.get('embeddings', {})
+
+        print(f"\nConfiguration Summary:")
+        print(f"  Input data: {args.input}")
+        print(f"  Output model: {args.output}")
+        print(f"  Config file: {config_path}")
+        print(f"  Test split: {data_cfg.get('test_size', 0.2) * 100:.0f}%")
+        print(f"  Random seed: {data_cfg.get('random_seed', 42)}")
+        print(f"  Embeddings: {embed_cfg.get('type', 'none')}")
+        print(f"  Learning rate: {train_cfg.get('learning_rate', 0.002)}")
+        print(f"  Weight decay: {train_cfg.get('weight_decay', 0.0003)}")
+        print(f"  Epochs (max): {train_cfg.get('n_epochs', 150)}")
+        print(f"  Batch size: {train_cfg.get('batch_size', 128)}")
+        print(f"  Ensemble size (k): {model_cfg.get('ensemble_size', 64)}")
+        print(f"  Measurement noise: ±{train_cfg.get('measurement_noise_std', 0.0):.2f} cm")
+        print(f"  CUDA: {'Disabled (CPU only)' if args.no_cuda else 'Enabled (if available)'}")
+
         # Load data
         print("\n" + "=" * 80)
+        # Update MACROPARAMETERS and MEASUREMENTS from config if specified
+        global MACROPARAMETERS, MEASUREMENTS
+        MACROPARAMETERS = data_cfg.get('macroparameters')
+        MEASUREMENTS = data_cfg.get('measurements')
+
         X, y, macro_bounds = load_data(args.input)
 
         print(f"\n[OK] Loaded {len(X)} samples - TabM can handle large datasets efficiently!")
 
         # Split data
+        test_size = data_cfg.get('test_size', 0.2)
+        random_seed = data_cfg.get('random_seed', 42)
+
         X_train, X_test, y_train, y_test = train_test_split(
             X, y,
-            test_size=args.test_size,
-            random_state=args.random_seed
+            test_size=test_size,
+            random_state=random_seed
         )
 
         print(f"\nData split:")
@@ -578,21 +754,15 @@ Examples:
 
         # Train model
         use_cuda = not args.no_cuda
-        device = 'cuda' if (use_cuda and CUDA_AVAILABLE) else 'cpu'
 
-        model, scalers, performance = train_tabm_model(
+        model, scalers, performance, config = train_tabm_model(
             X_train, y_train, X_test, y_test,
-            use_cuda=use_cuda,
-            learning_rate=args.learning_rate,
-            n_epochs=args.epochs,
-            batch_size=args.batch_size,
-            ensemble_size=args.ensemble_size,
-            weight_decay=args.weight_decay,
-            measurement_noise_std=args.measurement_noise
+            config=config,
+            use_cuda=use_cuda
         )
 
         # Save model
-        save_model(model, scalers, macro_bounds, performance, args.output)
+        save_model(model, scalers, macro_bounds, performance, config, args.output)
 
         print("\n" + "=" * 80)
         print("TRAINING COMPLETE")
