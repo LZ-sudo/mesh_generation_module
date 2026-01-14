@@ -9,3 +9,9 @@ macroparameters_inference_weight_files/
 mpfb_hair_assets/
 tabM_documentation_references/
 CLAUDE.md
+
+# Optimization outputs
+optimization_output/
+*.db
+optimization_history.png
+param_importances.png

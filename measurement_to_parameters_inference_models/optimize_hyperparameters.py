@@ -279,11 +279,16 @@ def run_optimization(
         device: Device to use for training ('cuda' or 'cpu')
 
     Returns:
-        Best configuration dictionary
+        Tuple of (best_config, study, output_dir)
     """
     print("=" * 80)
     print("HYPERPARAMETER OPTIMIZATION WITH OPTUNA TPE SAMPLER")
     print("=" * 80)
+
+    # Create output directory for this study
+    output_dir = Path('optimization_output') / study_name
+    output_dir.mkdir(parents=True, exist_ok=True)
+    print(f"\nOutput directory: {output_dir}")
 
     # Load base configuration and data
     base_config = load_config(base_config_path, verbose=True)
@@ -322,7 +327,9 @@ def run_optimization(
 
     # Create or load study
     if storage is None:
-        storage = f"sqlite:///{study_name}.db"
+        db_path = output_dir / f"{study_name}.db"
+        storage = f"sqlite:///{db_path}"
+        print(f"  Database: {db_path}")
 
     load_if_exists = resume
 
@@ -396,10 +403,11 @@ def run_optimization(
         'best_trial': study.best_trial.number,
         'best_validation_loss': study.best_value,
         'optimization_time_minutes': elapsed_time / 60,
-        'timestamp': time.strftime('%Y-%m-%d %H:%M:%S')
+        'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
+        'output_directory': str(output_dir)
     }
 
-    return best_config, study
+    return best_config, study, output_dir
 
 
 def save_best_config(config, output_path):
@@ -456,7 +464,8 @@ Examples:
   # Force CPU-only
   python optimize_hyperparameters.py --input data.csv --config _tabm_config.json --no-cuda
 
-Output:
+Output Structure:
+  All outputs are saved to: optimization_output/<study_name>/
   - best_config.json: Best hyperparameter configuration
   - <study_name>.db: SQLite database with all trial results
   - optimization_history.png: Optimization progress visualization
@@ -489,14 +498,7 @@ Output:
         '--study-name',
         type=str,
         default='tabm_optimization',
-        help='Name for the Optuna study (default: tabm_optimization)'
-    )
-
-    parser.add_argument(
-        '--output',
-        type=str,
-        default='best_config.json',
-        help='Path to save best configuration (default: best_config.json)'
+        help='Name for the Optuna study (creates subdirectory: optimization_output/<study_name>/)'
     )
 
     parser.add_argument(
@@ -534,7 +536,7 @@ Output:
             print("Using CPU (optimization will be slower)")
 
         # Run optimization
-        best_config, study = run_optimization(
+        best_config, study, output_dir = run_optimization(
             input_csv=args.input,
             base_config_path=args.config,
             n_trials=args.n_trials,
@@ -543,19 +545,20 @@ Output:
             device=device
         )
 
-        # Save best configuration
-        save_best_config(best_config, args.output)
+        # Save best configuration to output directory
+        best_config_path = output_dir / 'best_config.json'
+        save_best_config(best_config, best_config_path)
 
-        # Create visualizations
-        visualize_optimization(study, output_dir='.')
+        # Create visualizations in output directory
+        visualize_optimization(study, output_dir=output_dir)
 
         print("\n" + "=" * 80)
         print("NEXT STEPS")
         print("=" * 80)
-        print(f"\n1. Review best configuration in: {args.output}")
+        print(f"\n1. Review best configuration in: {best_config_path}")
         print(f"2. Train full model with best config:")
-        print(f"   python train_model.py --input {args.input} --config {args.output}")
-        print(f"\n3. View optimization details:")
+        print(f"   python train_model.py --input {args.input} --config {best_config_path}")
+        print(f"\n3. View optimization details in: {output_dir}/")
         print(f"   - Study database: {args.study_name}.db")
         print(f"   - History plot: optimization_history.png")
         print(f"   - Importances: param_importances.png")

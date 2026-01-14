@@ -90,13 +90,12 @@ The `optimize_hyperparameters.py` script uses Optuna's TPE (Tree-structured Parz
 python optimize_hyperparameters.py \
   --input lookup_table.csv \
   --config _tabm_config.json \
-  --n-trials 30 \
-  --output best_config.json
+  --n-trials 30
 
 # Step 2: Train model with optimized config
 python train_model.py \
   --input lookup_table.csv \
-  --config best_config.json \
+  --config optimization_output/tabm_optimization/best_config.json \
   --output model.pkl
 
 # Resume interrupted optimization
@@ -147,13 +146,25 @@ More trials = better optimization but longer runtime. Each trial trains a model 
 
 ### Output Files
 
-The optimization script creates the following files in the current directory:
+The optimization script organizes all outputs into subdirectories:
 
 ```
-<study_name>.db              # SQLite database with all trial results (default: tabm_optimization.db)
-best_config.json             # Best hyperparameter configuration (or custom --output path)
-optimization_history.png     # Optimization progress visualization
-param_importances.png        # Which parameters mattered most
+optimization_output/
+  <study_name>/              # Subdirectory named after your study (default: tabm_optimization)
+    <study_name>.db          # SQLite database with all trial results
+    best_config.json         # Best hyperparameter configuration
+    optimization_history.png # Optimization progress visualization
+    param_importances.png    # Which parameters mattered most
+```
+
+**Example:** Running with `--study-name female_asian_opt` creates:
+```
+optimization_output/
+  female_asian_opt/
+    female_asian_opt.db
+    best_config.json
+    optimization_history.png
+    param_importances.png
 ```
 
 ### Workflow
@@ -165,12 +176,14 @@ The training workflow consists of two separate steps:
    python optimize_hyperparameters.py --input data.csv --config _tabm_config.json --n-trials 30
    ```
    - Runs N trials with reduced epochs (50) for fast evaluation
-   - Saves best_config.json with optimal hyperparameters
-   - Creates visualization plots
+   - Saves all outputs to `optimization_output/tabm_optimization/`
+   - Creates best_config.json and visualization plots
 
 2. **Training phase** (10-20 minutes):
    ```bash
-   python train_model.py --input data.csv --config best_config.json --output model.pkl
+   python train_model.py --input data.csv \
+     --config optimization_output/tabm_optimization/best_config.json \
+     --output model.pkl
    ```
    - Trains final model with best config
    - Uses full epochs (150) for production quality
