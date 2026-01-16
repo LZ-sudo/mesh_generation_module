@@ -522,6 +522,146 @@ def add_standard_rig(basemesh, rig_type: str = "default") -> Tuple[Any, Any]:
         raise RuntimeError(f"Failed to add {rig_type} rig")
 
 
+def set_tpose(armature, rig_type: str = "default") -> bool:
+    """
+    Set the armature to T-pose for accurate measurements.
+
+    Uses MPFB2's built-in T-pose presets when available, with a fallback
+    to clearing pose transforms (rest pose).
+
+    Args:
+        armature: Blender armature object
+        rig_type: Type of rig ("default", "default_no_toes", "game_engine")
+
+    Returns:
+        True if T-pose was successfully applied, False otherwise
+    """
+    import bpy
+    from pathlib import Path
+
+    mpfb_path = _get_mpfb_module_path()
+    RigService = importlib.import_module(f'{mpfb_path}.services.rigservice').RigService
+    LocationService = importlib.import_module(f'{mpfb_path}.services.locationservice').LocationService
+
+    print(f"\nSetting T-pose for {rig_type} rig...")
+
+    # Ensure global poses are available (copies from source if needed)
+    try:
+        RigService.ensure_global_poses_are_available()
+    except Exception as e:
+        print(f"  Warning: Could not ensure poses are available: {e}")
+
+    # Try to find T-pose preset file
+    # MPFB2 stores poses in subdirectories by rig type
+    tpose_found = False
+    pose_dict = None
+
+    # Check both MPFB data directory and user data directory for T-pose
+    pose_directories = []
+    try:
+        mpfb_poses_dir = LocationService.get_mpfb_data("poses")
+        if mpfb_poses_dir:
+            pose_directories.append(Path(mpfb_poses_dir))
+    except Exception:
+        pass
+
+    try:
+        user_poses_dir = LocationService.get_user_data("poses")
+        if user_poses_dir:
+            pose_directories.append(Path(user_poses_dir))
+    except Exception:
+        pass
+
+    # T-pose file naming patterns to search for
+    # MPFB2 stores poses in subdirectories named {rig_type}_fk/
+    # e.g., default_fk/t-pose.json, game_engine_fk/t-pose.json
+    tpose_patterns = [
+        # Primary pattern: {rig_type}_fk/t-pose.json
+        f"{rig_type}_fk/t-pose.json",
+        # Fallback for "default_no_toes" -> use "default_fk"
+        "default_fk/t-pose.json",
+        # Additional patterns for compatibility
+        f"{rig_type}/t-pose.json",
+        "t-pose.json",
+    ]
+
+    for poses_dir in pose_directories:
+        if not poses_dir.exists():
+            continue
+
+        for pattern in tpose_patterns:
+            tpose_path = poses_dir / pattern
+            if tpose_path.exists():
+                try:
+                    with open(tpose_path, 'r') as f:
+                        pose_dict = json.load(f)
+                    print(f"  Found T-pose preset: {tpose_path}")
+                    tpose_found = True
+                    break
+                except Exception as e:
+                    print(f"  Warning: Could not load {tpose_path}: {e}")
+
+        if tpose_found:
+            break
+
+    # Apply T-pose if found
+    if pose_dict is not None:
+        try:
+            # RigService.set_pose_from_dict requires correct context (pose mode)
+            original_active = bpy.context.view_layer.objects.active
+            bpy.context.view_layer.objects.active = armature
+            bpy.ops.object.mode_set(mode='POSE')
+
+            RigService.set_pose_from_dict(armature, pose_dict, from_rest_pose=True)
+
+            # Return to object mode
+            bpy.ops.object.mode_set(mode='OBJECT')
+            bpy.context.view_layer.objects.active = original_active
+
+            print("  T-pose applied successfully using MPFB2 preset")
+
+            # Update scene to reflect pose changes
+            bpy.context.view_layer.update()
+            return True
+        except Exception as e:
+            print(f"  Warning: Could not apply T-pose preset: {e}")
+            # Try to return to object mode if we failed mid-way
+            try:
+                bpy.ops.object.mode_set(mode='OBJECT')
+            except:
+                pass
+
+    # Fallback: Clear all pose transforms (returns to rest pose)
+    # This may be A-pose depending on the rig, but it's better than nothing
+    print("  T-pose preset not found, falling back to rest pose...")
+
+    try:
+        # Store current active object
+        original_active = bpy.context.view_layer.objects.active
+
+        # Set armature as active and switch to pose mode
+        bpy.context.view_layer.objects.active = armature
+        bpy.ops.object.mode_set(mode='POSE')
+
+        # Select all bones and clear transforms
+        bpy.ops.pose.select_all(action='SELECT')
+        bpy.ops.pose.transforms_clear()
+
+        # Return to original mode
+        bpy.ops.object.mode_set(mode='OBJECT')
+        bpy.context.view_layer.objects.active = original_active
+
+        # Update scene
+        bpy.context.view_layer.update()
+
+        print("  Rest pose applied (transforms cleared)")
+        return True
+
+    except Exception as e:
+        print(f"  Error setting rest pose: {e}")
+        return False
+
+
 def configure_fk_ik_hybrid_rig(armature, instrumented_arm: str = "left"):
     """
     Configure FK/IK hybrid rigging system for IMU sensor-based motion capture.

@@ -346,7 +346,7 @@ def print_summary(param_list: list, method: str = 'grid'):
 
     # Collect fixed parameters
     fixed_params = {}
-    for key in ["gender", "cupsize", "firmness", "race"]:
+    for key in ["gender", "cupsize", "firmness", "race", "muscle", "weight"]:
         fixed_params[key] = param_list[0][key]
 
     print("\nFixed Parameters:")
@@ -412,15 +412,15 @@ Examples:
         '--method',
         type=str,
         choices=['grid', 'lhs'],
-        default='grid',
+        default='lhs',
         help='Sampling method: "grid" for grid search, "lhs" for Latin Hypercube Sampling (default: grid)'
     )
 
     parser.add_argument(
         '--n-samples',
         type=int,
-        default=9900,
-        help='Number of samples for LHS method (default: 9900, max: 10000 for TabPFN)'
+        default=100000,
+        help='Number of samples for LHS method'
     )
 
     parser.add_argument(

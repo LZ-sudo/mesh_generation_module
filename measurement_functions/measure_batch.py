@@ -125,8 +125,8 @@ def initialize_csv(output_path: str, param_list: list) -> tuple:
 
     print(f"✓ Initialized CSV: {output_path}")
     print(f"  Columns: {len(columns)}")
-    print(f"    Parameters: {len(param_columns)} (6 fixed + 5 grid)")
-    print(f"    Measurements: {len(measurement_columns)} (8 upper body + 2 leg + 1 torso)")
+    print(f"    Parameters: {len(param_columns)}")
+    print(f"    Measurements: {len(measurement_columns)}")
 
     return csv_file, csv_writer
 
@@ -180,6 +180,9 @@ def process_single_model(params: dict, rig_type: str, quiet: bool = True) -> dic
 
         # Add rig
         armature, _ = utils.add_standard_rig(basemesh, rig_type)
+
+        # Set T-pose for accurate measurements
+        utils.set_tpose(armature, rig_type)
 
         # Extract measurements
         measured = measurements.extract_all_measurements(basemesh, armature)
