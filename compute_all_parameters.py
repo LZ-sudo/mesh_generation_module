@@ -77,12 +77,12 @@ def run_microparameter_adjustment(target_measurements, macroparameters, gender, 
     full_macros = {
         'gender': gender,
         'age': macroparameters['age'],
-        'muscle': macroparameters['muscle'],
-        'weight': macroparameters['weight'],
         'height': macroparameters['height'],
         'proportions': macroparameters['proportions'],
         'cupsize': 0.5,       # Medium (default)
         'firmness': 0.5,      # Medium (default)
+        'muscle': 0.5,
+        'weight': 0.5,
         'race': race
     }
 
@@ -292,12 +292,12 @@ Example usage:
             'macro_settings': {
                 'gender': gender,
                 'age': macroparameters['age'],
-                'muscle': macroparameters['muscle'],
-                'weight': macroparameters['weight'],
                 'height': macroparameters['height'],
                 'proportions': macroparameters['proportions'],
                 'cupsize': 0.5,
                 'firmness': 0.5,
+                'muscle': 0.5,
+                'weight': 0.5,
                 'race': race
             }
         }
