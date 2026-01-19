@@ -1,4 +1,7 @@
-bpy==4.5.4
+# Note: bpy and mathutils are Blender-internal modules
+# They are NOT available on PyPI - scripts using them must run through Blender
+# Use: python run_blender.py --script your_script.py
+
 certifi==2025.10.5
 charset-normalizer==3.4.4
 Cython==3.2.0
@@ -7,7 +10,6 @@ numpy==1.26.4
 requests==2.32.5
 urllib3==2.5.0
 zstandard==0.25.0
-mathutils==3.3.0
 scikit-learn==1.7.2
 scipy>=1.11.0
 pandas>=2.0.0
