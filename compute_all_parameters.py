@@ -165,7 +165,7 @@ Example input JSON format:
 {
   "gender": "female",
   "race": "asian",
-  "measurements": {
+  "body_measurements": {
     "height_cm": 165.0,
     "shoulder_width_cm": 38.5,
     "hip_width_cm": 35.2,
@@ -261,7 +261,7 @@ Example usage:
         print(f"  Race: {', '.join([f'{k}={v:.2f}' for k, v in race.items()])}")
 
         # Extract and validate measurements
-        measurements_dict = input_data.get('measurements', input_data)
+        measurements_dict = input_data.get('body_measurements', input_data)
         target_measurements = validate_input_measurements(measurements_dict)
 
         print(f"\nTarget Measurements:")

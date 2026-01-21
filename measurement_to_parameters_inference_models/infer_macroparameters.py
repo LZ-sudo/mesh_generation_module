@@ -29,6 +29,12 @@ import sys
 import traceback
 from pathlib import Path
 
+# Add parent directory to path for imports
+script_dir = Path(__file__).parent.absolute()
+parent_dir = script_dir.parent.absolute()
+if str(parent_dir) not in sys.path:
+    sys.path.insert(0, str(parent_dir))
+    
 from utils import convert_numpy_types
 
 # Try to import PyTorch for TabM models
@@ -334,10 +340,11 @@ def process_single(input_path, models, macro_bounds, method, weights):
 
     Expected JSON format:
     {
-      "gender": "female",  # Optional: "male" or "female" (default: "female")
+      "gender": "male",    # Optional: "male" or "female" (default: "female")
       "race": "asian",     # Optional: "asian", "caucasian", or "african" (default: "asian")
-      "measurements": {    # Can also be at top level
-        "height_cm": 165.0,
+      "body_measurements": {
+        "height_cm": 168.5,
+        "shoulder_width_cm": 35.0,
         ...
       }
     }
@@ -366,11 +373,11 @@ def process_single(input_path, models, macro_bounds, method, weights):
     print(f"  Gender: {'Male' if gender > 0.5 else 'Female'}")
     print(f"  Race: {', '.join([f'{k}={v:.2f}' for k, v in race.items()])}")
 
-    # Extract measurements (can be nested under 'measurements' or at top level)
-    if 'measurements' in input_data:
-        target_measurements = input_data['measurements']
+    # Extract measurements from 'body_measurements' key
+    if 'body_measurements' in input_data:
+        target_measurements = input_data['body_measurements']
     else:
-        # Filter out non-measurement keys
+        # Filter out non-measurement keys from top level
         target_measurements = {k: v for k, v in input_data.items()
                              if k in MEASUREMENTS}
 
