@@ -67,9 +67,9 @@ Example usage:
     parser.add_argument(
         '--rig-type',
         type=str,
-        default='default',
+        default='default_no_toes',
         choices=['default', 'default_no_toes', 'game_engine'],
-        help='Type of rig to add (default: default)'
+        help='Type of rig to add (default: default_no_toes)'
     )
     
     parser.add_argument(

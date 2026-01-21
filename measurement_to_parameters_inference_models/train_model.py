@@ -45,8 +45,7 @@ import traceback
 
 # Import shared training utilities
 from model_training_utils import (
-    load_config, create_embeddings, load_data,
-    build_tabm_kwargs, standardize_data, create_data_loaders
+    load_config, create_embeddings, load_data
 )
 
 # Try to import TabM and PyTorch utilities
@@ -468,6 +467,7 @@ Configuration:
         help='Path to save trained model (default: macroparameters_inference_models_tabm.pkl)'
     )
 
+    # Note: use relative path for configuration generated from TPE optimisation script (e.g --config ../optimization_output/{name_of_study}/best_config.json)
     parser.add_argument(
         '--config',
         type=str,
