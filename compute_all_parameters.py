@@ -71,7 +71,9 @@ def run_microparameter_adjustment(target_measurements, macroparameters, gender, 
         rig_type: Type of rig to use
 
     Returns:
-        Dictionary of adjusted microparameters (with -incr/-decr suffixes)
+        Tuple of:
+        - Dictionary of adjusted microparameters (with -incr/-decr suffixes)
+        - Dictionary with measurement report (target vs actual comparisons)
     """
     # Build full macro settings
     full_macros = {
@@ -98,6 +100,9 @@ def run_microparameter_adjustment(target_measurements, macroparameters, gender, 
     with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
         output_path = Path(f.name)
 
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+        report_path = Path(f.name)
+
     try:
         # Run Blender with adjust_microparameters.py
         adjust_script_path = inference_dir / 'adjust_microparameters.py'
@@ -110,6 +115,7 @@ def run_microparameter_adjustment(target_measurements, macroparameters, gender, 
             '--target', str(target_path),
             '--macros', str(macros_path),
             '--output', str(output_path),
+            '--report', str(report_path),
             '--rig-type', rig_type,
             '--verbose'
         ]
@@ -144,13 +150,19 @@ def run_microparameter_adjustment(target_measurements, macroparameters, gender, 
         with open(output_path, 'r') as f:
             adjusted_micros = json.load(f)
 
-        return adjusted_micros
+        # Load measurement report
+        measurement_report = {}
+        if report_path.exists():
+            with open(report_path, 'r') as f:
+                measurement_report = json.load(f)
+
+        return adjusted_micros, measurement_report
 
     except subprocess.TimeoutExpired:
         raise RuntimeError("Microparameter adjustment timed out after 10 minutes")
     finally:
         # Clean up temporary files
-        for path in [target_path, macros_path, output_path]:
+        for path in [target_path, macros_path, output_path, report_path]:
             if path.exists():
                 path.unlink()
 
@@ -225,6 +237,13 @@ Example usage:
         '--no-micro-adjustment',
         action='store_true',
         help='Skip microparameter adjustment (compute macros only)'
+    )
+
+    parser.add_argument(
+        '--report',
+        type=str,
+        default=None,
+        help='Optional path to save measurement report JSON (target vs actual comparison)'
     )
 
     args = parser.parse_args()
@@ -308,7 +327,7 @@ Example usage:
             print("STEP 2: Adjusting Microparameters")
             print("-" * 80)
 
-            adjusted_micros = run_microparameter_adjustment(
+            adjusted_micros, measurement_report = run_microparameter_adjustment(
                 target_measurements,
                 macroparameters,
                 gender,
@@ -319,6 +338,22 @@ Example usage:
             output_data['micro_settings'] = adjusted_micros
 
             print(f"\nAdjusted {len(adjusted_micros)} microparameters")
+
+            # Print report summary if available
+            if measurement_report and 'summary' in measurement_report:
+                summary = measurement_report['summary']
+                print(f"Measurement accuracy:")
+                print(f"  Converged: {summary.get('converged_count', 0)}/{summary.get('total_measurements', 0)}")
+                print(f"  Mean Absolute Error: {summary.get('mean_absolute_error', 0):.4f} cm")
+                print(f"  Max Absolute Error: {summary.get('max_absolute_error', 0):.4f} cm")
+
+            # Save measurement report if path provided
+            if args.report and measurement_report:
+                report_path = Path(args.report)
+                report_path.parent.mkdir(parents=True, exist_ok=True)
+                with open(report_path, 'w') as f:
+                    json.dump(measurement_report, f, indent=2)
+                print(f"Measurement report saved to: {report_path}")
         else:
             print("\n" + "-" * 80)
             print("STEP 2: Skipping Microparameter Adjustment")
@@ -332,7 +367,7 @@ Example usage:
             json.dump(output_data, f, indent=2)
 
         print("\n" + "=" * 80)
-        print("✓ PARAMETERS COMPUTED SUCCESSFULLY")
+        print("PARAMETERS COMPUTED SUCCESSFULLY")
         print("=" * 80)
         print(f"\nOutput saved to: {output_path}")
         print()
@@ -340,7 +375,7 @@ Example usage:
         return 0
 
     except Exception as e:
-        print(f"\n✗ ERROR: {e}", file=sys.stderr)
+        print(f"\nERROR: {e}", file=sys.stderr)
         traceback.print_exc()
         return 1
 

@@ -210,7 +210,7 @@ def apply_microparameters_to_mesh(basemesh, micros: Dict[str, float], verbose: b
                 print(f"  Applied {target_name}: {target_weight:.3f}")
         else:
             if verbose:
-                print(f"  ✗ Warning: Could not find target {target_name}")
+                print(f"  Warning: Could not find target {target_name}")
 
 
 def convert_micros_to_output_format(micros: Dict[str, float]) -> Dict[str, float]:
@@ -397,7 +397,7 @@ def adjust_category(
         # Check convergence
         if abs(error) <= TOLERANCE_CM:
             if verbose:
-                print(f"  ✓ Converged! Final measurement: {current_measurement:.4f} cm")
+                print(f"  Converged! Final measurement: {current_measurement:.4f} cm")
             converged = True
             cleanup_mesh_and_armature(mesh, armature)
             break
@@ -425,7 +425,7 @@ def adjust_category(
 
         if abs(sensitivity) < 0.0001:
             if verbose:
-                print(f"  ✗ Sensitivity too low ({sensitivity:.6f}), cannot adjust further")
+                print(f"  Sensitivity too low ({sensitivity:.6f}), cannot adjust further")
             break
 
         # Calculate adjustment using damped proportional control
@@ -447,7 +447,7 @@ def adjust_category(
         previous_error = error
 
     if not converged and verbose:
-        print(f"  ⚠ Did not converge after {MAX_ITERATIONS_PER_CATEGORY} iterations")
+        print(f"  Did not converge after {MAX_ITERATIONS_PER_CATEGORY} iterations")
 
     return current_micros, converged, iteration
 
@@ -457,7 +457,7 @@ def adjust_all_microparameters(
     macroparameters: Dict[str, float],
     rig_type: str = 'default',
     verbose: bool = True
-) -> Dict[str, float]:
+) -> Tuple[Dict[str, float], Dict]:
     """
     Adjust all microparameters to match target measurements using two-phase approach.
 
@@ -471,7 +471,9 @@ def adjust_all_microparameters(
         verbose: Whether to print progress
 
     Returns:
-        Dictionary of adjusted microparameters in output format (with -incr/-decr suffixes)
+        Tuple of:
+        - Dictionary of adjusted microparameters in output format (with -incr/-decr suffixes)
+        - Report dictionary with target vs actual measurements and errors
     """
     if verbose:
         print("\n" + "="*80)
@@ -552,32 +554,70 @@ def adjust_all_microparameters(
     final_measurements = extract_measurements_with_cm_suffix(final_mesh, final_armature)
     cleanup_mesh_and_armature(final_mesh, final_armature)
 
+    # Build report dictionary
+    report = {
+        'measurements': {},
+        'summary': {
+            'total_measurements': 0,
+            'converged_count': 0,
+            'mean_absolute_error': 0.0,
+            'max_absolute_error': 0.0,
+            'all_converged': True
+        }
+    }
+
+    errors_list = []
+    all_converged = True
+
     if verbose:
         print("\nFinal Results:")
         print(f"  {'Measurement':<25s} {'Target':>12s} {'Actual':>12s} {'Error':>12s} {'Status':>10s}")
         print(f"  {'-'*25} {'-'*12} {'-'*12} {'-'*12} {'-'*10}")
 
-        all_converged = True
-        for category in CATEGORY_ORDER:
-            if category not in target_measurements:
-                continue
+    for category in CATEGORY_ORDER:
+        if category not in target_measurements:
+            continue
 
-            target = target_measurements[category]
-            actual = final_measurements[category]
-            error = actual - target
-            status = "✓" if abs(error) <= TOLERANCE_CM else "✗"
+        target = target_measurements[category]
+        actual = final_measurements[category]
+        error = actual - target
+        abs_error = abs(error)
+        converged = abs_error <= TOLERANCE_CM
 
-            if abs(error) > TOLERANCE_CM:
-                all_converged = False
+        if not converged:
+            all_converged = False
 
-            print(f"  {category:<25s} {target:>12.4f} {actual:>12.4f} {error:>+12.4f} {status:>10s}")
+        # Add to report
+        report['measurements'][category] = {
+            'target': round(target, 4),
+            'actual': round(actual, 4),
+            'error': round(error, 4),
+            'absolute_error': round(abs_error, 4),
+            'converged': converged
+        }
+        errors_list.append(abs_error)
 
-        print(f"\nOverall Status: {'✓ All measurements converged' if all_converged else '⚠ Some measurements did not converge'}")
+        if verbose:
+            status_symbol = "O" if converged else "X"
+            print(f"  {category:<25s} {target:>12.4f} {actual:>12.4f} {error:>+12.4f} {status_symbol:>10s}")
+
+    # Update summary
+    if errors_list:
+        report['summary']['total_measurements'] = len(errors_list)
+        report['summary']['converged_count'] = sum(1 for m in report['measurements'].values() if m['converged'])
+        report['summary']['mean_absolute_error'] = round(sum(errors_list) / len(errors_list), 4)
+        report['summary']['max_absolute_error'] = round(max(errors_list), 4)
+        report['summary']['all_converged'] = all_converged
+
+    if verbose:
+        print(f"\nOverall Status: {'O All measurements converged' if all_converged else 'X Some measurements did not converge'}")
+        print(f"Mean Absolute Error: {report['summary']['mean_absolute_error']:.4f} cm")
+        print(f"Max Absolute Error: {report['summary']['max_absolute_error']:.4f} cm")
 
     # Convert to output format (with -incr/-decr suffixes and positive values)
     output_micros = convert_micros_to_output_format(microparameters)
 
-    return output_micros
+    return output_micros, report
 
 
 # ============================================================================
@@ -598,6 +638,7 @@ def main():
     parser.add_argument('--target', type=str, required=True, help='Path to target measurements JSON')
     parser.add_argument('--macros', type=str, required=True, help='Path to macroparameters JSON')
     parser.add_argument('--output', type=str, required=True, help='Path to output microparameters JSON')
+    parser.add_argument('--report', type=str, default=None, help='Optional path to save measurement report JSON')
     parser.add_argument('--rig-type', type=str, default='default_no_toes', help='Rig type to use')
     parser.add_argument('--verbose', action='store_true', help='Enable verbose output')
 
@@ -606,9 +647,9 @@ def main():
     # Check Blender environment
     try:
         import bpy
-        print("✓ Running in Blender environment")
+        print("Running in Blender environment")
     except ImportError:
-        print("✗ ERROR: This script must be run with Blender!")
+        print("ERROR: This script must be run with Blender!")
         sys.exit(1)
 
     # Load inputs
@@ -619,18 +660,23 @@ def main():
         macroparameters = json.load(f)
 
     # Adjust microparameters
-    adjusted_micros = adjust_all_microparameters(
+    adjusted_micros, report = adjust_all_microparameters(
         target_measurements,
         macroparameters,
         rig_type=args.rig_type,
         verbose=args.verbose
     )
 
-    # Save output
+    # Save microparameters output
     with open(args.output, 'w') as f:
         json.dump(adjusted_micros, f, indent=2)
+    print(f"\nMicroparameters saved to: {args.output}")
 
-    print(f"\n✓ Microparameters saved to: {args.output}")
+    # Save report if path provided
+    if args.report:
+        with open(args.report, 'w') as f:
+            json.dump(report, f, indent=2)
+        print(f"Measurement report saved to: {args.report}")
 
     return 0
 
@@ -640,9 +686,9 @@ if __name__ == "__main__":
         exit_code = main()
         sys.exit(exit_code)
     except KeyboardInterrupt:
-        print("\n✗ Interrupted by user")
+        print("\nInterrupted by user")
         sys.exit(130)
     except Exception as e:
-        print(f"\n✗ Error: {e}")
+        print(f"\nError: {e}")
         traceback.print_exc()
         sys.exit(1)
