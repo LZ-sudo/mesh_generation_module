@@ -2,10 +2,9 @@
 Hyperparameter Optimization for TabM Model using Optuna TPE Sampler
 
 This script uses Optuna's Tree-structured Parzen Estimator (TPE) sampler to find
-optimal hyperparameters for the TabM model. It searches over the 6 core hyperparameters
-recommended by the TabM paper:
+optimal hyperparameters for the TabM model. It searches over 7 core hyperparameters:
 - Model architecture: n_blocks, d_block
-- Training: learning_rate, weight_decay
+- Training: learning_rate, weight_decay, n_epochs
 - Feature embeddings (PiecewiseLinear): d_embedding, min_samples_leaf (n_bins)
 
 Other parameters (batch_size, dropout, measurement_noise_std) are fixed from base config.
@@ -203,7 +202,7 @@ def objective(trial, base_config, X_train, y_train, X_val, y_val, device):
     """
     Optuna objective function: suggest hyperparameters and return validation loss.
 
-    Optimizes the 6 core hyperparameters recommended by TabM paper:
+    Optimizes the 7 core hyperparameters recommended by TabM paper:
     - n_blocks, d_block (model architecture)
     - learning_rate, weight_decay (optimization)
     - d_embedding, min_samples_leaf (n_bins for embeddings)
@@ -217,6 +216,9 @@ def objective(trial, base_config, X_train, y_train, X_val, y_val, device):
 
     # === Training Hyperparameters (TabM paper recommendations) ===
     trial_config['training']['learning_rate'] = trial.suggest_float('learning_rate', 1e-4, 5e-3, log=True)
+
+    # n_epochs: range 50-200 with step=25 (early stopping will prevent overfitting)
+    trial_config['training']['n_epochs'] = trial.suggest_int('n_epochs', 10, 200, step=5)
 
     # Weight decay: either 0 or log-uniform (TabM paper)
     use_weight_decay = trial.suggest_categorical('use_weight_decay', [True, False])
@@ -297,6 +299,15 @@ def run_optimization(
     measurements = base_config['data']['measurements']
 
     X, y, macro_bounds = load_data(input_csv, macroparams, measurements, verbose=True)
+
+    # Apply 50% data sampling for faster optimization
+    # (hyperparameter rankings are typically preserved with smaller samples)
+    total_samples = len(X)
+    random_seed = base_config['data'].get('random_seed', 42)
+    X, _, y, _ = train_test_split(
+        X, y, train_size=0.5, random_state=random_seed
+    )
+    print(f"\nData sampling: Using {len(X)} of {total_samples} samples (50%)")
 
     # Split data: train/val/test
     test_size = base_config['data'].get('test_size', 0.2)
@@ -385,6 +396,7 @@ def run_optimization(
     best_config['model']['d_block'] = best_params['d_block']
 
     best_config['training']['learning_rate'] = best_params['learning_rate']
+    best_config['training']['n_epochs'] = best_params['n_epochs']
 
     if best_params['use_weight_decay']:
         best_config['training']['weight_decay'] = best_params['weight_decay']
@@ -404,7 +416,9 @@ def run_optimization(
         'best_validation_loss': study.best_value,
         'optimization_time_minutes': elapsed_time / 60,
         'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
-        'output_directory': str(output_dir)
+        'output_directory': str(output_dir),
+        'sample_fraction': 0.5,
+        'note': 'Train final model on full dataset with best_config for best results'
     }
 
     return best_config, study, output_dir
