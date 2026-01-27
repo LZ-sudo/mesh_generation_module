@@ -45,7 +45,8 @@ DAMPING_DECAY = 0.9
 # Each measurement is associated with specific microparameters (base names only)
 MICROPARAMETER_CATEGORIES = {
     'height_cm': [
-        'measure-neck-height'  # Neck height adjusts final height in phase 2
+        'measure-neck-height',  # Neck height adjusts final height in phase 2
+        'head-scale-vert' 
     ],
     'shoulder_width_cm': [
         'torso-scale-horiz',
@@ -60,7 +61,7 @@ MICROPARAMETER_CATEGORIES = {
         'head-scale-depth'
     ],
     'neck_length_cm': [
-        'measure-neck-height'  # Used when neck measurement is available
+        'measure-neck-height' 
     ],
     'upper_arm_length_cm': [
         'measure-upperarm-length'
