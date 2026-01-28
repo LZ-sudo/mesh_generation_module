@@ -53,8 +53,7 @@ MICROPARAMETER_CATEGORIES = {
         'measure-waist-circ'
     ],
     'hip_width_cm': [
-        'measure-waist-circ',
-        'measure-waisttohip-dist'
+        'hip-scale-horiz'
     ],
     'head_width_cm': [
         'head-scale-horiz',

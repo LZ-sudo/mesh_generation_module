@@ -53,6 +53,8 @@ Example usage:
     python run_blender.py --script generate_human.py -- --config human_female.json --rig-type default_no_toes
 
     python run_blender.py --script generate_human.py -- --config human_female.json --fk-ik-hybrid --instrumented-arm right
+
+    python run_blender.py --script generate_human.py -- --config human_female.json --fk-ik-hybrid --instrumented-arm right --t-pose
     """
     
     )
