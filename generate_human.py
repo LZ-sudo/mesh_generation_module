@@ -112,6 +112,12 @@ Example usage:
         help='Hair asset name to apply from mpfb_hair_assets folder (e.g., "Short_Hair_B"). Optional.'
     )
 
+    parser.add_argument(
+        '--t-pose',
+        action='store_true',
+        help='Export the model in T-pose instead of the default A-pose'
+    )
+
     return parser.parse_args(argv)
 
 
@@ -310,6 +316,23 @@ def main():
                 if args.verbose:
                     
                     traceback.print_exc()
+
+    # Apply T-pose if requested
+    if args.t_pose and armature:
+        print("\n" + "-"*70)
+        print("STEP 5.6: Setting T-Pose")
+        print("-"*70)
+
+        try:
+            success = utils.set_tpose(armature, args.rig_type)
+            if success:
+                print("T-pose applied successfully")
+            else:
+                print("Warning: T-pose application may have issues")
+        except Exception as e:
+            print(f"Warning: Failed to apply T-pose: {e}")
+            if args.verbose:
+                traceback.print_exc()
 
     # Export FBX
     print("\n" + "-"*70)
