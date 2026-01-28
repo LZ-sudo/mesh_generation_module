@@ -218,14 +218,6 @@ Example usage:
     )
 
     parser.add_argument(
-        '--method',
-        type=str,
-        default='least_squares',
-        choices=['least_squares', 'nelder_mead', 'powell'],
-        help='Optimization method for macroparameter inference (default: least_squares)'
-    )
-
-    parser.add_argument(
         '--rig-type',
         type=str,
         default='default_no_toes',
@@ -297,8 +289,7 @@ Example usage:
         print("-" * 80)
 
         result = find_macroparameters(
-            models, macro_bounds, target_measurements,
-            method=args.method, weights=None, verbose=True
+            models, macro_bounds, target_measurements, verbose=True
         )
 
         macroparameters = result['macroparameters']

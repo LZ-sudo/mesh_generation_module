@@ -249,22 +249,16 @@ def predict_macroparameters(model_data, measurements):
     return macroparameters
 
 
-def find_macroparameters(model_data, macro_bounds, target_measurements,
-                        method='direct', weights=None, verbose=True):
+def find_macroparameters(model_data, macro_bounds, target_measurements, verbose=True):
     """
     Predict macroparameters directly from target measurements using inverse mapping.
 
     Supports TabM (single model) and TabPFN/XGBoost (multiple models).
 
-    NOTE: The 'method' and 'weights' parameters are kept for backward compatibility
-    but are ignored since direct inverse mapping is used.
-
     Args:
         model_data: Dictionary containing model info and trained model(s)
         macro_bounds: Dictionary of macroparameter bounds (used for validation)
         target_measurements: Dictionary of target measurements
-        method: Ignored (kept for backward compatibility)
-        weights: Ignored (kept for backward compatibility)
         verbose: Print detailed results
 
     Returns:
@@ -334,7 +328,7 @@ def print_results(result, target_measurements, macro_bounds):
     print("="*80)
 
 
-def process_single(input_path, models, macro_bounds, method, weights):
+def process_single(input_path, models, macro_bounds):
     """
     Process a single measurement from JSON file.
 
@@ -388,8 +382,7 @@ def process_single(input_path, models, macro_bounds, method, weights):
 
     # Find macroparameters
     result = find_macroparameters(
-        models, macro_bounds, target_measurements,
-        method=method, weights=weights, verbose=True
+        models, macro_bounds, target_measurements, verbose=True
     )
 
     # Save result
@@ -416,7 +409,7 @@ def process_single(input_path, models, macro_bounds, method, weights):
     return result
 
 
-def process_batch(input_path, output_path, models, macro_bounds, method, weights):
+def process_batch(input_path, output_path, models, macro_bounds):
     """Process multiple measurements from CSV file."""
     print(f"\nProcessing batch: {input_path}")
 
@@ -445,8 +438,7 @@ def process_batch(input_path, output_path, models, macro_bounds, method, weights
 
         # Find macroparameters
         result = find_macroparameters(
-            models, macro_bounds, target_measurements,
-            method=method, weights=weights, verbose=False
+            models, macro_bounds, target_measurements, verbose=False
         )
 
         # Store results
@@ -495,9 +487,6 @@ Examples:
 
   # Batch processing from CSV
   python infer_macroparameters.py --input measurements.csv --models model.pkl --output results.csv
-
-  # Use hybrid optimization for better accuracy
-  python infer_macroparameters.py --input measurements.json --models model.pkl --method both
         """
     )
 
@@ -522,14 +511,6 @@ Examples:
         help='Output CSV file for batch mode (default: inference_results.csv)'
     )
 
-    parser.add_argument(
-        '--method',
-        type=str,
-        default='differential_evolution',
-        choices=['differential_evolution', 'both'],
-        help='Optimization method (default: differential_evolution)'
-    )
-
     args = parser.parse_args()
 
     print("=" * 80)
@@ -548,11 +529,11 @@ Examples:
 
         if input_path.suffix == '.json':
             # Single measurement
-            process_single(input_path, models, macro_bounds, args.method, weights=None)
+            process_single(input_path, models, macro_bounds)
 
         elif input_path.suffix == '.csv':
             # Batch processing
-            process_batch(input_path, args.output, models, macro_bounds, args.method, weights=None)
+            process_batch(input_path, args.output, models, macro_bounds)
 
         else:
             raise ValueError(f"Unsupported file type: {input_path.suffix}. Use .json or .csv")
