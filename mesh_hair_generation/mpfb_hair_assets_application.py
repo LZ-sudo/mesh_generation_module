@@ -65,28 +65,29 @@ def find_hair_asset(hair_name: str, assets_dir: Optional[Path] = None) -> Tuple[
             f"Available assets: {[d.name for d in assets_dir.iterdir() if d.is_dir()]}"
         )
 
-    # Find the .mhclo file
+    # Find files by extension (don't assume matching names)
     mhclo_files = list(hair_folder.glob("*.mhclo"))
+    obj_files = list(hair_folder.glob("*.obj"))
+    mhmat_files = list(hair_folder.glob("*.mhmat"))
+
     if not mhclo_files:
         raise FileNotFoundError(f"No .mhclo file found in {hair_folder}")
 
+    if not obj_files:
+        raise FileNotFoundError(
+            f"No .obj file found in {hair_folder}\n"
+            f"Hair asset requires all three files: .mhclo, .obj, .mhmat"
+        )
+
+    if not mhmat_files:
+        raise FileNotFoundError(
+            f"No .mhmat file found in {hair_folder}\n"
+            f"Hair asset requires all three files: .mhclo, .obj, .mhmat"
+        )
+
     mhclo_path = mhclo_files[0]
-
-    # Check for required .obj and .mhmat files
-    obj_path = mhclo_path.with_suffix('.obj')
-    mhmat_path = mhclo_path.with_suffix('.mhmat')
-
-    if not obj_path.exists():
-        raise FileNotFoundError(
-            f"Required .obj file not found: {obj_path}\n"
-            f"Hair asset requires all three files: .mhclo, .obj, .mhmat"
-        )
-
-    if not mhmat_path.exists():
-        raise FileNotFoundError(
-            f"Required .mhmat file not found: {mhmat_path}\n"
-            f"Hair asset requires all three files: .mhclo, .obj, .mhmat"
-        )
+    obj_path = obj_files[0]
+    mhmat_path = mhmat_files[0]
 
     return mhclo_path, obj_path, mhmat_path
 
