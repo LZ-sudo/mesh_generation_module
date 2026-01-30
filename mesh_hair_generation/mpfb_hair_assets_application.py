@@ -24,7 +24,7 @@ Example usage:
 
 from pathlib import Path
 import sys
-from typing import Optional, Tuple
+from typing import Optional
 import importlib
 import traceback
 
@@ -37,8 +37,14 @@ if str(parent_dir) not in sys.path:
 
 import utils
 
+# Import hair rigging functions from generate_hair_rigging
+from generate_hair_rigging import (
+    add_hair_bones_to_armature,
+    calculate_hair_vertex_weights,
+)
 
-def find_hair_asset(hair_name: str, assets_dir: Optional[Path] = None) -> Tuple[Path, Path, Path]:
+
+def find_hair_asset(hair_name: str, assets_dir: Optional[Path] = None) -> dict:
     """
     Find a hair asset by name in the mpfb_hair_assets folder.
 
@@ -48,7 +54,14 @@ def find_hair_asset(hair_name: str, assets_dir: Optional[Path] = None) -> Tuple[
                    If None, uses ./mpfb_hair_assets
 
     Returns:
-        Tuple of (mhclo_path, obj_path, mhmat_path)
+        Dictionary with paths:
+        {
+            'mhclo': Path to .mhclo file,
+            'obj': Path to .obj file,
+            'mhmat': Path to .mhmat file,
+            'mpfbskel': Path to .mpfbskel file (or None if not found),
+            'mhw': Path to .mhw file (or None if not found)
+        }
 
     Raises:
         FileNotFoundError: If hair asset or required files are not found
@@ -69,6 +82,8 @@ def find_hair_asset(hair_name: str, assets_dir: Optional[Path] = None) -> Tuple[
     mhclo_files = list(hair_folder.glob("*.mhclo"))
     obj_files = list(hair_folder.glob("*.obj"))
     mhmat_files = list(hair_folder.glob("*.mhmat"))
+    mpfbskel_files = list(hair_folder.glob("*.mpfbskel"))
+    mhw_files = list(hair_folder.glob("*.mhw"))
 
     if not mhclo_files:
         raise FileNotFoundError(f"No .mhclo file found in {hair_folder}")
@@ -85,11 +100,13 @@ def find_hair_asset(hair_name: str, assets_dir: Optional[Path] = None) -> Tuple[
             f"Hair asset requires all three files: .mhclo, .obj, .mhmat"
         )
 
-    mhclo_path = mhclo_files[0]
-    obj_path = obj_files[0]
-    mhmat_path = mhmat_files[0]
-
-    return mhclo_path, obj_path, mhmat_path
+    return {
+        'mhclo': mhclo_files[0],
+        'obj': obj_files[0],
+        'mhmat': mhmat_files[0],
+        'mpfbskel': mpfbskel_files[0] if mpfbskel_files else None,
+        'mhw': mhw_files[0] if mhw_files else None
+    }
 
 
 def add_hair_to_human(human_obj, hair_asset_path: Path, verbose: bool = False):
@@ -155,19 +172,214 @@ def add_hair_to_human(human_obj, hair_asset_path: Path, verbose: bool = False):
         raise
 
 
-def setup_hair_rigging(hair_obj, human_obj, armature_obj, verbose: bool = False):
+def load_hair_weights(
+    hair_obj,
+    mhw_path: Path,
+    armature_obj,
+    verbose: bool = False
+):
     """
-    Set up rigging for hair mesh with automatic weight transfer from human.
+    Load vertex weights from .mhw file to hair mesh.
 
-    This function:
-    1. Adds an armature modifier to the hair
-    2. Parents the hair to the armature
-    3. Transfers bone weights from the human to the hair
+    Args:
+        hair_obj: The hair mesh object
+        mhw_path: Path to the .mhw weight file
+        armature_obj: The armature object (for bone name validation)
+        verbose: Enable verbose output
+
+    Returns:
+        True if weights were loaded successfully
+    """
+    import bpy
+    import json
+
+    try:
+        with open(mhw_path, 'r') as f:
+            weight_data = json.load(f)
+
+        weights = weight_data.get('weights', {})
+        if not weights:
+            if verbose:
+                print("  Warning: No weights defined in .mhw file")
+            return False
+
+        bone_names = set(b.name for b in armature_obj.data.bones)
+        loaded_count = 0
+
+        for group_name, vertex_weights in weights.items():
+            # Only create groups for bones that exist in the armature
+            if group_name not in bone_names:
+                if verbose:
+                    print(f"    Skipping {group_name} - not in armature")
+                continue
+
+            # Create or get vertex group
+            if group_name in hair_obj.vertex_groups:
+                vg = hair_obj.vertex_groups[group_name]
+            else:
+                vg = hair_obj.vertex_groups.new(name=group_name)
+
+            # Add weights
+            for vertex_idx, weight in vertex_weights:
+                try:
+                    vg.add([vertex_idx], weight, 'REPLACE')
+                except (IndexError, RuntimeError):
+                    # Vertex index out of range - skip
+                    pass
+
+            loaded_count += 1
+
+        if verbose:
+            print(f"  Loaded weights for {loaded_count} bone groups")
+
+        return loaded_count > 0
+
+    except Exception as e:
+        print(f"  Error loading weights: {e}")
+        if verbose:
+            traceback.print_exc()
+        return False
+
+
+def setup_hair_subrig(
+    hair_obj,
+    human_obj,
+    armature_obj,
+    _mpfbskel_path: Optional[Path] = None,
+    _mhw_path: Optional[Path] = None,
+    verbose: bool = False
+):
+    """
+    Set up hair rigging by adding bones directly to the main armature.
+
+    This approach (different from MPFB2's separate subrig) integrates
+    hair bones into the main rig for proper FBX export compatibility.
+
+    The function uses dynamic mesh analysis to position bones correctly
+    within the actual hair mesh geometry (not pre-computed positions).
+
+    Steps:
+    1. Analyze hair mesh geometry to determine bone positions
+    2. Add bones to main armature (parented to head bone)
+    3. Calculate and assign vertex weights
+    4. Set up armature modifier on hair mesh
+
+    Args:
+        hair_obj: The hair mesh object
+        human_obj: The human mesh object (basemesh, used for weight transfer fallback)
+        armature_obj: The main armature/rig object
+        _mpfbskel_path: Unused, kept for API compatibility
+        _mhw_path: Unused, kept for API compatibility
+        verbose: Enable verbose output
+
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        import bpy
+
+        if verbose:
+            print("  Setting up hair bones in main armature...")
+
+        # Step 1: Add bones to main armature using mesh analysis
+        # Uses dynamic bone positioning from generate_hair_rigging
+        created_bones, weight_info = add_hair_bones_to_armature(
+            armature_obj,
+            hair_obj,
+            parent_bone_name="head",
+            verbose=verbose
+        )
+
+        if not created_bones:
+            print("  Failed to create hair bones")
+            return False
+
+        if verbose:
+            print(f"  Hair bones added: {len(created_bones)}")
+
+        # Step 2: Parent hair mesh to armature
+        hair_obj.parent = armature_obj
+        hair_obj.matrix_parent_inverse = armature_obj.matrix_world.inverted()
+
+        # Step 3: Add armature modifier to hair
+        # Remove existing armature modifiers first
+        for mod in list(hair_obj.modifiers):
+            if mod.type == 'ARMATURE':
+                hair_obj.modifiers.remove(mod)
+
+        arm_mod = hair_obj.modifiers.new(name="Armature", type='ARMATURE')
+        arm_mod.object = armature_obj
+        arm_mod.use_vertex_groups = True
+
+        if verbose:
+            print("  Added armature modifier to hair")
+
+        # Step 4: Calculate and assign vertex weights
+        weights_assigned = False
+
+        if weight_info:
+            # Use dynamically calculated weights (preferred)
+            if verbose:
+                print("  Calculating vertex weights from mesh analysis...")
+            weights_assigned = calculate_hair_vertex_weights(
+                hair_obj,
+                weight_info,
+                verbose=verbose
+            )
+
+        # Step 5: Fallback - transfer weights from human if dynamic weights failed
+        if not weights_assigned:
+            if verbose:
+                print("  Transferring weights from human mesh as fallback...")
+            try:
+                # Add data transfer modifier to copy weights from human
+                dt_mod = hair_obj.modifiers.new(name="DataTransfer", type='DATA_TRANSFER')
+                dt_mod.object = human_obj
+                dt_mod.use_vert_data = True
+                dt_mod.data_types_verts = {'VGROUP_WEIGHTS'}
+                dt_mod.vert_mapping = 'NEAREST'
+
+                # Apply the modifier to bake the weights
+                bpy.context.view_layer.objects.active = hair_obj
+                bpy.ops.object.modifier_apply(modifier=dt_mod.name)
+
+                if verbose:
+                    print("  Transferred weights from human mesh")
+            except Exception as e:
+                print(f"  Warning: Weight transfer failed: {e}")
+
+        if verbose:
+            print("  Hair rigging setup complete")
+
+        return True
+
+    except Exception as e:
+        print(f"Error setting up hair rigging: {e}")
+        if verbose:
+            traceback.print_exc()
+        return False
+
+
+def setup_hair_rigging(
+    hair_obj,
+    human_obj,
+    armature_obj,
+    mpfbskel_path: Optional[Path] = None,
+    mhw_path: Optional[Path] = None,
+    verbose: bool = False
+):
+    """
+    Set up rigging for hair mesh.
+
+    If a .mpfbskel file is provided, uses MPFB2's subrig system to create
+    dedicated hair bones. Otherwise, falls back to weight transfer from human.
 
     Args:
         hair_obj: The hair mesh object
         human_obj: The human mesh object (for weight transfer)
         armature_obj: The armature/rig object
+        mpfbskel_path: Optional path to .mpfbskel subrig file
+        mhw_path: Optional path to .mhw weight file
         verbose: Enable verbose output
 
     Returns:
@@ -179,12 +391,30 @@ def setup_hair_rigging(hair_obj, human_obj, armature_obj, verbose: bool = False)
         if verbose:
             print("  Setting up hair rigging...")
 
+        # If we have a subrig file, use MPFB2's proper subrig system
+        if mpfbskel_path and mpfbskel_path.exists():
+            if verbose:
+                print("  Found .mpfbskel file - using MPFB2 subrig system")
+            subrig_armature = setup_hair_subrig(
+                hair_obj,
+                human_obj,
+                armature_obj,
+                mpfbskel_path,
+                mhw_path,
+                verbose
+            )
+            return subrig_armature is not None
+
+        # Fallback: Simple weight transfer from human (no dedicated hair bones)
+        if verbose:
+            print("  No .mpfbskel file - using weight transfer fallback")
+
         # Check if hair already has armature modifier
         has_armature = any(m.type == 'ARMATURE' for m in hair_obj.modifiers)
 
         if has_armature:
             if verbose:
-                print("  ✓ Hair already has armature modifier")
+                print("  Hair already has armature modifier")
             return True
 
         # Add armature modifier to hair
@@ -192,14 +422,14 @@ def setup_hair_rigging(hair_obj, human_obj, armature_obj, verbose: bool = False)
         arm_mod.object = armature_obj
 
         if verbose:
-            print("  ✓ Added armature modifier")
+            print("  Added armature modifier")
 
         # Parent hair to armature (without changing position)
         hair_obj.parent = armature_obj
         hair_obj.matrix_parent_inverse = armature_obj.matrix_world.inverted()
 
         if verbose:
-            print("  ✓ Parented hair to armature")
+            print("  Parented hair to armature")
 
         # Transfer weights from human to hair using data transfer modifier
         try:
@@ -215,10 +445,10 @@ def setup_hair_rigging(hair_obj, human_obj, armature_obj, verbose: bool = False)
             bpy.ops.object.modifier_apply(modifier=dt_mod.name)
 
             if verbose:
-                print("  ✓ Transferred bone weights from human to hair")
+                print("  Transferred bone weights from human to hair")
 
         except Exception as e:
-            print(f"  ⚠ Warning: Weight transfer failed: {e}")
+            print(f"  Warning: Weight transfer failed: {e}")
             if verbose:
                 print("  Trying automatic weights as fallback...")
 
@@ -229,15 +459,15 @@ def setup_hair_rigging(hair_obj, human_obj, armature_obj, verbose: bool = False)
                 bpy.ops.object.parent_set(type='ARMATURE_AUTO')
 
                 if verbose:
-                    print("  ✓ Applied automatic weights")
+                    print("  Applied automatic weights")
             except Exception as e2:
-                print(f"  ⚠ Automatic weights also failed: {e2}")
+                print(f"  Automatic weights also failed: {e2}")
                 return False
 
         return True
 
     except Exception as e:
-        print(f"✗ Error setting up hair rigging: {e}")
+        print(f"Error setting up hair rigging: {e}")
         if verbose:
             traceback.print_exc()
         return False
@@ -256,7 +486,7 @@ def apply_hair_asset(
     This is the main function that orchestrates:
     1. Finding the hair asset files
     2. Adding the hair mesh to the human
-    3. Setting up rigging with weight transfer
+    3. Setting up rigging (using subrig if .mpfbskel exists, otherwise weight transfer)
 
     Args:
         human_obj: The Blender human mesh object
@@ -281,37 +511,48 @@ def apply_hair_asset(
             print(f"\nApplying hair asset: {hair_asset_name}")
 
         # Find the hair asset files
-        mhclo_path, obj_path, mhmat_path = find_hair_asset(hair_asset_name, assets_dir)
+        asset_files = find_hair_asset(hair_asset_name, assets_dir)
 
         if verbose:
             print(f"  Found hair asset:")
-            print(f"    .mhclo: {mhclo_path.name}")
-            print(f"    .obj:   {obj_path.name}")
-            print(f"    .mhmat: {mhmat_path.name}")
+            print(f"    .mhclo:    {asset_files['mhclo'].name}")
+            print(f"    .obj:      {asset_files['obj'].name}")
+            print(f"    .mhmat:    {asset_files['mhmat'].name}")
+            if asset_files['mpfbskel']:
+                print(f"    .mpfbskel: {asset_files['mpfbskel'].name} (hair subrig)")
+            if asset_files['mhw']:
+                print(f"    .mhw:      {asset_files['mhw'].name} (custom weights)")
 
         # Add hair to human
-        hair_obj = add_hair_to_human(human_obj, mhclo_path, verbose=verbose)
+        hair_obj = add_hair_to_human(human_obj, asset_files['mhclo'], verbose=verbose)
 
         if not hair_obj:
-            print(f"✗ Failed to create hair object")
+            print(f"Failed to create hair object")
             return None
 
-        # Set up rigging
-        success = setup_hair_rigging(hair_obj, human_obj, armature_obj, verbose=verbose)
+        # Set up rigging (with subrig if available)
+        success = setup_hair_rigging(
+            hair_obj,
+            human_obj,
+            armature_obj,
+            mpfbskel_path=asset_files['mpfbskel'],
+            mhw_path=asset_files['mhw'],
+            verbose=verbose
+        )
 
         if not success:
-            print(f"⚠ Warning: Hair rigging setup had issues")
+            print(f"Warning: Hair rigging setup had issues")
 
         if verbose:
-            print(f"✓ Hair asset applied successfully")
+            print(f"Hair asset applied successfully")
 
         return hair_obj
 
     except FileNotFoundError as e:
-        print(f"✗ Hair asset not found: {e}")
+        print(f"Hair asset not found: {e}")
         return None
     except Exception as e:
-        print(f"✗ Error applying hair asset: {e}")
+        print(f"Error applying hair asset: {e}")
         if verbose:
             traceback.print_exc()
         return None

@@ -526,6 +526,381 @@ def save_rigging_files(
 
 
 # ============================================================================
+# Blender Runtime Functions (for dynamic bone creation at load time)
+# ============================================================================
+
+def analyze_blender_hair_mesh(
+    hair_obj,
+    armature_obj,
+    min_region_vertices: int = 50,
+    min_extent_for_bones: float = 0.03,
+    verbose: bool = False
+) -> List[HairRegion]:
+    """
+    Analyze hair mesh geometry in Blender to determine optimal bone positions.
+
+    This function analyzes the actual Blender mesh vertices to find hair regions
+    and calculate bone chain positions. This ensures bones are always positioned
+    correctly within the mesh regardless of coordinate transformations.
+
+    Args:
+        hair_obj: The Blender hair mesh object
+        armature_obj: The armature object (to find head bone position)
+        min_region_vertices: Minimum vertices to consider a valid region
+        min_extent_for_bones: Minimum hair extent (meters) for physics bones
+        verbose: Enable verbose output
+
+    Returns:
+        List of HairRegion objects with bone position data (extent in meters)
+    """
+    if verbose:
+        print("  Analyzing hair mesh for bone positions...")
+
+    # Get world-space vertex positions from the hair mesh
+    mesh = hair_obj.data
+    world_matrix = hair_obj.matrix_world
+
+    vertices = []
+    for v in mesh.vertices:
+        world_pos = world_matrix @ v.co
+        vertices.append((world_pos.x, world_pos.y, world_pos.z))
+
+    if not vertices:
+        print("  Warning: No vertices in hair mesh")
+        return []
+
+    if verbose:
+        print(f"    Loaded {len(vertices)} vertices from hair mesh")
+
+    # Estimate head center from the head bone position
+    head_position = None
+    try:
+        head_bone = armature_obj.data.bones.get('head')
+        if head_bone:
+            head_world = armature_obj.matrix_world @ head_bone.head_local
+            head_position = (head_world.x, head_world.y, head_world.z)
+            if verbose:
+                print(f"    Head bone position: ({head_position[0]:.3f}, {head_position[1]:.3f}, {head_position[2]:.3f})")
+    except Exception as e:
+        if verbose:
+            print(f"    Could not get head bone position: {e}")
+
+    # Fallback: estimate from hair mesh centroid
+    if head_position is None:
+        cx = sum(v[0] for v in vertices) / len(vertices)
+        cy = sum(v[1] for v in vertices) / len(vertices)
+        max_z = max(v[2] for v in vertices)
+        head_position = (cx, cy, max_z - 0.05)
+        if verbose:
+            print(f"    Estimated head position: ({head_position[0]:.3f}, {head_position[1]:.3f}, {head_position[2]:.3f})")
+
+    # Analyze vertices relative to head position
+    hx, hy, hz = head_position
+    vertices_data = []
+
+    for idx, (vx, vy, vz) in enumerate(vertices):
+        rx, ry, rz = vx - hx, vy - hy, vz - hz
+        distance = math.sqrt(rx*rx + ry*ry + rz*rz)
+
+        if distance < 0.001:
+            continue
+
+        theta = math.acos(max(-1, min(1, rz / distance)))
+        phi = math.atan2(ry, rx)
+
+        vertices_data.append({
+            'index': idx,
+            'world_pos': (vx, vy, vz),
+            'relative': (rx, ry, rz),
+            'distance': distance,
+            'theta': math.degrees(theta),
+            'phi': math.degrees(phi)
+        })
+
+    # Segment vertices into regions
+    top_threshold = 45.0
+    region_vertices = {rt: [] for rt in HairRegionType}
+
+    for vert_data in vertices_data:
+        phi = vert_data['phi']
+        theta = vert_data['theta']
+
+        if theta < top_threshold:
+            region_vertices[HairRegionType.TOP].append(vert_data)
+            continue
+
+        # In Blender: +Y is forward, +X is right
+        if -45 <= phi < 45:
+            region_vertices[HairRegionType.RIGHT].append(vert_data)
+        elif 45 <= phi < 135:
+            region_vertices[HairRegionType.BACK].append(vert_data)
+        elif phi >= 135 or phi < -135:
+            region_vertices[HairRegionType.LEFT].append(vert_data)
+        else:
+            region_vertices[HairRegionType.FRONT].append(vert_data)
+
+    # Build HairRegion objects
+    regions = []
+
+    for region_type, verts in region_vertices.items():
+        if len(verts) < min_region_vertices:
+            continue
+
+        sorted_by_dist = sorted(verts, key=lambda v: v['distance'])
+        n_boundary = max(1, len(sorted_by_dist) // 5)
+        root_verts = sorted_by_dist[:n_boundary]
+        tip_verts = sorted_by_dist[-n_boundary:]
+
+        root_centroid = [0.0, 0.0, 0.0]
+        for v in root_verts:
+            for i in range(3):
+                root_centroid[i] += v['world_pos'][i]
+        root_centroid = tuple(c / len(root_verts) for c in root_centroid)
+
+        tip_centroid = [0.0, 0.0, 0.0]
+        for v in tip_verts:
+            for i in range(3):
+                tip_centroid[i] += v['world_pos'][i]
+        tip_centroid = tuple(c / len(tip_verts) for c in tip_centroid)
+
+        flow_vec = [tip_centroid[i] - root_centroid[i] for i in range(3)]
+        extent = math.sqrt(sum(c*c for c in flow_vec))
+
+        if extent < min_extent_for_bones:
+            if verbose:
+                print(f"    Skipping {region_type.value}: extent {extent*100:.1f}cm < minimum")
+            continue
+
+        flow_direction = tuple(c / extent for c in flow_vec) if extent > 0 else (0, 0, -1)
+
+        # Note: extent is in meters for Blender runtime use
+        # Convert to cm for bone_count calculation (matches HairRegion.bone_count logic)
+        region = HairRegion(
+            region_type=region_type,
+            vertex_indices=[v['index'] for v in verts],
+            root_position=root_centroid,
+            tip_position=tip_centroid,
+            flow_direction=flow_direction,
+            extent=extent * 100  # Store in cm for bone_count property
+        )
+
+        regions.append(region)
+
+        if verbose:
+            print(f"    Region {region_type.value}: {len(verts)} verts, "
+                  f"{region.bone_count} bones, extent={extent*100:.1f}cm")
+
+    return regions
+
+
+def add_hair_bones_to_armature(
+    armature_obj,
+    hair_obj,
+    parent_bone_name: str = "head",
+    max_bones_per_chain: int = 6,
+    verbose: bool = False
+) -> Tuple[List[str], Dict]:
+    """
+    Add hair bones to armature based on mesh analysis.
+
+    This function analyzes the actual hair mesh geometry in Blender and
+    creates bones that are guaranteed to be positioned within the mesh.
+
+    Args:
+        armature_obj: The main armature object
+        hair_obj: The hair mesh object to analyze
+        parent_bone_name: Name of the bone to parent root hair bones to
+        max_bones_per_chain: Maximum bones per hair region chain
+        verbose: Enable verbose output
+
+    Returns:
+        Tuple of (list of created bone names, weight info dict)
+    """
+    import bpy
+
+    try:
+        regions = analyze_blender_hair_mesh(
+            hair_obj,
+            armature_obj,
+            verbose=verbose
+        )
+
+        if not regions:
+            print("  Warning: No valid hair regions found")
+            return [], {}
+
+        if verbose:
+            print(f"  Found {len(regions)} hair regions, creating bones...")
+
+        created_bones = []
+        weight_info = {}
+
+        bpy.context.view_layer.objects.active = armature_obj
+        bpy.ops.object.mode_set(mode='EDIT')
+
+        edit_bones = armature_obj.data.edit_bones
+
+        for region in regions:
+            bone_count = min(region.bone_count, max_bones_per_chain)
+            region_prefix = f"hair_{region.region_type.value}"
+
+            root = list(region.root_position)
+            flow = list(region.flow_direction)
+            total_length = region.extent / 100  # Convert cm back to meters
+            bone_length = total_length / bone_count
+
+            for i in range(bone_count):
+                bone_name = f"{region_prefix}_{i:02d}"
+
+                head = [root[j] + flow[j] * (i * bone_length) for j in range(3)]
+                tail = [root[j] + flow[j] * ((i + 1) * bone_length) for j in range(3)]
+
+                bone = edit_bones.new(bone_name)
+                bone.head = head
+                bone.tail = tail
+
+                bone.use_deform = True
+                bone.use_local_location = True
+                bone.use_inherit_rotation = True
+                if hasattr(bone, 'inherit_scale'):
+                    bone.inherit_scale = 'FULL'
+
+                if i == 0:
+                    head_bone = edit_bones.get(parent_bone_name)
+                    if head_bone:
+                        bone.parent = head_bone
+                    bone.use_connect = False
+                else:
+                    prev_bone = edit_bones.get(f"{region_prefix}_{i-1:02d}")
+                    if prev_bone:
+                        bone.parent = prev_bone
+                        bone.use_connect = True
+
+                created_bones.append(bone_name)
+
+                weight_info[bone_name] = {
+                    'region_type': region.region_type.value,
+                    'vertex_indices': region.vertex_indices,
+                    'bone_index': i,
+                    'bone_count': bone_count,
+                    'root': root,
+                    'flow': flow,
+                    'bone_length': bone_length
+                }
+
+        bpy.ops.object.mode_set(mode='OBJECT')
+
+        if verbose:
+            print(f"  Created {len(created_bones)} bones in {armature_obj.name}")
+
+        return created_bones, weight_info
+
+    except Exception as e:
+        try:
+            bpy.ops.object.mode_set(mode='OBJECT')
+        except:
+            pass
+        print(f"  Error adding bones from mesh analysis: {e}")
+        if verbose:
+            traceback.print_exc()
+        return [], {}
+
+
+def calculate_hair_vertex_weights(
+    hair_obj,
+    weight_info: Dict,
+    weight_falloff: float = 0.5,
+    verbose: bool = False
+) -> bool:
+    """
+    Calculate and assign vertex weights for hair bones.
+
+    Args:
+        hair_obj: The hair mesh object
+        weight_info: Dictionary from add_hair_bones_to_armature()
+        weight_falloff: Falloff factor for weight blending
+        verbose: Enable verbose output
+
+    Returns:
+        True if successful
+    """
+    try:
+        mesh = hair_obj.data
+        world_matrix = hair_obj.matrix_world
+
+        # Group bones by region
+        regions_data = {}
+        for bone_name, info in weight_info.items():
+            region_type = info['region_type']
+            if region_type not in regions_data:
+                regions_data[region_type] = {
+                    'bones': [],
+                    'vertex_indices': info['vertex_indices'],
+                    'root': info['root'],
+                    'flow': info['flow'],
+                    'bone_count': info['bone_count'],
+                    'bone_length': info['bone_length']
+                }
+            regions_data[region_type]['bones'].append(bone_name)
+
+        total_weights = 0
+
+        for region_type, region_data in regions_data.items():
+            bones = sorted(region_data['bones'])
+            root = region_data['root']
+            flow = region_data['flow']
+            bone_count = region_data['bone_count']
+            bone_length = region_data['bone_length']
+            total_length = bone_count * bone_length
+
+            for bone_name in bones:
+                if bone_name not in hair_obj.vertex_groups:
+                    hair_obj.vertex_groups.new(name=bone_name)
+
+            for vert_idx in region_data['vertex_indices']:
+                if vert_idx >= len(mesh.vertices):
+                    continue
+
+                v = mesh.vertices[vert_idx]
+                world_pos = world_matrix @ v.co
+                vx, vy, vz = world_pos.x, world_pos.y, world_pos.z
+
+                vert_vec = [vx - root[0], vy - root[1], vz - root[2]]
+                projection = sum(vert_vec[j] * flow[j] for j in range(3))
+                projection = max(0, min(projection, total_length))
+
+                bone_index = int(projection / bone_length)
+                bone_index = min(bone_index, bone_count - 1)
+
+                local_pos = projection - (bone_index * bone_length)
+                blend = local_pos / bone_length if bone_length > 0 else 0
+
+                primary_weight = 1.0 - blend * weight_falloff
+                primary_bone = bones[bone_index]
+                vg = hair_obj.vertex_groups[primary_bone]
+                vg.add([vert_idx], primary_weight, 'REPLACE')
+                total_weights += 1
+
+                if bone_index + 1 < bone_count and blend > 0.2:
+                    secondary_weight = blend * weight_falloff
+                    secondary_bone = bones[bone_index + 1]
+                    vg2 = hair_obj.vertex_groups[secondary_bone]
+                    vg2.add([vert_idx], secondary_weight, 'ADD')
+                    total_weights += 1
+
+        if verbose:
+            print(f"  Assigned {total_weights} vertex weights")
+
+        return True
+
+    except Exception as e:
+        print(f"  Error calculating hair weights: {e}")
+        if verbose:
+            traceback.print_exc()
+        return False
+
+
+# ============================================================================
 # Main Processing Functions
 # ============================================================================
 
