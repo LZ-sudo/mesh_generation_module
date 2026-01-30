@@ -104,7 +104,7 @@ PHASE_1_CATEGORIES = [
 ]
 
 PHASE_2_CATEGORIES = [
-    # Final height adjustment using neck (after other proportions are locked)
+    # Final height adjustment using neck and head (after other proportions are locked)
     'height_cm'
 ]
 
