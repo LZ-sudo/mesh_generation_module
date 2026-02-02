@@ -11,16 +11,23 @@ MPFB2 will automatically load them when the hair asset is applied to a human.
 Output Files:
     - {asset_name}.mpfbskel: Skeleton definition with bone chains
     - {asset_name}.mhw: Vertex weight assignments
-    - {asset_name}.mhmask-subrig (vertex group data embedded in weights)
 
-The algorithm:
-1. Load the hair asset OBJ file
-2. Analyze mesh geometry using spatial segmentation
-3. Identify hair regions (front, sides, back, top)
-4. Determine flow direction per region (root to tip)
-5. Generate bone chain definitions
-6. Calculate vertex weights
-7. Save as MPFB2-compatible JSON files
+Detection Method:
+    GEODESIC-BASED: Uses geodesic distance computation (Dijkstra on mesh edges)
+    to detect hair strand paths on continuous mesh hair assets. This approach
+    works for MPFB-style hair meshes that are single continuous triangle meshes.
+
+    Algorithm:
+    1. Identify scalp vertices (top N% by Z-height)
+    2. Compute geodesic distance from scalp using Dijkstra on mesh edges
+    3. Find hair tip candidates (high geodesic distance)
+    4. Trace strand paths from tips back to scalp
+    5. Generate bones along detected strand paths
+    6. Calculate vertex weights based on proximity to strands
+
+Requirements:
+    - numpy (included with Blender)
+    - scipy (optional, for KDTree clustering - has greedy fallback)
 
 Usage:
     # Run via Blender headless
@@ -33,14 +40,37 @@ Usage:
 """
 
 import json
-import math
 import argparse
 import sys
 import traceback
 from pathlib import Path
 from dataclasses import dataclass
-from typing import List, Dict, Tuple, Optional
-from enum import Enum
+from typing import List, Dict, Tuple, Optional, TYPE_CHECKING
+
+# Add script directory and parent to path for imports when running through Blender
+_SCRIPT_DIR = Path(__file__).resolve().parent
+_PROJECT_DIR = _SCRIPT_DIR.parent
+for _path in [str(_SCRIPT_DIR), str(_PROJECT_DIR)]:
+    if _path not in sys.path:
+        sys.path.insert(0, _path)
+
+if TYPE_CHECKING:
+    from geodesic_strand_detection import HairStrand, GeodesicConfig
+
+# Import geodesic-based hair detection
+GEODESIC_IMPORT_ERROR = None
+try:
+    from geodesic_strand_detection import (
+        HairStrand, GeodesicConfig,
+        extract_mesh_for_geodesic, detect_strands_geodesic,
+        assign_vertices_to_strands, check_dependencies
+    )
+    GEODESIC_AVAILABLE = True
+except ImportError as e:
+    GEODESIC_AVAILABLE = False
+    GEODESIC_IMPORT_ERROR = str(e)
+    HairStrand = None
+    GeodesicConfig = None
 
 
 # ============================================================================
@@ -51,19 +81,20 @@ from enum import Enum
 class HairPhysicsConfig:
     """Configuration for hair physics bone generation."""
 
-    # Region detection
-    min_region_vertices: int = 50
-    region_angle_threshold: float = 45.0  # degrees
+    # Geodesic detection parameters
+    scalp_percentile: float = 12.0
+    tip_percentile: float = 92.0
+    tip_cluster_distance: float = 0.025
+    max_strands: int = 60
 
     # Bone chain parameters
-    min_extent_for_bones: float = 3.0  # cm - minimum hair length for physics
-    bones_per_10cm: float = 2.0
-    max_bones_per_chain: int = 6
-    min_bones_per_chain: int = 2
+    min_strand_length: float = 0.03  # meters
+    bones_per_10cm: float = 3.0
+    max_bones_per_strand: int = 8
+    min_bones_per_strand: int = 2
 
     # Weight parameters
-    weight_falloff: float = 0.5
-    root_head_influence: float = 0.3
+    weight_falloff: float = 2.0
 
     # Physics hints (stored as custom properties)
     stiffness: float = 0.8
@@ -73,43 +104,25 @@ class HairPhysicsConfig:
     # Head bone reference
     head_bone_name: str = "head"
 
-
-class HairRegionType(Enum):
-    """Types of hair regions based on position relative to head."""
-    FRONT = "front"
-    LEFT = "left"
-    RIGHT = "right"
-    BACK = "back"
-    TOP = "top"
-
-
-@dataclass
-class HairRegion:
-    """Represents a detected hair region with its properties."""
-    region_type: HairRegionType
-    vertex_indices: List[int]
-    root_position: Tuple[float, float, float]
-    tip_position: Tuple[float, float, float]
-    flow_direction: Tuple[float, float, float]
-    extent: float  # distance from root to tip in cm
-
-    @property
-    def bone_count(self) -> int:
-        """Calculate optimal bone count based on extent."""
-        if self.extent < 3.0:
-            return 2
-        elif self.extent < 10.0:
-            return 3
-        elif self.extent < 20.0:
-            return 4
-        elif self.extent < 30.0:
-            return 5
-        else:
-            return 6
+    def to_geodesic_config(self) -> 'GeodesicConfig':
+        """Convert to GeodesicConfig for the detection module."""
+        if not GEODESIC_AVAILABLE:
+            return None
+        return GeodesicConfig(
+            scalp_percentile=self.scalp_percentile,
+            tip_percentile=self.tip_percentile,
+            tip_cluster_distance=self.tip_cluster_distance,
+            min_strand_length=self.min_strand_length,
+            max_strands=self.max_strands,
+            bones_per_10cm=self.bones_per_10cm,
+            min_bones_per_strand=self.min_bones_per_strand,
+            max_bones_per_strand=self.max_bones_per_strand,
+            weight_falloff=self.weight_falloff
+        )
 
 
 # ============================================================================
-# Geometry Analysis (Works with raw OBJ data or Blender mesh)
+# Geometry Analysis
 # ============================================================================
 
 def load_obj_vertices(obj_path: Path) -> List[Tuple[float, float, float]]:
@@ -135,188 +148,127 @@ def load_obj_vertices(obj_path: Path) -> List[Tuple[float, float, float]]:
     return vertices
 
 
-def estimate_head_position(vertices: List[Tuple[float, float, float]]) -> Tuple[float, float, float]:
+def load_obj_faces(obj_path: Path) -> List[Tuple[int, int, int]]:
     """
-    Estimate head center position from hair vertices.
-
-    For hair, the centroid of the closest-to-center vertices gives a good
-    approximation of where the scalp/head is.
+    Load faces from an OBJ file.
 
     Args:
-        vertices: List of vertex coordinates
+        obj_path: Path to the .obj file
 
     Returns:
-        Estimated head center position
+        List of (v0, v1, v2) face indices (triangulated)
     """
-    if not vertices:
-        return (0.0, 0.0, 1.6)  # Default head height
+    faces = []
 
-    # Calculate centroid XY of all vertices
-    cx = sum(v[0] for v in vertices) / len(vertices)
-    cy = sum(v[1] for v in vertices) / len(vertices)
+    with open(obj_path, 'r') as f:
+        for line in f:
+            line = line.strip()
+            if line.startswith('f '):
+                parts = line.split()[1:]
+                # Parse face indices (OBJ uses 1-based indexing)
+                indices = []
+                for part in parts:
+                    # Handle v/vt/vn format
+                    idx = int(part.split('/')[0]) - 1
+                    indices.append(idx)
 
-    # Find minimum Z (bottom of hair, closest to scalp)
-    # Head center is approximately at the centroid XY but at the base of hair
-    min_z = min(v[2] for v in vertices)
+                # Triangulate if needed
+                if len(indices) >= 3:
+                    for i in range(1, len(indices) - 1):
+                        faces.append((indices[0], indices[i], indices[i + 1]))
 
-    return (cx, cy, min_z - 0.05)  # Slightly below hair base
+    return faces
 
 
-def analyze_vertices(
-    vertices: List[Tuple[float, float, float]],
-    head_position: Tuple[float, float, float]
-) -> List[Dict]:
+# ============================================================================
+# Geodesic-Based Hair Analysis
+# ============================================================================
+
+def analyze_hair_mesh_geodesic(
+    hair_obj,
+    config: Optional[HairPhysicsConfig] = None,
+    verbose: bool = False
+) -> Optional[List['HairStrand']]:
     """
-    Analyze vertices relative to head position.
+    Analyze hair mesh using geodesic distance computation.
+
+    This detects hair strand paths on continuous mesh hair assets by:
+    1. Finding scalp vertices (high Z)
+    2. Computing geodesic distance from scalp
+    3. Tracing paths from tips back to scalp
 
     Args:
-        vertices: List of vertex coordinates
-        head_position: Estimated head center
-
-    Returns:
-        List of vertex analysis dictionaries
-    """
-    vertices_data = []
-
-    hx, hy, hz = head_position
-
-    for idx, (vx, vy, vz) in enumerate(vertices):
-        # Calculate relative position
-        rx, ry, rz = vx - hx, vy - hy, vz - hz
-
-        # Distance from head
-        distance = math.sqrt(rx*rx + ry*ry + rz*rz)
-        if distance < 0.001:
-            continue
-
-        # Spherical coordinates
-        # Theta: angle from vertical (Z-up)
-        theta = math.acos(max(-1, min(1, rz / distance)))
-
-        # Phi: angle in XY plane
-        phi = math.atan2(ry, rx)
-
-        vertices_data.append({
-            'index': idx,
-            'world_pos': (vx, vy, vz),
-            'relative': (rx, ry, rz),
-            'distance': distance,
-            'theta': math.degrees(theta),
-            'phi': math.degrees(phi)
-        })
-
-    return vertices_data
-
-
-def segment_into_regions(
-    vertices_data: List[Dict],
-    config: HairPhysicsConfig
-) -> List[HairRegion]:
-    """
-    Segment hair vertices into regions based on angular position.
-
-    Args:
-        vertices_data: Output from analyze_vertices()
+        hair_obj: The Blender hair mesh object
         config: Hair physics configuration
+        verbose: Enable verbose output
 
     Returns:
-        List of HairRegion objects
+        List of HairStrand objects, or None if detection fails
     """
-    if not vertices_data:
-        return []
+    if not GEODESIC_AVAILABLE:
+        if verbose:
+            print("  Geodesic detection not available")
+            available, msg = False, "Module not loaded"
+            print(f"    {msg}")
+        return None
 
-    # Define region boundaries based on phi angle (XY plane)
-    top_threshold = 45.0  # degrees from vertical
+    # Check dependencies
+    available, msg = check_dependencies()
+    if not available:
+        if verbose:
+            print(f"  {msg}")
+        return None
 
-    # Bin vertices into regions
-    region_vertices = {rt: [] for rt in HairRegionType}
+    if config is None:
+        config = HairPhysicsConfig()
 
-    for vert_data in vertices_data:
-        phi = vert_data['phi']
-        theta = vert_data['theta']
+    if verbose:
+        print("  Extracting mesh data...")
 
-        # Check if top region
-        if theta < top_threshold:
-            region_vertices[HairRegionType.TOP].append(vert_data)
-            continue
+    try:
+        # Extract mesh data for geodesic computation
+        vertices, faces, _ = extract_mesh_for_geodesic(hair_obj)
 
-        # Determine horizontal region
-        if -45 <= phi < 45:
-            region_vertices[HairRegionType.FRONT].append(vert_data)
-        elif 45 <= phi < 135:
-            region_vertices[HairRegionType.RIGHT].append(vert_data)
-        elif phi >= 135 or phi < -135:
-            region_vertices[HairRegionType.BACK].append(vert_data)
-        else:  # -135 <= phi < -45
-            region_vertices[HairRegionType.LEFT].append(vert_data)
+        if verbose:
+            print(f"    {len(vertices)} vertices, {len(faces)} faces")
 
-    # Build HairRegion objects for valid regions
-    regions = []
+        # Convert config
+        geo_config = config.to_geodesic_config()
 
-    for region_type, verts in region_vertices.items():
-        if len(verts) < config.min_region_vertices:
-            continue
+        # Detect strands
+        strands = detect_strands_geodesic(vertices, faces, geo_config, verbose)
 
-        # Find root vertices (closest to head) and tip vertices (furthest)
-        sorted_by_dist = sorted(verts, key=lambda v: v['distance'])
+        if strands is None:
+            if verbose:
+                print("  Geodesic strand detection failed")
+            return None
 
-        # Take bottom 20% as roots, top 20% as tips
-        n_boundary = max(1, len(sorted_by_dist) // 5)
-        root_verts = sorted_by_dist[:n_boundary]
-        tip_verts = sorted_by_dist[-n_boundary:]
+        if verbose:
+            print(f"  Detected {len(strands)} hair strands")
 
-        # Calculate centroids
-        root_centroid = [0.0, 0.0, 0.0]
-        for v in root_verts:
-            for i in range(3):
-                root_centroid[i] += v['world_pos'][i]
-        root_centroid = tuple(c / len(root_verts) for c in root_centroid)
+        return strands
 
-        tip_centroid = [0.0, 0.0, 0.0]
-        for v in tip_verts:
-            for i in range(3):
-                tip_centroid[i] += v['world_pos'][i]
-        tip_centroid = tuple(c / len(tip_verts) for c in tip_centroid)
-
-        # Calculate flow direction and extent
-        flow_vec = [tip_centroid[i] - root_centroid[i] for i in range(3)]
-        extent_m = math.sqrt(sum(c*c for c in flow_vec))
-        extent_cm = extent_m * 100  # convert to cm
-
-        if extent_cm < config.min_extent_for_bones:
-            continue
-
-        # Normalize flow direction
-        flow_direction = tuple(c / extent_m for c in flow_vec) if extent_m > 0 else (0, 0, -1)
-
-        region = HairRegion(
-            region_type=region_type,
-            vertex_indices=[v['index'] for v in verts],
-            root_position=root_centroid,
-            tip_position=tip_centroid,
-            flow_direction=flow_direction,
-            extent=extent_cm
-        )
-
-        regions.append(region)
-
-    return regions
+    except Exception as e:
+        if verbose:
+            print(f"  Geodesic detection error: {e}")
+            traceback.print_exc()
+        return None
 
 
 # ============================================================================
 # MPFB2 File Generation
 # ============================================================================
 
-def generate_mpfbskel(
-    regions: List[HairRegion],
+def generate_mpfbskel_from_strands(
+    strands: List['HairStrand'],
     config: HairPhysicsConfig,
     asset_name: str
 ) -> Dict:
     """
-    Generate MPFB2 skeleton file content (.mpfbskel).
+    Generate MPFB2 skeleton file content from detected strands.
 
     Args:
-        regions: List of HairRegion objects
+        strands: List of HairStrand objects
         config: Hair physics configuration
         asset_name: Name of the hair asset
 
@@ -325,7 +277,7 @@ def generate_mpfbskel(
     """
     skeleton = {
         "name": f"{asset_name}_physics",
-        "version": 110,  # Required by MPFB2 rig.py validation
+        "version": 110,
         "is_subrig": True,
         "scale_factor": 1.0,
         "bones": {},
@@ -333,55 +285,53 @@ def generate_mpfbskel(
         "extra_bones": [],
         "hair_physics_metadata": {
             "version": "1.0",
+            "detection_method": "geodesic",
             "stiffness": config.stiffness,
             "damping": config.damping,
             "gravity_scale": config.gravity_scale,
-            "regions": [r.region_type.value for r in regions]
+            "strand_count": len(strands)
         }
     }
 
-    for region in regions:
-        bone_count = min(region.bone_count, config.max_bones_per_chain)
-        bone_count = max(bone_count, config.min_bones_per_chain)
+    bone_prefix = "hair"
 
-        region_prefix = f"hair_{region.region_type.value}"
+    for strand_idx, strand in enumerate(strands):
+        path = strand.path_coords
 
-        # Calculate bone positions along flow direction
-        root = list(region.root_position)
-        flow = list(region.flow_direction)
-        total_length = region.extent / 100  # convert to meters
-        bone_length = total_length / bone_count
+        # Determine number of bones
+        bone_count = int(strand.length * 100 * config.bones_per_10cm / 10.0)
+        bone_count = max(config.min_bones_per_strand,
+                        min(config.max_bones_per_strand, bone_count))
 
-        for i in range(bone_count):
-            bone_name = f"{region_prefix}_{i:02d}"
+        # Resample path to get bone positions
+        resampled = _resample_path(path, bone_count + 1)
 
-            # Calculate bone head and tail
-            head = [root[j] + flow[j] * (i * bone_length) for j in range(3)]
-            tail = [root[j] + flow[j] * ((i + 1) * bone_length) for j in range(3)]
+        for bone_idx in range(bone_count):
+            bone_name = f"{bone_prefix}_{strand_idx}_{bone_idx}"
 
-            # Determine parent bone
-            # For subrigs, root bones have no parent within the subrig
-            # MPFB2 handles connecting the subrig to the main rig
-            if i == 0:
-                parent = ""  # No parent for root bones in subrig
+            head_pos = list(resampled[bone_idx])
+            tail_pos = list(resampled[bone_idx + 1])
+
+            # Determine parent
+            if bone_idx == 0:
+                parent = ""  # Root bones have no parent in subrig
             else:
-                parent = f"{region_prefix}_{i-1:02d}"
+                parent = f"{bone_prefix}_{strand_idx}_{bone_idx - 1}"
 
-            # MPFB2 bone structure (fields required by rig.py update_edit_bone_metadata)
             skeleton["bones"][bone_name] = {
                 "head": {
                     "strategy": "MEAN",
-                    "vertex_indices": [],  # Will be computed at load time
-                    "default_position": head
+                    "vertex_indices": [],
+                    "default_position": head_pos
                 },
                 "tail": {
                     "strategy": "MEAN",
                     "vertex_indices": [],
-                    "default_position": tail
+                    "default_position": tail_pos
                 },
                 "parent": parent,
                 "roll": 0.0,
-                "use_connect": i > 0,
+                "use_connect": bone_idx > 0,
                 "use_deform": True,
                 "use_local_location": True,
                 "use_inherit_rotation": True,
@@ -390,88 +340,124 @@ def generate_mpfbskel(
                 "rigify": {}
             }
 
-            # Add to extra_bones list
             skeleton["extra_bones"].append(bone_name)
 
     return skeleton
 
 
-def generate_mhw(
-    regions: List[HairRegion],
+def generate_mhw_from_strands(
+    strands: List['HairStrand'],
     vertices: List[Tuple[float, float, float]],
-    config: HairPhysicsConfig
+    config: HairPhysicsConfig,
+    verbose: bool = False
 ) -> Dict:
     """
-    Generate MPFB2 weight file content (.mhw).
+    Generate MPFB2 weight file content from detected strands.
 
     Args:
-        regions: List of HairRegion objects
+        strands: List of HairStrand objects
         vertices: All vertex coordinates
         config: Hair physics configuration
+        verbose: Enable verbose output
 
     Returns:
         Dictionary structure for .mhw JSON file
     """
+    import numpy as np
+
     weights = {
         "copyright": "Generated by generate_hair_rigging.py",
-        "description": "Hair physics bone weights",
+        "description": "Hair physics bone weights (geodesic detection)",
         "license": "CC0",
         "name": "hair_physics_weights",
         "version": 1,
         "weights": {}
     }
 
-    # Also track mhmask-subrig weights
+    bone_prefix = "hair"
+    vertices_array = np.array(vertices)
+
+    # Assign vertices to strands
+    if GEODESIC_AVAILABLE:
+        geo_config = config.to_geodesic_config()
+        strand_assignments = assign_vertices_to_strands(vertices_array, strands, geo_config)
+    else:
+        strand_assignments = {}
+
+    # Track subrig mask weights
     subrig_mask_weights = []
+    weighted_vertices = set()
 
-    for region in regions:
-        bone_count = min(region.bone_count, config.max_bones_per_chain)
-        bone_count = max(bone_count, config.min_bones_per_chain)
+    for strand_idx, strand in enumerate(strands):
+        path = strand.path_coords
 
-        region_prefix = f"hair_{region.region_type.value}"
+        # Determine number of bones
+        bone_count = int(strand.length * 100 * config.bones_per_10cm / 10.0)
+        bone_count = max(config.min_bones_per_strand,
+                        min(config.max_bones_per_strand, bone_count))
 
-        root = list(region.root_position)
-        flow = list(region.flow_direction)
-        total_length = region.extent / 100
-        bone_length = total_length / bone_count if bone_count > 0 else 0.1
+        # Get vertices assigned to this strand
+        if strand_idx in strand_assignments:
+            assigned_verts = strand_assignments[strand_idx]
+        else:
+            # Fallback: use path vertices
+            assigned_verts = [(idx, 1.0) for idx in strand.path_vertex_indices]
+
+        # Resample path for bone positions
+        resampled = _resample_path(path, bone_count + 1)
 
         # Initialize weight lists for each bone
-        bone_weights = {f"{region_prefix}_{i:02d}": [] for i in range(bone_count)}
+        bone_weights = {f"{bone_prefix}_{strand_idx}_{i}": [] for i in range(bone_count)}
 
-        for vert_idx in region.vertex_indices:
+        for vert_idx, base_weight in assigned_verts:
             if vert_idx >= len(vertices):
                 continue
 
             vx, vy, vz = vertices[vert_idx]
+            vert_pos = np.array([vx, vy, vz])
 
-            # Project vertex onto bone chain axis
-            vert_vec = [vx - root[0], vy - root[1], vz - root[2]]
-            projection = sum(vert_vec[j] * flow[j] for j in range(3))
+            # Find which bone segment this vertex is closest to
+            min_dist = float('inf')
+            best_bone_idx = 0
+            best_t = 0.0
 
-            # Clamp to chain length
-            projection = max(0, min(projection, total_length))
+            for i in range(bone_count):
+                bone_head = np.array(resampled[i])
+                bone_tail = np.array(resampled[i + 1])
 
-            # Determine primary bone
-            bone_index = int(projection / bone_length)
-            bone_index = min(bone_index, bone_count - 1)
+                # Project vertex onto bone segment
+                segment = bone_tail - bone_head
+                seg_len_sq = np.dot(segment, segment)
 
-            # Calculate blend factor
-            local_pos = projection - (bone_index * bone_length)
-            blend = local_pos / bone_length if bone_length > 0 else 0
+                if seg_len_sq < 0.00001:
+                    t = 0.0
+                    proj = bone_head
+                else:
+                    t = max(0.0, min(1.0, np.dot(vert_pos - bone_head, segment) / seg_len_sq))
+                    proj = bone_head + t * segment
 
-            # Primary bone weight
-            primary_weight = 1.0 - blend * config.weight_falloff
-            bone_name = f"{region_prefix}_{bone_index:02d}"
+                dist = np.linalg.norm(vert_pos - proj)
+
+                if dist < min_dist:
+                    min_dist = dist
+                    best_bone_idx = i
+                    best_t = t
+
+            # Calculate weight based on position along bone
+            primary_weight = base_weight * (1.0 - best_t * 0.3)
+            bone_name = f"{bone_prefix}_{strand_idx}_{best_bone_idx}"
             bone_weights[bone_name].append([vert_idx, round(primary_weight, 4)])
 
-            # Secondary bone weight (for smooth blending)
-            if bone_index + 1 < bone_count and blend > 0.2:
-                secondary_weight = blend * config.weight_falloff
-                next_bone = f"{region_prefix}_{bone_index + 1:02d}"
+            # Secondary bone weight for smooth blending
+            if best_bone_idx + 1 < bone_count and best_t > 0.3:
+                secondary_weight = base_weight * best_t * 0.3
+                next_bone = f"{bone_prefix}_{strand_idx}_{best_bone_idx + 1}"
                 bone_weights[next_bone].append([vert_idx, round(secondary_weight, 4)])
 
-            # Add to subrig mask (full influence for hair vertices)
-            subrig_mask_weights.append([vert_idx, 1.0])
+            # Track for subrig mask
+            if vert_idx not in weighted_vertices:
+                weighted_vertices.add(vert_idx)
+                subrig_mask_weights.append([vert_idx, 1.0])
 
         # Add bone weights to output
         for bone_name, vert_weights in bone_weights.items():
@@ -481,7 +467,71 @@ def generate_mhw(
     # Add subrig mask
     weights["weights"]["mhmask-subrig"] = subrig_mask_weights
 
+    if verbose:
+        total_weights = sum(len(w) for w in weights["weights"].values())
+        print(f"  Generated {total_weights} vertex weights")
+
     return weights
+
+
+def _resample_path(
+    path: List[Tuple[float, float, float]],
+    num_points: int
+) -> List[Tuple[float, float, float]]:
+    """Resample a path to have a specific number of evenly-spaced points."""
+    import numpy as np
+
+    if len(path) < 2:
+        return path
+
+    if num_points <= 2:
+        return [path[0], path[-1]]
+
+    # Calculate cumulative distances
+    distances = [0.0]
+    for i in range(1, len(path)):
+        dx = path[i][0] - path[i-1][0]
+        dy = path[i][1] - path[i-1][1]
+        dz = path[i][2] - path[i-1][2]
+        distances.append(distances[-1] + np.sqrt(dx*dx + dy*dy + dz*dz))
+
+    total_length = distances[-1]
+    if total_length < 0.0001:
+        return [path[0]] * num_points
+
+    target_distances = np.linspace(0, total_length, num_points)
+
+    resampled = []
+    path_idx = 0
+
+    for target_dist in target_distances:
+        while path_idx < len(distances) - 1 and distances[path_idx + 1] < target_dist:
+            path_idx += 1
+
+        if path_idx >= len(path) - 1:
+            resampled.append(path[-1])
+            continue
+
+        seg_start = distances[path_idx]
+        seg_end = distances[path_idx + 1]
+        seg_length = seg_end - seg_start
+
+        if seg_length < 0.0001:
+            t = 0.0
+        else:
+            t = (target_dist - seg_start) / seg_length
+
+        p0 = path[path_idx]
+        p1 = path[path_idx + 1]
+
+        interpolated = (
+            p0[0] + t * (p1[0] - p0[0]),
+            p0[1] + t * (p1[1] - p0[1]),
+            p0[2] + t * (p1[2] - p0[2])
+        )
+        resampled.append(interpolated)
+
+    return resampled
 
 
 def save_rigging_files(
@@ -497,25 +547,22 @@ def save_rigging_files(
     Args:
         asset_folder: Path to the hair asset folder
         asset_name: Name of the hair asset
-        skeleton: Skeleton dictionary from generate_mpfbskel()
-        weights: Weights dictionary from generate_mhw()
+        skeleton: Skeleton dictionary
+        weights: Weights dictionary
         verbose: Enable verbose output
 
     Returns:
         Tuple of (skel_path, weights_path)
     """
-    # Determine output filenames
     skel_path = asset_folder / f"{asset_name}.mpfbskel"
     weights_path = asset_folder / f"{asset_name}.mhw"
 
-    # Save skeleton file
     with open(skel_path, 'w') as f:
         json.dump(skeleton, f, indent=2)
 
     if verbose:
         print(f"  Saved skeleton: {skel_path.name}")
 
-    # Save weights file
     with open(weights_path, 'w') as f:
         json.dump(weights, f, indent=2)
 
@@ -526,376 +573,309 @@ def save_rigging_files(
 
 
 # ============================================================================
-# Blender Runtime Functions (for dynamic bone creation at load time)
+# Direct Blender Armature Integration
 # ============================================================================
-
-def analyze_blender_hair_mesh(
-    hair_obj,
-    armature_obj,
-    min_region_vertices: int = 50,
-    min_extent_for_bones: float = 0.03,
-    verbose: bool = False
-) -> List[HairRegion]:
-    """
-    Analyze hair mesh geometry in Blender to determine optimal bone positions.
-
-    This function analyzes the actual Blender mesh vertices to find hair regions
-    and calculate bone chain positions. This ensures bones are always positioned
-    correctly within the mesh regardless of coordinate transformations.
-
-    Args:
-        hair_obj: The Blender hair mesh object
-        armature_obj: The armature object (to find head bone position)
-        min_region_vertices: Minimum vertices to consider a valid region
-        min_extent_for_bones: Minimum hair extent (meters) for physics bones
-        verbose: Enable verbose output
-
-    Returns:
-        List of HairRegion objects with bone position data (extent in meters)
-    """
-    if verbose:
-        print("  Analyzing hair mesh for bone positions...")
-
-    # Get world-space vertex positions from the hair mesh
-    mesh = hair_obj.data
-    world_matrix = hair_obj.matrix_world
-
-    vertices = []
-    for v in mesh.vertices:
-        world_pos = world_matrix @ v.co
-        vertices.append((world_pos.x, world_pos.y, world_pos.z))
-
-    if not vertices:
-        print("  Warning: No vertices in hair mesh")
-        return []
-
-    if verbose:
-        print(f"    Loaded {len(vertices)} vertices from hair mesh")
-
-    # Estimate head center from the head bone position
-    head_position = None
-    try:
-        head_bone = armature_obj.data.bones.get('head')
-        if head_bone:
-            head_world = armature_obj.matrix_world @ head_bone.head_local
-            head_position = (head_world.x, head_world.y, head_world.z)
-            if verbose:
-                print(f"    Head bone position: ({head_position[0]:.3f}, {head_position[1]:.3f}, {head_position[2]:.3f})")
-    except Exception as e:
-        if verbose:
-            print(f"    Could not get head bone position: {e}")
-
-    # Fallback: estimate from hair mesh centroid
-    if head_position is None:
-        cx = sum(v[0] for v in vertices) / len(vertices)
-        cy = sum(v[1] for v in vertices) / len(vertices)
-        max_z = max(v[2] for v in vertices)
-        head_position = (cx, cy, max_z - 0.05)
-        if verbose:
-            print(f"    Estimated head position: ({head_position[0]:.3f}, {head_position[1]:.3f}, {head_position[2]:.3f})")
-
-    # Analyze vertices relative to head position
-    hx, hy, hz = head_position
-    vertices_data = []
-
-    for idx, (vx, vy, vz) in enumerate(vertices):
-        rx, ry, rz = vx - hx, vy - hy, vz - hz
-        distance = math.sqrt(rx*rx + ry*ry + rz*rz)
-
-        if distance < 0.001:
-            continue
-
-        theta = math.acos(max(-1, min(1, rz / distance)))
-        phi = math.atan2(ry, rx)
-
-        vertices_data.append({
-            'index': idx,
-            'world_pos': (vx, vy, vz),
-            'relative': (rx, ry, rz),
-            'distance': distance,
-            'theta': math.degrees(theta),
-            'phi': math.degrees(phi)
-        })
-
-    # Segment vertices into regions
-    top_threshold = 45.0
-    region_vertices = {rt: [] for rt in HairRegionType}
-
-    for vert_data in vertices_data:
-        phi = vert_data['phi']
-        theta = vert_data['theta']
-
-        if theta < top_threshold:
-            region_vertices[HairRegionType.TOP].append(vert_data)
-            continue
-
-        # In Blender: +Y is forward, +X is right
-        if -45 <= phi < 45:
-            region_vertices[HairRegionType.RIGHT].append(vert_data)
-        elif 45 <= phi < 135:
-            region_vertices[HairRegionType.BACK].append(vert_data)
-        elif phi >= 135 or phi < -135:
-            region_vertices[HairRegionType.LEFT].append(vert_data)
-        else:
-            region_vertices[HairRegionType.FRONT].append(vert_data)
-
-    # Build HairRegion objects
-    regions = []
-
-    for region_type, verts in region_vertices.items():
-        if len(verts) < min_region_vertices:
-            continue
-
-        sorted_by_dist = sorted(verts, key=lambda v: v['distance'])
-        n_boundary = max(1, len(sorted_by_dist) // 5)
-        root_verts = sorted_by_dist[:n_boundary]
-        tip_verts = sorted_by_dist[-n_boundary:]
-
-        root_centroid = [0.0, 0.0, 0.0]
-        for v in root_verts:
-            for i in range(3):
-                root_centroid[i] += v['world_pos'][i]
-        root_centroid = tuple(c / len(root_verts) for c in root_centroid)
-
-        tip_centroid = [0.0, 0.0, 0.0]
-        for v in tip_verts:
-            for i in range(3):
-                tip_centroid[i] += v['world_pos'][i]
-        tip_centroid = tuple(c / len(tip_verts) for c in tip_centroid)
-
-        flow_vec = [tip_centroid[i] - root_centroid[i] for i in range(3)]
-        extent = math.sqrt(sum(c*c for c in flow_vec))
-
-        if extent < min_extent_for_bones:
-            if verbose:
-                print(f"    Skipping {region_type.value}: extent {extent*100:.1f}cm < minimum")
-            continue
-
-        flow_direction = tuple(c / extent for c in flow_vec) if extent > 0 else (0, 0, -1)
-
-        # Note: extent is in meters for Blender runtime use
-        # Convert to cm for bone_count calculation (matches HairRegion.bone_count logic)
-        region = HairRegion(
-            region_type=region_type,
-            vertex_indices=[v['index'] for v in verts],
-            root_position=root_centroid,
-            tip_position=tip_centroid,
-            flow_direction=flow_direction,
-            extent=extent * 100  # Store in cm for bone_count property
-        )
-
-        regions.append(region)
-
-        if verbose:
-            print(f"    Region {region_type.value}: {len(verts)} verts, "
-                  f"{region.bone_count} bones, extent={extent*100:.1f}cm")
-
-    return regions
-
 
 def add_hair_bones_to_armature(
     armature_obj,
     hair_obj,
     parent_bone_name: str = "head",
-    max_bones_per_chain: int = 6,
+    config: Optional[HairPhysicsConfig] = None,
     verbose: bool = False
-) -> Tuple[List[str], Dict]:
+) -> Tuple[List[str], Optional[Dict]]:
     """
-    Add hair bones to armature based on mesh analysis.
+    Add hair physics bones directly to an existing Blender armature.
 
-    This function analyzes the actual hair mesh geometry in Blender and
-    creates bones that are guaranteed to be positioned within the mesh.
+    Analyzes the hair mesh using geodesic strand detection and creates
+    bones in the armature for each detected strand.
 
     Args:
-        armature_obj: The main armature object
-        hair_obj: The hair mesh object to analyze
-        parent_bone_name: Name of the bone to parent root hair bones to
-        max_bones_per_chain: Maximum bones per hair region chain
+        armature_obj: Blender armature object to add bones to
+        hair_obj: Hair mesh object to analyze
+        parent_bone_name: Name of the bone to parent hair bones to (default: "head")
+        config: Hair physics configuration (uses defaults if None)
         verbose: Enable verbose output
 
     Returns:
-        Tuple of (list of created bone names, weight info dict)
+        Tuple of (created_bone_names, weight_info):
+        - created_bone_names: List of created bone names
+        - weight_info: Dict containing strand/vertex data for weight calculation,
+                       or None if analysis failed
     """
     import bpy
 
-    try:
-        regions = analyze_blender_hair_mesh(
-            hair_obj,
-            armature_obj,
-            verbose=verbose
-        )
+    if config is None:
+        config = HairPhysicsConfig()
 
-        if not regions:
-            print("  Warning: No valid hair regions found")
-            return [], {}
+    # Analyze hair mesh to detect strands
+    if verbose:
+        print("  Analyzing hair mesh for strand detection...")
 
+    strands = analyze_hair_mesh_geodesic(hair_obj, config, verbose)
+
+    if strands is None or len(strands) == 0:
         if verbose:
-            print(f"  Found {len(regions)} hair regions, creating bones...")
+            print("  No hair strands detected")
+        return [], None
 
-        created_bones = []
-        weight_info = {}
+    if verbose:
+        print(f"  Detected {len(strands)} hair strands")
 
+    # Extract vertices for weight calculation
+    mesh = hair_obj.data
+    world_matrix = hair_obj.matrix_world
+    vertices = []
+    for v in mesh.vertices:
+        world_pos = world_matrix @ v.co
+        vertices.append((world_pos.x, world_pos.y, world_pos.z))
+
+    # Store edit mode state
+    original_mode = bpy.context.object.mode if bpy.context.object else 'OBJECT'
+    original_active = bpy.context.view_layer.objects.active
+
+    created_bones = []
+    bone_prefix = "hair"
+
+    try:
+        # Switch to armature and enter edit mode
         bpy.context.view_layer.objects.active = armature_obj
         bpy.ops.object.mode_set(mode='EDIT')
 
         edit_bones = armature_obj.data.edit_bones
 
-        for region in regions:
-            bone_count = min(region.bone_count, max_bones_per_chain)
-            region_prefix = f"hair_{region.region_type.value}"
+        # Find parent bone
+        parent_bone = edit_bones.get(parent_bone_name)
+        if parent_bone is None and verbose:
+            print(f"  Warning: Parent bone '{parent_bone_name}' not found, using no parent")
 
-            root = list(region.root_position)
-            flow = list(region.flow_direction)
-            total_length = region.extent / 100  # Convert cm back to meters
-            bone_length = total_length / bone_count
+        # Create bones for each strand
+        for strand_idx, strand in enumerate(strands):
+            path = strand.path_coords
 
-            for i in range(bone_count):
-                bone_name = f"{region_prefix}_{i:02d}"
+            # Determine number of bones
+            bone_count = int(strand.length * 100 * config.bones_per_10cm / 10.0)
+            bone_count = max(config.min_bones_per_strand,
+                            min(config.max_bones_per_strand, bone_count))
 
-                head = [root[j] + flow[j] * (i * bone_length) for j in range(3)]
-                tail = [root[j] + flow[j] * ((i + 1) * bone_length) for j in range(3)]
+            # Resample path to get bone positions
+            resampled = _resample_path(path, bone_count + 1)
 
-                bone = edit_bones.new(bone_name)
-                bone.head = head
-                bone.tail = tail
+            strand_parent = parent_bone
 
-                bone.use_deform = True
-                bone.use_local_location = True
-                bone.use_inherit_rotation = True
-                if hasattr(bone, 'inherit_scale'):
-                    bone.inherit_scale = 'FULL'
+            for bone_idx in range(bone_count):
+                bone_name = f"{bone_prefix}_{strand_idx}_{bone_idx}"
 
-                if i == 0:
-                    head_bone = edit_bones.get(parent_bone_name)
-                    if head_bone:
-                        bone.parent = head_bone
-                    bone.use_connect = False
+                head_pos = resampled[bone_idx]
+                tail_pos = resampled[bone_idx + 1]
+
+                # Create bone
+                new_bone = edit_bones.new(bone_name)
+                new_bone.head = head_pos
+                new_bone.tail = tail_pos
+
+                # Set parent
+                if bone_idx == 0:
+                    new_bone.parent = strand_parent
+                    new_bone.use_connect = False
                 else:
-                    prev_bone = edit_bones.get(f"{region_prefix}_{i-1:02d}")
+                    prev_bone_name = f"{bone_prefix}_{strand_idx}_{bone_idx - 1}"
+                    prev_bone = edit_bones.get(prev_bone_name)
                     if prev_bone:
-                        bone.parent = prev_bone
-                        bone.use_connect = True
+                        new_bone.parent = prev_bone
+                        new_bone.use_connect = True
+
+                # Set bone properties
+                new_bone.use_deform = True
 
                 created_bones.append(bone_name)
 
-                weight_info[bone_name] = {
-                    'region_type': region.region_type.value,
-                    'vertex_indices': region.vertex_indices,
-                    'bone_index': i,
-                    'bone_count': bone_count,
-                    'root': root,
-                    'flow': flow,
-                    'bone_length': bone_length
-                }
-
+        # Exit edit mode
         bpy.ops.object.mode_set(mode='OBJECT')
 
         if verbose:
-            print(f"  Created {len(created_bones)} bones in {armature_obj.name}")
+            print(f"  Created {len(created_bones)} hair bones")
+
+        # Prepare weight info for calculate_hair_vertex_weights
+        weight_info = {
+            "strands": strands,
+            "vertices": vertices,
+            "config": config,
+            "bone_prefix": bone_prefix
+        }
 
         return created_bones, weight_info
 
     except Exception as e:
+        if verbose:
+            print(f"  Error creating bones: {e}")
+            traceback.print_exc()
+
+        # Try to exit edit mode
         try:
             bpy.ops.object.mode_set(mode='OBJECT')
         except:
             pass
-        print(f"  Error adding bones from mesh analysis: {e}")
-        if verbose:
-            traceback.print_exc()
-        return [], {}
+
+        return [], None
+
+    finally:
+        # Restore original state
+        try:
+            bpy.context.view_layer.objects.active = original_active
+            if original_active and original_mode != 'OBJECT':
+                bpy.ops.object.mode_set(mode=original_mode)
+        except:
+            pass
 
 
 def calculate_hair_vertex_weights(
     hair_obj,
     weight_info: Dict,
-    weight_falloff: float = 0.5,
     verbose: bool = False
 ) -> bool:
     """
-    Calculate and assign vertex weights for hair bones.
+    Calculate and assign vertex weights for hair physics bones.
+
+    Uses the strand detection results from add_hair_bones_to_armature
+    to assign appropriate weights to each vertex.
 
     Args:
-        hair_obj: The hair mesh object
-        weight_info: Dictionary from add_hair_bones_to_armature()
-        weight_falloff: Falloff factor for weight blending
+        hair_obj: Hair mesh object to assign weights to
+        weight_info: Dict containing strands, vertices, and config from
+                     add_hair_bones_to_armature
         verbose: Enable verbose output
 
     Returns:
-        True if successful
+        True if weights were successfully assigned, False otherwise
     """
+    import bpy
+    import numpy as np
+
+    if weight_info is None:
+        if verbose:
+            print("  No weight info provided")
+        return False
+
+    strands = weight_info.get("strands")
+    vertices = weight_info.get("vertices")
+    config = weight_info.get("config", HairPhysicsConfig())
+    bone_prefix = weight_info.get("bone_prefix", "hair")
+
+    if strands is None or len(strands) == 0:
+        if verbose:
+            print("  No strands in weight info")
+        return False
+
+    if vertices is None or len(vertices) == 0:
+        if verbose:
+            print("  No vertices in weight info")
+        return False
+
     try:
-        mesh = hair_obj.data
-        world_matrix = hair_obj.matrix_world
+        vertices_array = np.array(vertices)
 
-        # Group bones by region
-        regions_data = {}
-        for bone_name, info in weight_info.items():
-            region_type = info['region_type']
-            if region_type not in regions_data:
-                regions_data[region_type] = {
-                    'bones': [],
-                    'vertex_indices': info['vertex_indices'],
-                    'root': info['root'],
-                    'flow': info['flow'],
-                    'bone_count': info['bone_count'],
-                    'bone_length': info['bone_length']
-                }
-            regions_data[region_type]['bones'].append(bone_name)
+        # Assign vertices to strands
+        if GEODESIC_AVAILABLE:
+            geo_config = config.to_geodesic_config()
+            strand_assignments = assign_vertices_to_strands(vertices_array, strands, geo_config)
+        else:
+            strand_assignments = {}
 
-        total_weights = 0
+        # Calculate weights for each strand/bone
+        bone_weights = {}  # bone_name -> list of (vert_idx, weight)
 
-        for region_type, region_data in regions_data.items():
-            bones = sorted(region_data['bones'])
-            root = region_data['root']
-            flow = region_data['flow']
-            bone_count = region_data['bone_count']
-            bone_length = region_data['bone_length']
-            total_length = bone_count * bone_length
+        for strand_idx, strand in enumerate(strands):
+            path = strand.path_coords
 
-            for bone_name in bones:
-                if bone_name not in hair_obj.vertex_groups:
-                    hair_obj.vertex_groups.new(name=bone_name)
+            # Determine number of bones
+            bone_count = int(strand.length * 100 * config.bones_per_10cm / 10.0)
+            bone_count = max(config.min_bones_per_strand,
+                            min(config.max_bones_per_strand, bone_count))
 
-            for vert_idx in region_data['vertex_indices']:
-                if vert_idx >= len(mesh.vertices):
+            # Get vertices assigned to this strand
+            if strand_idx in strand_assignments:
+                assigned_verts = strand_assignments[strand_idx]
+            else:
+                # Fallback: use path vertices
+                assigned_verts = [(idx, 1.0) for idx in strand.path_vertex_indices]
+
+            # Resample path for bone positions
+            resampled = _resample_path(path, bone_count + 1)
+
+            for vert_idx, base_weight in assigned_verts:
+                if vert_idx >= len(vertices):
                     continue
 
-                v = mesh.vertices[vert_idx]
-                world_pos = world_matrix @ v.co
-                vx, vy, vz = world_pos.x, world_pos.y, world_pos.z
+                vert_pos = vertices_array[vert_idx]
 
-                vert_vec = [vx - root[0], vy - root[1], vz - root[2]]
-                projection = sum(vert_vec[j] * flow[j] for j in range(3))
-                projection = max(0, min(projection, total_length))
+                # Find which bone segment this vertex is closest to
+                min_dist = float('inf')
+                best_bone_idx = 0
+                best_t = 0.0
 
-                bone_index = int(projection / bone_length)
-                bone_index = min(bone_index, bone_count - 1)
+                for i in range(bone_count):
+                    bone_head = np.array(resampled[i])
+                    bone_tail = np.array(resampled[i + 1])
 
-                local_pos = projection - (bone_index * bone_length)
-                blend = local_pos / bone_length if bone_length > 0 else 0
+                    # Project vertex onto bone segment
+                    segment = bone_tail - bone_head
+                    seg_len_sq = np.dot(segment, segment)
 
-                primary_weight = 1.0 - blend * weight_falloff
-                primary_bone = bones[bone_index]
-                vg = hair_obj.vertex_groups[primary_bone]
-                vg.add([vert_idx], primary_weight, 'REPLACE')
+                    if seg_len_sq < 0.00001:
+                        t = 0.0
+                        proj = bone_head
+                    else:
+                        t = max(0.0, min(1.0, np.dot(vert_pos - bone_head, segment) / seg_len_sq))
+                        proj = bone_head + t * segment
+
+                    dist = np.linalg.norm(vert_pos - proj)
+
+                    if dist < min_dist:
+                        min_dist = dist
+                        best_bone_idx = i
+                        best_t = t
+
+                # Calculate weight based on position along bone
+                primary_weight = base_weight * (1.0 - best_t * 0.3)
+                bone_name = f"{bone_prefix}_{strand_idx}_{best_bone_idx}"
+
+                if bone_name not in bone_weights:
+                    bone_weights[bone_name] = []
+                bone_weights[bone_name].append((vert_idx, primary_weight))
+
+                # Secondary bone weight for smooth blending
+                if best_bone_idx + 1 < bone_count and best_t > 0.3:
+                    secondary_weight = base_weight * best_t * 0.3
+                    next_bone = f"{bone_prefix}_{strand_idx}_{best_bone_idx + 1}"
+
+                    if next_bone not in bone_weights:
+                        bone_weights[next_bone] = []
+                    bone_weights[next_bone].append((vert_idx, secondary_weight))
+
+        # Create vertex groups and assign weights
+        total_weights = 0
+        for bone_name, vert_weights in bone_weights.items():
+            if not vert_weights:
+                continue
+
+            # Get or create vertex group
+            vgroup = hair_obj.vertex_groups.get(bone_name)
+            if vgroup is None:
+                vgroup = hair_obj.vertex_groups.new(name=bone_name)
+
+            # Assign weights
+            for vert_idx, weight in vert_weights:
+                vgroup.add([vert_idx], weight, 'REPLACE')
                 total_weights += 1
 
-                if bone_index + 1 < bone_count and blend > 0.2:
-                    secondary_weight = blend * weight_falloff
-                    secondary_bone = bones[bone_index + 1]
-                    vg2 = hair_obj.vertex_groups[secondary_bone]
-                    vg2.add([vert_idx], secondary_weight, 'ADD')
-                    total_weights += 1
-
         if verbose:
-            print(f"  Assigned {total_weights} vertex weights")
+            print(f"  Assigned {total_weights} vertex weights to {len(bone_weights)} vertex groups")
 
-        return True
+        return total_weights > 0
 
     except Exception as e:
-        print(f"  Error calculating hair weights: {e}")
         if verbose:
+            print(f"  Error calculating weights: {e}")
             traceback.print_exc()
         return False
 
@@ -904,22 +884,24 @@ def calculate_hair_vertex_weights(
 # Main Processing Functions
 # ============================================================================
 
-def process_hair_asset(
+def process_hair_asset_blender(
     asset_folder: Path,
     config: Optional[HairPhysicsConfig] = None,
     verbose: bool = False
 ) -> bool:
     """
-    Process a single hair asset folder and generate rigging files.
+    Process a single hair asset using Blender's mesh loading.
 
     Args:
         asset_folder: Path to the hair asset folder
-        config: Hair physics configuration (uses defaults if None)
+        config: Hair physics configuration
         verbose: Enable verbose output
 
     Returns:
-        True if successful, False otherwise
+        True if successful
     """
+    import bpy
+
     if config is None:
         config = HairPhysicsConfig()
 
@@ -927,6 +909,17 @@ def process_hair_asset(
 
     if verbose:
         print(f"\nProcessing hair asset: {asset_name}")
+
+    # Check geodesic availability
+    if not GEODESIC_AVAILABLE:
+        print("  Error: Geodesic detection module not available")
+        print("  Ensure geodesic_strand_detection.py is accessible")
+        return False
+
+    available, msg = check_dependencies()
+    if not available:
+        print(f"  Error: {msg}")
+        return False
 
     try:
         # Find OBJ file
@@ -940,51 +933,51 @@ def process_hair_asset(
         if verbose:
             print(f"  Loading mesh: {obj_path.name}")
 
-        # Load vertices from OBJ
+        # Clear existing objects
+        bpy.ops.object.select_all(action='SELECT')
+        bpy.ops.object.delete(use_global=False)
+
+        # Import OBJ
+        bpy.ops.wm.obj_import(filepath=str(obj_path))
+
+        # Get imported object
+        hair_obj = None
+        for obj in bpy.context.scene.objects:
+            if obj.type == 'MESH':
+                hair_obj = obj
+                break
+
+        if hair_obj is None:
+            print("  Error: No mesh object found after import")
+            return False
+
+        if verbose:
+            mesh = hair_obj.data
+            print(f"  Loaded mesh: {len(mesh.vertices)} vertices, {len(mesh.polygons)} faces")
+
+        # Analyze using geodesic detection
+        strands = analyze_hair_mesh_geodesic(hair_obj, config, verbose)
+
+        if strands is None or len(strands) == 0:
+            print("  Error: No hair strands detected")
+            return False
+
+        if verbose:
+            lengths = [s.length * 100 for s in strands]
+            print(f"  Strand lengths: min={min(lengths):.1f}cm, max={max(lengths):.1f}cm")
+
+        # Load vertices for weight generation
         vertices = load_obj_vertices(obj_path)
 
-        if verbose:
-            print(f"  Loaded {len(vertices)} vertices")
-
-        if len(vertices) < config.min_region_vertices:
-            print(f"  Skipping: Too few vertices ({len(vertices)})")
-            return False
-
-        # Estimate head position
-        head_position = estimate_head_position(vertices)
-
-        if verbose:
-            print(f"  Estimated head position: ({head_position[0]:.3f}, "
-                  f"{head_position[1]:.3f}, {head_position[2]:.3f})")
-
-        # Analyze vertices
-        vertices_data = analyze_vertices(vertices, head_position)
-
-        # Segment into regions
-        regions = segment_into_regions(vertices_data, config)
-
-        if not regions:
-            print(f"  Skipping: No valid hair regions found (hair may be too short)")
-            return False
-
-        if verbose:
-            print(f"  Found {len(regions)} hair regions:")
-            for region in regions:
-                print(f"    {region.region_type.value}: {len(region.vertex_indices)} verts, "
-                      f"{region.bone_count} bones, extent={region.extent:.1f}cm")
-
         # Generate MPFB2 files
-        skeleton = generate_mpfbskel(regions, config, asset_name)
-        weights = generate_mhw(regions, vertices, config)
+        skeleton = generate_mpfbskel_from_strands(strands, config, asset_name)
+        weights = generate_mhw_from_strands(strands, vertices, config, verbose)
 
         # Count total bones
-        total_bones = sum(
-            min(r.bone_count, config.max_bones_per_chain)
-            for r in regions
-        )
+        total_bones = len(skeleton.get("extra_bones", []))
 
         if verbose:
-            print(f"  Generated {total_bones} physics bones")
+            print(f"  Generated {total_bones} physics bones from {len(strands)} strands")
 
         # Save files
         save_rigging_files(asset_folder, asset_name, skeleton, weights, verbose)
@@ -997,6 +990,131 @@ def process_hair_asset(
         if verbose:
             traceback.print_exc()
         return False
+
+
+def process_hair_asset_standalone(
+    asset_folder: Path,
+    config: Optional[HairPhysicsConfig] = None,
+    verbose: bool = False
+) -> bool:
+    """
+    Process a single hair asset without Blender (using raw OBJ parsing).
+
+    Args:
+        asset_folder: Path to the hair asset folder
+        config: Hair physics configuration
+        verbose: Enable verbose output
+
+    Returns:
+        True if successful
+    """
+    import numpy as np
+
+    if config is None:
+        config = HairPhysicsConfig()
+
+    asset_name = asset_folder.name
+
+    if verbose:
+        print(f"\nProcessing hair asset: {asset_name}")
+
+    # Check geodesic availability
+    if not GEODESIC_AVAILABLE:
+        print("  Error: Geodesic detection module not available")
+        print("  Ensure geodesic_strand_detection.py is accessible")
+        return False
+
+    available, msg = check_dependencies()
+    if not available:
+        print(f"  Error: {msg}")
+        return False
+
+    try:
+        # Find OBJ file
+        obj_files = list(asset_folder.glob("*.obj"))
+        if not obj_files:
+            print(f"  Error: No .obj file found in {asset_folder}")
+            return False
+
+        obj_path = obj_files[0]
+
+        if verbose:
+            print(f"  Loading mesh: {obj_path.name}")
+
+        # Load vertices and faces
+        vertices = load_obj_vertices(obj_path)
+        faces = load_obj_faces(obj_path)
+
+        if verbose:
+            print(f"  Loaded {len(vertices)} vertices, {len(faces)} faces")
+
+        if len(vertices) < 100:
+            print("  Error: Mesh too small for geodesic detection")
+            return False
+
+        # Convert to numpy arrays
+        vertices_array = np.array(vertices, dtype=np.float64)
+        faces_array = np.array(faces, dtype=np.int32)
+
+        # Detect strands
+        geo_config = config.to_geodesic_config()
+        strands = detect_strands_geodesic(vertices_array, faces_array, geo_config, verbose)
+
+        if strands is None or len(strands) == 0:
+            print("  Error: No hair strands detected")
+            return False
+
+        if verbose:
+            lengths = [s.length * 100 for s in strands]
+            print(f"  Strand lengths: min={min(lengths):.1f}cm, max={max(lengths):.1f}cm")
+
+        # Generate MPFB2 files
+        skeleton = generate_mpfbskel_from_strands(strands, config, asset_name)
+        weights = generate_mhw_from_strands(strands, vertices, config, verbose)
+
+        # Count total bones
+        total_bones = len(skeleton.get("extra_bones", []))
+
+        if verbose:
+            print(f"  Generated {total_bones} physics bones from {len(strands)} strands")
+
+        # Save files
+        save_rigging_files(asset_folder, asset_name, skeleton, weights, verbose)
+
+        print(f"  Successfully generated rigging files for {asset_name}")
+        return True
+
+    except Exception as e:
+        print(f"  Error processing {asset_name}: {e}")
+        if verbose:
+            traceback.print_exc()
+        return False
+
+
+def process_hair_asset(
+    asset_folder: Path,
+    config: Optional[HairPhysicsConfig] = None,
+    verbose: bool = False
+) -> bool:
+    """
+    Process a single hair asset folder and generate rigging files.
+
+    Automatically uses Blender if available, otherwise falls back to
+    standalone processing.
+
+    Args:
+        asset_folder: Path to the hair asset folder
+        config: Hair physics configuration
+        verbose: Enable verbose output
+
+    Returns:
+        True if successful
+    """
+    try:
+        import bpy
+        return process_hair_asset_blender(asset_folder, config, verbose)
+    except ImportError:
+        return process_hair_asset_standalone(asset_folder, config, verbose)
 
 
 def process_all_hair_assets(
@@ -1043,7 +1161,7 @@ def process_all_hair_assets(
 def main():
     """Main entry point for command line usage."""
     parser = argparse.ArgumentParser(
-        description='Generate MPFB2 rigging files for hair assets',
+        description='Generate MPFB2 rigging files for hair assets using geodesic detection',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -1057,7 +1175,7 @@ Examples:
 
   # Custom configuration
   python run_blender.py --script mesh_hair_generation/generate_hair_rigging.py -- \\
-      --asset mpfb_hair_assets/Long_Hair_A --min-extent 5.0 --stiffness 0.7
+      --asset mpfb_hair_assets/Long_Hair_A --max-strands 40 --stiffness 0.7
         """
     )
 
@@ -1081,10 +1199,31 @@ Examples:
     )
 
     parser.add_argument(
-        '--min-extent',
+        '--max-strands',
+        type=int,
+        default=60,
+        help='Maximum number of strand paths to detect (default: 60)'
+    )
+
+    parser.add_argument(
+        '--min-length',
         type=float,
         default=3.0,
-        help='Minimum hair extent (cm) for physics bones (default: 3.0)'
+        help='Minimum strand length in cm for bone generation (default: 3.0)'
+    )
+
+    parser.add_argument(
+        '--scalp-percentile',
+        type=float,
+        default=12.0,
+        help='Top N%% of vertices by Z-height are scalp (default: 12.0)'
+    )
+
+    parser.add_argument(
+        '--tip-percentile',
+        type=float,
+        default=92.0,
+        help='Top N%% of geodesic distance are tips (default: 92.0)'
     )
 
     parser.add_argument(
@@ -1099,13 +1238,6 @@ Examples:
         type=float,
         default=0.5,
         help='Physics damping hint (0.0-1.0, default: 0.5)'
-    )
-
-    parser.add_argument(
-        '--head-bone',
-        type=str,
-        default='head',
-        help='Name of head bone to parent to (default: head)'
     )
 
     parser.add_argument(
@@ -1125,14 +1257,29 @@ Examples:
 
     print("=" * 70)
     print("HAIR PHYSICS RIGGING FILE GENERATOR")
+    print("Using geodesic-based strand detection")
     print("=" * 70)
+
+    # Check dependencies
+    if GEODESIC_AVAILABLE:
+        _, msg = check_dependencies()
+        print(f"\nDependencies: {msg}")
+    else:
+        print("\nError: Geodesic detection module not available")
+        if GEODESIC_IMPORT_ERROR:
+            print(f"Import error: {GEODESIC_IMPORT_ERROR}")
+        print("\nMake sure the geodesic_strand_detection.py module is accessible.")
+        print("The module should be in the same directory as this script.")
+        return 1
 
     # Build configuration
     config = HairPhysicsConfig(
-        min_extent_for_bones=args.min_extent,
+        scalp_percentile=args.scalp_percentile,
+        tip_percentile=args.tip_percentile,
+        max_strands=args.max_strands,
+        min_strand_length=args.min_length / 100.0,  # Convert cm to meters
         stiffness=args.stiffness,
-        damping=args.damping,
-        head_bone_name=args.head_bone
+        damping=args.damping
     )
 
     # Determine assets directory
@@ -1146,11 +1293,9 @@ Examples:
 
     try:
         if args.all:
-            # Process all assets
             print(f"\nProcessing all hair assets in: {assets_dir}")
             results = process_all_hair_assets(assets_dir, config, args.verbose)
 
-            # Summary
             print("\n" + "=" * 70)
             print("SUMMARY")
             print("=" * 70)
@@ -1164,7 +1309,6 @@ Examples:
                     print(f"  {name}: {status}")
 
         elif args.asset:
-            # Process single asset
             asset_path = Path(args.asset)
             if not asset_path.is_absolute():
                 asset_path = parent_dir / args.asset

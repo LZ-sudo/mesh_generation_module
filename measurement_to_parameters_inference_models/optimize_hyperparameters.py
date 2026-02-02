@@ -300,14 +300,14 @@ def run_optimization(
 
     X, y, macro_bounds = load_data(input_csv, macroparams, measurements, verbose=True)
 
-    # Apply 50% data sampling for faster optimization
-    # (hyperparameter rankings are typically preserved with smaller samples)
-    total_samples = len(X)
-    random_seed = base_config['data'].get('random_seed', 42)
-    X, _, y, _ = train_test_split(
-        X, y, train_size=0.5, random_state=random_seed
-    )
-    print(f"\nData sampling: Using {len(X)} of {total_samples} samples (50%)")
+    # # Apply 50% data sampling for faster optimization
+    # # (hyperparameter rankings are typically preserved with smaller samples)
+    # total_samples = len(X)
+    # random_seed = base_config['data'].get('random_seed', 42)
+    # X, _, y, _ = train_test_split(
+    #     X, y, train_size=0.5, random_state=random_seed
+    # )
+    # print(f"\nData sampling: Using {len(X)} of {total_samples} samples (50%)")
 
     # Split data: train/val/test
     test_size = base_config['data'].get('test_size', 0.2)
@@ -416,9 +416,9 @@ def run_optimization(
         'best_validation_loss': study.best_value,
         'optimization_time_minutes': elapsed_time / 60,
         'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
-        'output_directory': str(output_dir),
-        'sample_fraction': 0.5,
-        'note': 'Train final model on full dataset with best_config for best results'
+        'output_directory': str(output_dir)
+        # 'sample_fraction': 0.5,
+        # 'note': 'Train final model on full dataset with best_config for best results'
     }
 
     return best_config, study, output_dir
