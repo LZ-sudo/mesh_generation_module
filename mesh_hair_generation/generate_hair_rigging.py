@@ -1,46 +1,45 @@
 #!/usr/bin/env python3
 """
-Hair Physics Rigging File Generator
+Hair Physics Rigging Generator
 
-This script generates MPFB2-compatible rigging files (.mpfbskel and .mhw) for
-hair assets to enable physics simulation in game engines like Unreal Engine.
+This module provides functions to dynamically generate hair physics bones
+and weights at runtime during human mesh generation.
 
-The generated files are placed alongside the hair asset's .mhclo file and
-MPFB2 will automatically load them when the hair asset is applied to a human.
-
-Output Files:
-    - {asset_name}.mpfbskel: Skeleton definition with bone chains
-    - {asset_name}.mhw: Vertex weight assignments
+The bones are added directly to the main armature (parented to the head bone)
+and vertex weights are calculated based on strand detection.
 
 Detection Method:
     GEODESIC-BASED: Uses geodesic distance computation (Dijkstra on mesh edges)
-    to detect hair strand paths on continuous mesh hair assets. This approach
-    works for MPFB-style hair meshes that are single continuous triangle meshes.
+    to detect hair strand paths on continuous mesh hair assets.
 
     Algorithm:
-    1. Identify scalp vertices (top N% by Z-height)
-    2. Compute geodesic distance from scalp using Dijkstra on mesh edges
-    3. Find hair tip candidates (high geodesic distance)
-    4. Trace strand paths from tips back to scalp
-    5. Generate bones along detected strand paths
-    6. Calculate vertex weights based on proximity to strands
+    1. Extract scalp reference from MPFB human mesh (head bone position)
+    2. Find hair vertices in scalp region
+    3. Compute geodesic distance from scalp using Dijkstra on mesh edges
+    4. Find hair tip candidates (high geodesic distance)
+    5. Trace strand paths from tips back to scalp
+    6. Generate bones along detected strand paths
+    7. Calculate vertex weights based on proximity to strands
 
 Requirements:
     - numpy (included with Blender)
     - scipy (optional, for KDTree clustering - has greedy fallback)
 
 Usage:
-    # Run via Blender headless
-    python run_blender.py --script mesh_hair_generation/generate_hair_rigging.py -- \\
-        --asset mpfb_hair_assets/Long_Hair_A --verbose
+    from generate_hair_rigging import (
+        add_hair_bones_to_armature,
+        calculate_hair_vertex_weights,
+    )
 
-    # Process all hair assets
-    python run_blender.py --script mesh_hair_generation/generate_hair_rigging.py -- \\
-        --all --verbose
+    # Add bones and get weight info
+    bones, weight_info = add_hair_bones_to_armature(
+        armature_obj, hair_obj, human_obj, verbose=True
+    )
+
+    # Apply weights to hair mesh
+    calculate_hair_vertex_weights(hair_obj, weight_info, verbose=True)
 """
 
-import json
-import argparse
 import sys
 import traceback
 from pathlib import Path
@@ -122,65 +121,6 @@ class HairPhysicsConfig:
 
 
 # ============================================================================
-# Geometry Analysis
-# ============================================================================
-
-def load_obj_vertices(obj_path: Path) -> List[Tuple[float, float, float]]:
-    """
-    Load vertices from an OBJ file.
-
-    Args:
-        obj_path: Path to the .obj file
-
-    Returns:
-        List of (x, y, z) vertex coordinates
-    """
-    vertices = []
-
-    with open(obj_path, 'r') as f:
-        for line in f:
-            line = line.strip()
-            if line.startswith('v '):
-                parts = line.split()
-                x, y, z = float(parts[1]), float(parts[2]), float(parts[3])
-                vertices.append((x, y, z))
-
-    return vertices
-
-
-def load_obj_faces(obj_path: Path) -> List[Tuple[int, int, int]]:
-    """
-    Load faces from an OBJ file.
-
-    Args:
-        obj_path: Path to the .obj file
-
-    Returns:
-        List of (v0, v1, v2) face indices (triangulated)
-    """
-    faces = []
-
-    with open(obj_path, 'r') as f:
-        for line in f:
-            line = line.strip()
-            if line.startswith('f '):
-                parts = line.split()[1:]
-                # Parse face indices (OBJ uses 1-based indexing)
-                indices = []
-                for part in parts:
-                    # Handle v/vt/vn format
-                    idx = int(part.split('/')[0]) - 1
-                    indices.append(idx)
-
-                # Triangulate if needed
-                if len(indices) >= 3:
-                    for i in range(1, len(indices) - 1):
-                        faces.append((indices[0], indices[i], indices[i + 1]))
-
-    return faces
-
-
-# ============================================================================
 # Scalp Reference Extraction
 # ============================================================================
 
@@ -205,8 +145,6 @@ def extract_scalp_reference(
     Returns:
         Tuple of ((x, y, z) scalp center, scalp_radius) or None if extraction fails
     """
-    import bpy
-
     try:
         # Get head bone position from armature
         if armature_obj is None or armature_obj.type != 'ARMATURE':
@@ -280,7 +218,6 @@ def find_scalp_vertices_from_reference(
     Returns:
         Array of vertex indices in the scalp region
     """
-    # numpy is imported at module level via geodesic_strand_detection
     import numpy as np
 
     scalp_center_arr = np.array(scalp_center)
@@ -348,8 +285,7 @@ def analyze_hair_mesh_geodesic(
     if not GEODESIC_AVAILABLE:
         if verbose:
             print("  Geodesic detection not available")
-            available, msg = False, "Module not loaded"
-            print(f"    {msg}")
+            print(f"    Module not loaded")
         return None
 
     # Check dependencies
@@ -409,223 +345,8 @@ def analyze_hair_mesh_geodesic(
 
 
 # ============================================================================
-# MPFB2 File Generation
+# Path Resampling Utility
 # ============================================================================
-
-def generate_mpfbskel_from_strands(
-    strands: List['HairStrand'],
-    config: HairPhysicsConfig,
-    asset_name: str
-) -> Dict:
-    """
-    Generate MPFB2 skeleton file content from detected strands.
-
-    Args:
-        strands: List of HairStrand objects
-        config: Hair physics configuration
-        asset_name: Name of the hair asset
-
-    Returns:
-        Dictionary structure for .mpfbskel JSON file
-    """
-    skeleton = {
-        "name": f"{asset_name}_physics",
-        "version": 110,
-        "is_subrig": True,
-        "scale_factor": 1.0,
-        "bones": {},
-        "rigify_ui": None,
-        "extra_bones": [],
-        "hair_physics_metadata": {
-            "version": "1.0",
-            "detection_method": "geodesic",
-            "stiffness": config.stiffness,
-            "damping": config.damping,
-            "gravity_scale": config.gravity_scale,
-            "strand_count": len(strands)
-        }
-    }
-
-    bone_prefix = "hair"
-
-    for strand_idx, strand in enumerate(strands):
-        path = strand.path_coords
-
-        # Determine number of bones
-        bone_count = int(strand.length * 100 * config.bones_per_10cm / 10.0)
-        bone_count = max(config.min_bones_per_strand,
-                        min(config.max_bones_per_strand, bone_count))
-
-        # Resample path to get bone positions
-        resampled = _resample_path(path, bone_count + 1)
-
-        for bone_idx in range(bone_count):
-            bone_name = f"{bone_prefix}_{strand_idx}_{bone_idx}"
-
-            head_pos = list(resampled[bone_idx])
-            tail_pos = list(resampled[bone_idx + 1])
-
-            # Determine parent
-            if bone_idx == 0:
-                parent = ""  # Root bones have no parent in subrig
-            else:
-                parent = f"{bone_prefix}_{strand_idx}_{bone_idx - 1}"
-
-            skeleton["bones"][bone_name] = {
-                "head": {
-                    "strategy": "MEAN",
-                    "vertex_indices": [],
-                    "default_position": head_pos
-                },
-                "tail": {
-                    "strategy": "MEAN",
-                    "vertex_indices": [],
-                    "default_position": tail_pos
-                },
-                "parent": parent,
-                "roll": 0.0,
-                "use_connect": bone_idx > 0,
-                "use_deform": True,
-                "use_local_location": True,
-                "use_inherit_rotation": True,
-                "inherit_scale": "FULL",
-                "constraints": [],
-                "rigify": {}
-            }
-
-            skeleton["extra_bones"].append(bone_name)
-
-    return skeleton
-
-
-def generate_mhw_from_strands(
-    strands: List['HairStrand'],
-    vertices: List[Tuple[float, float, float]],
-    config: HairPhysicsConfig,
-    verbose: bool = False
-) -> Dict:
-    """
-    Generate MPFB2 weight file content from detected strands.
-
-    Args:
-        strands: List of HairStrand objects
-        vertices: All vertex coordinates
-        config: Hair physics configuration
-        verbose: Enable verbose output
-
-    Returns:
-        Dictionary structure for .mhw JSON file
-    """
-    import numpy as np
-
-    weights = {
-        "copyright": "Generated by generate_hair_rigging.py",
-        "description": "Hair physics bone weights (geodesic detection)",
-        "license": "CC0",
-        "name": "hair_physics_weights",
-        "version": 1,
-        "weights": {}
-    }
-
-    bone_prefix = "hair"
-    vertices_array = np.array(vertices)
-
-    # Assign vertices to strands
-    if GEODESIC_AVAILABLE:
-        geo_config = config.to_geodesic_config()
-        strand_assignments = assign_vertices_to_strands(vertices_array, strands, geo_config)
-    else:
-        strand_assignments = {}
-
-    # Track subrig mask weights
-    subrig_mask_weights = []
-    weighted_vertices = set()
-
-    for strand_idx, strand in enumerate(strands):
-        path = strand.path_coords
-
-        # Determine number of bones
-        bone_count = int(strand.length * 100 * config.bones_per_10cm / 10.0)
-        bone_count = max(config.min_bones_per_strand,
-                        min(config.max_bones_per_strand, bone_count))
-
-        # Get vertices assigned to this strand
-        if strand_idx in strand_assignments:
-            assigned_verts = strand_assignments[strand_idx]
-        else:
-            # Fallback: use path vertices
-            assigned_verts = [(idx, 1.0) for idx in strand.path_vertex_indices]
-
-        # Resample path for bone positions
-        resampled = _resample_path(path, bone_count + 1)
-
-        # Initialize weight lists for each bone
-        bone_weights = {f"{bone_prefix}_{strand_idx}_{i}": [] for i in range(bone_count)}
-
-        for vert_idx, base_weight in assigned_verts:
-            if vert_idx >= len(vertices):
-                continue
-
-            vx, vy, vz = vertices[vert_idx]
-            vert_pos = np.array([vx, vy, vz])
-
-            # Find which bone segment this vertex is closest to
-            min_dist = float('inf')
-            best_bone_idx = 0
-            best_t = 0.0
-
-            for i in range(bone_count):
-                bone_head = np.array(resampled[i])
-                bone_tail = np.array(resampled[i + 1])
-
-                # Project vertex onto bone segment
-                segment = bone_tail - bone_head
-                seg_len_sq = np.dot(segment, segment)
-
-                if seg_len_sq < 0.00001:
-                    t = 0.0
-                    proj = bone_head
-                else:
-                    t = max(0.0, min(1.0, np.dot(vert_pos - bone_head, segment) / seg_len_sq))
-                    proj = bone_head + t * segment
-
-                dist = np.linalg.norm(vert_pos - proj)
-
-                if dist < min_dist:
-                    min_dist = dist
-                    best_bone_idx = i
-                    best_t = t
-
-            # Calculate weight based on position along bone
-            primary_weight = base_weight * (1.0 - best_t * 0.3)
-            bone_name = f"{bone_prefix}_{strand_idx}_{best_bone_idx}"
-            bone_weights[bone_name].append([vert_idx, round(primary_weight, 4)])
-
-            # Secondary bone weight for smooth blending
-            if best_bone_idx + 1 < bone_count and best_t > 0.3:
-                secondary_weight = base_weight * best_t * 0.3
-                next_bone = f"{bone_prefix}_{strand_idx}_{best_bone_idx + 1}"
-                bone_weights[next_bone].append([vert_idx, round(secondary_weight, 4)])
-
-            # Track for subrig mask
-            if vert_idx not in weighted_vertices:
-                weighted_vertices.add(vert_idx)
-                subrig_mask_weights.append([vert_idx, 1.0])
-
-        # Add bone weights to output
-        for bone_name, vert_weights in bone_weights.items():
-            if vert_weights:
-                weights["weights"][bone_name] = vert_weights
-
-    # Add subrig mask
-    weights["weights"]["mhmask-subrig"] = subrig_mask_weights
-
-    if verbose:
-        total_weights = sum(len(w) for w in weights["weights"].values())
-        print(f"  Generated {total_weights} vertex weights")
-
-    return weights
-
 
 def _resample_path(
     path: List[Tuple[float, float, float]],
@@ -685,44 +406,6 @@ def _resample_path(
         resampled.append(interpolated)
 
     return resampled
-
-
-def save_rigging_files(
-    asset_folder: Path,
-    asset_name: str,
-    skeleton: Dict,
-    weights: Dict,
-    verbose: bool = False
-) -> Tuple[Path, Path]:
-    """
-    Save generated rigging files to the asset folder.
-
-    Args:
-        asset_folder: Path to the hair asset folder
-        asset_name: Name of the hair asset
-        skeleton: Skeleton dictionary
-        weights: Weights dictionary
-        verbose: Enable verbose output
-
-    Returns:
-        Tuple of (skel_path, weights_path)
-    """
-    skel_path = asset_folder / f"{asset_name}.mpfbskel"
-    weights_path = asset_folder / f"{asset_name}.mhw"
-
-    with open(skel_path, 'w') as f:
-        json.dump(skeleton, f, indent=2)
-
-    if verbose:
-        print(f"  Saved skeleton: {skel_path.name}")
-
-    with open(weights_path, 'w') as f:
-        json.dump(weights, f, indent=2)
-
-    if verbose:
-        print(f"  Saved weights: {weights_path.name}")
-
-    return skel_path, weights_path
 
 
 # ============================================================================
@@ -1043,465 +726,3 @@ def calculate_hair_vertex_weights(
             print(f"  Error calculating weights: {e}")
             traceback.print_exc()
         return False
-
-
-# ============================================================================
-# Main Processing Functions
-# ============================================================================
-
-def process_hair_asset_blender(
-    asset_folder: Path,
-    config: Optional[HairPhysicsConfig] = None,
-    verbose: bool = False
-) -> bool:
-    """
-    Process a single hair asset using Blender's mesh loading.
-
-    Args:
-        asset_folder: Path to the hair asset folder
-        config: Hair physics configuration
-        verbose: Enable verbose output
-
-    Returns:
-        True if successful
-    """
-    import bpy
-
-    if config is None:
-        config = HairPhysicsConfig()
-
-    asset_name = asset_folder.name
-
-    if verbose:
-        print(f"\nProcessing hair asset: {asset_name}")
-
-    # Check geodesic availability
-    if not GEODESIC_AVAILABLE:
-        print("  Error: Geodesic detection module not available")
-        print("  Ensure geodesic_strand_detection.py is accessible")
-        return False
-
-    available, msg = check_dependencies()
-    if not available:
-        print(f"  Error: {msg}")
-        return False
-
-    try:
-        # Find OBJ file
-        obj_files = list(asset_folder.glob("*.obj"))
-        if not obj_files:
-            print(f"  Error: No .obj file found in {asset_folder}")
-            return False
-
-        obj_path = obj_files[0]
-
-        if verbose:
-            print(f"  Loading mesh: {obj_path.name}")
-
-        # Clear existing objects
-        bpy.ops.object.select_all(action='SELECT')
-        bpy.ops.object.delete(use_global=False)
-
-        # Import OBJ
-        bpy.ops.wm.obj_import(filepath=str(obj_path))
-
-        # Get imported object
-        hair_obj = None
-        for obj in bpy.context.scene.objects:
-            if obj.type == 'MESH':
-                hair_obj = obj
-                break
-
-        if hair_obj is None:
-            print("  Error: No mesh object found after import")
-            return False
-
-        if verbose:
-            mesh = hair_obj.data
-            print(f"  Loaded mesh: {len(mesh.vertices)} vertices, {len(mesh.polygons)} faces")
-
-        # Analyze using geodesic detection
-        strands = analyze_hair_mesh_geodesic(hair_obj, config, verbose)
-
-        if strands is None or len(strands) == 0:
-            print("  Error: No hair strands detected")
-            return False
-
-        if verbose:
-            lengths = [s.length * 100 for s in strands]
-            print(f"  Strand lengths: min={min(lengths):.1f}cm, max={max(lengths):.1f}cm")
-
-        # Load vertices for weight generation
-        vertices = load_obj_vertices(obj_path)
-
-        # Generate MPFB2 files
-        skeleton = generate_mpfbskel_from_strands(strands, config, asset_name)
-        weights = generate_mhw_from_strands(strands, vertices, config, verbose)
-
-        # Count total bones
-        total_bones = len(skeleton.get("extra_bones", []))
-
-        if verbose:
-            print(f"  Generated {total_bones} physics bones from {len(strands)} strands")
-
-        # Save files
-        save_rigging_files(asset_folder, asset_name, skeleton, weights, verbose)
-
-        print(f"  Successfully generated rigging files for {asset_name}")
-        return True
-
-    except Exception as e:
-        print(f"  Error processing {asset_name}: {e}")
-        if verbose:
-            traceback.print_exc()
-        return False
-
-
-def process_hair_asset_standalone(
-    asset_folder: Path,
-    config: Optional[HairPhysicsConfig] = None,
-    verbose: bool = False
-) -> bool:
-    """
-    Process a single hair asset without Blender (using raw OBJ parsing).
-
-    Args:
-        asset_folder: Path to the hair asset folder
-        config: Hair physics configuration
-        verbose: Enable verbose output
-
-    Returns:
-        True if successful
-    """
-    import numpy as np
-
-    if config is None:
-        config = HairPhysicsConfig()
-
-    asset_name = asset_folder.name
-
-    if verbose:
-        print(f"\nProcessing hair asset: {asset_name}")
-
-    # Check geodesic availability
-    if not GEODESIC_AVAILABLE:
-        print("  Error: Geodesic detection module not available")
-        print("  Ensure geodesic_strand_detection.py is accessible")
-        return False
-
-    available, msg = check_dependencies()
-    if not available:
-        print(f"  Error: {msg}")
-        return False
-
-    try:
-        # Find OBJ file
-        obj_files = list(asset_folder.glob("*.obj"))
-        if not obj_files:
-            print(f"  Error: No .obj file found in {asset_folder}")
-            return False
-
-        obj_path = obj_files[0]
-
-        if verbose:
-            print(f"  Loading mesh: {obj_path.name}")
-
-        # Load vertices and faces
-        vertices = load_obj_vertices(obj_path)
-        faces = load_obj_faces(obj_path)
-
-        if verbose:
-            print(f"  Loaded {len(vertices)} vertices, {len(faces)} faces")
-
-        if len(vertices) < 100:
-            print("  Error: Mesh too small for geodesic detection")
-            return False
-
-        # Convert to numpy arrays
-        vertices_array = np.array(vertices, dtype=np.float64)
-        faces_array = np.array(faces, dtype=np.int32)
-
-        # Detect strands
-        geo_config = config.to_geodesic_config()
-        strands = detect_strands_geodesic(vertices_array, faces_array, geo_config, verbose)
-
-        if strands is None or len(strands) == 0:
-            print("  Error: No hair strands detected")
-            return False
-
-        if verbose:
-            lengths = [s.length * 100 for s in strands]
-            print(f"  Strand lengths: min={min(lengths):.1f}cm, max={max(lengths):.1f}cm")
-
-        # Generate MPFB2 files
-        skeleton = generate_mpfbskel_from_strands(strands, config, asset_name)
-        weights = generate_mhw_from_strands(strands, vertices, config, verbose)
-
-        # Count total bones
-        total_bones = len(skeleton.get("extra_bones", []))
-
-        if verbose:
-            print(f"  Generated {total_bones} physics bones from {len(strands)} strands")
-
-        # Save files
-        save_rigging_files(asset_folder, asset_name, skeleton, weights, verbose)
-
-        print(f"  Successfully generated rigging files for {asset_name}")
-        return True
-
-    except Exception as e:
-        print(f"  Error processing {asset_name}: {e}")
-        if verbose:
-            traceback.print_exc()
-        return False
-
-
-def process_hair_asset(
-    asset_folder: Path,
-    config: Optional[HairPhysicsConfig] = None,
-    verbose: bool = False
-) -> bool:
-    """
-    Process a single hair asset folder and generate rigging files.
-
-    Automatically uses Blender if available, otherwise falls back to
-    standalone processing.
-
-    Args:
-        asset_folder: Path to the hair asset folder
-        config: Hair physics configuration
-        verbose: Enable verbose output
-
-    Returns:
-        True if successful
-    """
-    try:
-        import bpy
-        return process_hair_asset_blender(asset_folder, config, verbose)
-    except ImportError:
-        return process_hair_asset_standalone(asset_folder, config, verbose)
-
-
-def process_all_hair_assets(
-    assets_dir: Path,
-    config: Optional[HairPhysicsConfig] = None,
-    verbose: bool = False
-) -> Dict[str, bool]:
-    """
-    Process all hair assets in the mpfb_hair_assets folder.
-
-    Args:
-        assets_dir: Path to mpfb_hair_assets directory
-        config: Hair physics configuration
-        verbose: Enable verbose output
-
-    Returns:
-        Dictionary mapping asset names to success status
-    """
-    results = {}
-
-    if not assets_dir.exists():
-        print(f"Error: Assets directory not found: {assets_dir}")
-        return results
-
-    # Find all asset folders (those containing .mhclo files)
-    for folder in sorted(assets_dir.iterdir()):
-        if not folder.is_dir():
-            continue
-
-        mhclo_files = list(folder.glob("*.mhclo"))
-        if not mhclo_files:
-            continue
-
-        success = process_hair_asset(folder, config, verbose)
-        results[folder.name] = success
-
-    return results
-
-
-# ============================================================================
-# Command Line Interface
-# ============================================================================
-
-def main():
-    """Main entry point for command line usage."""
-    parser = argparse.ArgumentParser(
-        description='Generate MPFB2 rigging files for hair assets using geodesic detection',
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  # Process a single hair asset
-  python run_blender.py --script mesh_hair_generation/generate_hair_rigging.py -- \\
-      --asset mpfb_hair_assets/Long_Hair_A --verbose
-
-  # Process all hair assets
-  python run_blender.py --script mesh_hair_generation/generate_hair_rigging.py -- \\
-      --all --verbose
-
-  # Custom configuration
-  python run_blender.py --script mesh_hair_generation/generate_hair_rigging.py -- \\
-      --asset mpfb_hair_assets/Long_Hair_A --max-strands 40 --stiffness 0.7
-        """
-    )
-
-    parser.add_argument(
-        '--asset',
-        type=str,
-        help='Path to a specific hair asset folder to process'
-    )
-
-    parser.add_argument(
-        '--all',
-        action='store_true',
-        help='Process all hair assets in mpfb_hair_assets folder'
-    )
-
-    parser.add_argument(
-        '--assets-dir',
-        type=str,
-        default=None,
-        help='Custom path to hair assets directory (default: ../mpfb_hair_assets)'
-    )
-
-    parser.add_argument(
-        '--max-strands',
-        type=int,
-        default=60,
-        help='Maximum number of strand paths to detect (default: 60)'
-    )
-
-    parser.add_argument(
-        '--min-length',
-        type=float,
-        default=3.0,
-        help='Minimum strand length in cm for bone generation (default: 3.0)'
-    )
-
-    parser.add_argument(
-        '--scalp-percentile',
-        type=float,
-        default=12.0,
-        help='Top N%% of vertices by Z-height are scalp (default: 12.0)'
-    )
-
-    parser.add_argument(
-        '--tip-percentile',
-        type=float,
-        default=92.0,
-        help='Top N%% of geodesic distance are tips (default: 92.0)'
-    )
-
-    parser.add_argument(
-        '--stiffness',
-        type=float,
-        default=0.8,
-        help='Physics stiffness hint (0.0-1.0, default: 0.8)'
-    )
-
-    parser.add_argument(
-        '--damping',
-        type=float,
-        default=0.5,
-        help='Physics damping hint (0.0-1.0, default: 0.5)'
-    )
-
-    parser.add_argument(
-        '--verbose',
-        action='store_true',
-        help='Enable verbose output'
-    )
-
-    # Handle Blender's argument passing
-    argv = sys.argv
-    if "--" in argv:
-        argv = argv[argv.index("--") + 1:]
-    else:
-        argv = argv[1:]
-
-    args = parser.parse_args(argv)
-
-    print("=" * 70)
-    print("HAIR PHYSICS RIGGING FILE GENERATOR")
-    print("Using geodesic-based strand detection")
-    print("=" * 70)
-
-    # Check dependencies
-    if GEODESIC_AVAILABLE:
-        _, msg = check_dependencies()
-        print(f"\nDependencies: {msg}")
-    else:
-        print("\nError: Geodesic detection module not available")
-        if GEODESIC_IMPORT_ERROR:
-            print(f"Import error: {GEODESIC_IMPORT_ERROR}")
-        print("\nMake sure the geodesic_strand_detection.py module is accessible.")
-        print("The module should be in the same directory as this script.")
-        return 1
-
-    # Build configuration
-    config = HairPhysicsConfig(
-        scalp_percentile=args.scalp_percentile,
-        tip_percentile=args.tip_percentile,
-        max_strands=args.max_strands,
-        min_strand_length=args.min_length / 100.0,  # Convert cm to meters
-        stiffness=args.stiffness,
-        damping=args.damping
-    )
-
-    # Determine assets directory
-    script_dir = Path(__file__).parent.absolute()
-    parent_dir = script_dir.parent.absolute()
-
-    if args.assets_dir:
-        assets_dir = Path(args.assets_dir)
-    else:
-        assets_dir = parent_dir / "mpfb_hair_assets"
-
-    try:
-        if args.all:
-            print(f"\nProcessing all hair assets in: {assets_dir}")
-            results = process_all_hair_assets(assets_dir, config, args.verbose)
-
-            print("\n" + "=" * 70)
-            print("SUMMARY")
-            print("=" * 70)
-            success_count = sum(1 for v in results.values() if v)
-            total_count = len(results)
-            print(f"Processed {success_count}/{total_count} hair assets successfully")
-
-            if args.verbose:
-                for name, success in results.items():
-                    status = "OK" if success else "FAILED"
-                    print(f"  {name}: {status}")
-
-        elif args.asset:
-            asset_path = Path(args.asset)
-            if not asset_path.is_absolute():
-                asset_path = parent_dir / args.asset
-
-            if not asset_path.exists():
-                print(f"Error: Asset folder not found: {asset_path}")
-                return 1
-
-            success = process_hair_asset(asset_path, config, args.verbose)
-            if not success:
-                return 1
-
-        else:
-            print("Error: Specify --asset <path> or --all")
-            parser.print_help()
-            return 1
-
-        print("\n" + "=" * 70)
-        print("COMPLETE")
-        print("=" * 70)
-        return 0
-
-    except Exception as e:
-        print(f"\nError: {e}")
-        if args.verbose:
-            traceback.print_exc()
-        return 1
-
-
-if __name__ == "__main__":
-    sys.exit(main())
