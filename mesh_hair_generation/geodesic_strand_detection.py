@@ -31,7 +31,6 @@ import numpy as np
 import heapq
 from dataclasses import dataclass, field
 from typing import List, Tuple, Optional, Dict, Set
-from pathlib import Path
 
 # Optional scipy for KDTree clustering (has greedy fallback)
 try:
@@ -46,23 +45,32 @@ except ImportError:
 class GeodesicConfig:
     """Configuration for geodesic-based hair strand detection."""
 
-    # Scalp detection
-    scalp_percentile: float = 12.0
-    """Top N% of vertices by Z-height are considered scalp region."""
+    # Scalp detection (used as fallback when no external scalp reference provided)
+    scalp_percentile: float = 15.0
+    """Top N% of vertices by Z-height are considered scalp region (fallback mode)."""
 
     # Tip detection
-    tip_percentile: float = 92.0
+    tip_percentile: float = 97.0
     """Top N% of vertices by geodesic distance are tip candidates."""
 
-    tip_cluster_distance: float = 0.025
+    tip_cluster_distance: float = 0.06
     """Meters - merge tip candidates closer than this distance."""
 
     # Strand filtering
-    min_strand_length: float = 0.03
+    min_strand_length: float = 0.04
     """Meters - minimum strand length to generate bones for."""
 
-    max_strands: int = 60
+    max_strands: int = 20
     """Maximum number of strand paths to generate."""
+
+    # Direction filtering
+    min_downward_component: float = -0.2
+    """Minimum Z component of strand direction (negative = downward).
+    Strands pointing more upward than this are rejected."""
+
+    max_direction_variance: float = 0.5
+    """Maximum allowed variance in bone directions along a strand (0-1).
+    Lower values require more consistent direction."""
 
     # Bone generation
     bones_per_10cm: float = 3.0
@@ -71,12 +79,15 @@ class GeodesicConfig:
     min_bones_per_strand: int = 2
     """Minimum bones per strand."""
 
-    max_bones_per_strand: int = 8
+    max_bones_per_strand: int = 6
     """Maximum bones per strand."""
 
     # Path tracing
-    path_smoothing_iterations: int = 2
+    path_smoothing_iterations: int = 3
     """Number of smoothing passes on traced paths."""
+
+    require_scalp_root: bool = True
+    """Require strand roots to be on scalp boundary."""
 
     # Vertex weighting
     weight_falloff: float = 2.0
@@ -191,41 +202,12 @@ def extract_mesh_for_geodesic(hair_obj) -> Tuple[np.ndarray, np.ndarray, np.ndar
     return vertices, faces, vertex_indices
 
 
-def _identify_scalp_vertices(
-    vertices: np.ndarray,
-    config: GeodesicConfig
-) -> np.ndarray:
-    """
-    Identify scalp vertices based on Z-height.
-
-    For simple hair that grows downward, scalp vertices are at the top
-    of the mesh (highest Z values).
-
-    Args:
-        vertices: (N, 3) vertex positions
-        config: Detection configuration
-
-    Returns:
-        Array of vertex indices in the scalp region
-    """
-    z_coords = vertices[:, 2]
-
-    # Find Z threshold for top N%
-    threshold = np.percentile(z_coords, 100 - config.scalp_percentile)
-
-    # Get vertices above threshold
-    scalp_mask = z_coords >= threshold
-    scalp_indices = np.where(scalp_mask)[0]
-
-    return scalp_indices
-
-
 def _compute_geodesic_distance(
     vertices: np.ndarray,
     faces: np.ndarray,
     source_indices: np.ndarray,
     verbose: bool = False
-) -> Optional[np.ndarray]:
+) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
     """
     Compute geodesic distance from source vertices using Dijkstra's algorithm.
 
@@ -239,7 +221,9 @@ def _compute_geodesic_distance(
         verbose: Enable verbose output
 
     Returns:
-        (N,) array of geodesic distances, or None if computation fails
+        Tuple of:
+        - (N,) array of geodesic distances, or None if computation fails
+        - (M,) array of reachable vertex indices, or None if computation fails
     """
     return _compute_geodesic_distance_dijkstra(vertices, faces, source_indices, verbose)
 
@@ -292,13 +276,12 @@ def _compute_geodesic_distance_dijkstra(
     faces: np.ndarray,
     source_indices: np.ndarray,
     verbose: bool = False
-) -> Optional[np.ndarray]:
+) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
     """
     Compute approximate geodesic distance using Dijkstra's algorithm on mesh edges.
 
-    This is a fallback when potpourri3d is not available. It computes shortest
-    path distances along mesh edges, which approximates geodesic distance for
-    sufficiently dense meshes.
+    Computes shortest path distances along mesh edges, which approximates
+    geodesic distance for sufficiently dense meshes.
 
     Args:
         vertices: (N, 3) vertex positions
@@ -307,12 +290,14 @@ def _compute_geodesic_distance_dijkstra(
         verbose: Enable verbose output
 
     Returns:
-        (N,) array of distances from nearest source, or None if computation fails
+        Tuple of:
+        - (N,) array of distances from nearest source, or None if computation fails
+        - (M,) array of reachable vertex indices, or None if computation fails
     """
     num_verts = len(vertices)
 
     if verbose:
-        print("    Using Dijkstra fallback (no potpourri3d)")
+        print("    Using Dijkstra on mesh edges")
 
     try:
         # Build weighted adjacency graph
@@ -350,26 +335,35 @@ def _compute_geodesic_distance_dijkstra(
                     distances[neighbor] = new_dist
                     heapq.heappush(heap, (new_dist, neighbor))
 
-        # Check for unreachable vertices (disconnected mesh components)
-        unreachable = np.sum(np.isinf(distances))
-        if unreachable > 0 and verbose:
-            print(f"    Warning: {unreachable} vertices unreachable from scalp")
+        # Identify reachable vertices (finite distance)
+        reachable_mask = np.isfinite(distances)
+        reachable_indices = np.where(reachable_mask)[0]
+        unreachable_count = num_verts - len(reachable_indices)
+
+        if verbose:
+            print(f"    Reachable: {len(reachable_indices)}/{num_verts} vertices")
+            if unreachable_count > 0:
+                print(f"    Warning: {unreachable_count} vertices unreachable from scalp")
 
         # Replace infinity with max finite distance for unreachable vertices
-        max_finite = np.max(distances[np.isfinite(distances)])
-        distances[np.isinf(distances)] = max_finite
+        if len(reachable_indices) > 0:
+            max_finite = np.max(distances[reachable_mask])
+            distances[~reachable_mask] = max_finite + 1.0  # Mark as slightly beyond max
+        else:
+            return None, None
 
-        return distances
+        return distances, reachable_indices
 
     except Exception as e:
         print(f"  Dijkstra distance computation failed: {e}")
-        return None
+        return None, None
 
 
 def _find_tip_candidates(
     vertices: np.ndarray,
     geodesic_dist: np.ndarray,
-    config: GeodesicConfig
+    config: GeodesicConfig,
+    reachable_indices: Optional[np.ndarray] = None
 ) -> np.ndarray:
     """
     Find hair tip candidate vertices based on geodesic distance.
@@ -380,16 +374,25 @@ def _find_tip_candidates(
         vertices: (N, 3) vertex positions
         geodesic_dist: (N,) geodesic distances from scalp
         config: Detection configuration
+        reachable_indices: Optional array of reachable vertex indices to filter by
 
     Returns:
         Array of tip candidate vertex indices
     """
-    # Find distance threshold for top N%
-    threshold = np.percentile(geodesic_dist, config.tip_percentile)
-
-    # Get vertices above threshold
-    tip_mask = geodesic_dist >= threshold
-    tip_indices = np.where(tip_mask)[0]
+    # If reachable indices provided, only consider those for percentile calculation
+    if reachable_indices is not None and len(reachable_indices) > 0:
+        reachable_distances = geodesic_dist[reachable_indices]
+        threshold = np.percentile(reachable_distances, config.tip_percentile)
+        # Get vertices above threshold that are also reachable
+        reachable_set = set(reachable_indices)
+        tip_mask = geodesic_dist >= threshold
+        tip_indices = np.array([i for i in np.where(tip_mask)[0] if i in reachable_set])
+    else:
+        # Find distance threshold for top N%
+        threshold = np.percentile(geodesic_dist, config.tip_percentile)
+        # Get vertices above threshold
+        tip_mask = geodesic_dist >= threshold
+        tip_indices = np.where(tip_mask)[0]
 
     return tip_indices
 
@@ -662,31 +665,129 @@ def _calculate_path_length(coords: List[Tuple[float, float, float]]) -> float:
     return length
 
 
-def _assign_nearby_vertices(
-    strand: HairStrand,
+def _validate_strand_direction(
+    path_coords: List[Tuple[float, float, float]],
+    config: GeodesicConfig
+) -> Tuple[bool, str]:
+    """
+    Validate that a strand has proper downward direction.
+
+    Checks:
+    1. Overall direction is downward (negative Z component)
+    2. Bone segments have consistent direction
+
+    Args:
+        path_coords: Strand path coordinates (root to tip)
+        config: Detection configuration
+
+    Returns:
+        Tuple of (is_valid, reason)
+    """
+    if len(path_coords) < 2:
+        return False, "Path too short"
+
+    # Check overall direction (root to tip)
+    root = np.array(path_coords[0])
+    tip = np.array(path_coords[-1])
+    overall_dir = tip - root
+    overall_len = np.linalg.norm(overall_dir)
+
+    if overall_len < 0.001:
+        return False, "Zero-length path"
+
+    overall_dir = overall_dir / overall_len
+
+    # Check if strand points downward enough
+    # Z component should be negative (downward) or at most slightly upward
+    if overall_dir[2] > config.min_downward_component:
+        return False, f"Points upward (z={overall_dir[2]:.2f})"
+
+    # Check direction consistency along the strand
+    if len(path_coords) >= 3 and config.max_direction_variance < 1.0:
+        segment_dirs = []
+        for i in range(len(path_coords) - 1):
+            p0 = np.array(path_coords[i])
+            p1 = np.array(path_coords[i + 1])
+            seg_dir = p1 - p0
+            seg_len = np.linalg.norm(seg_dir)
+            if seg_len > 0.001:
+                segment_dirs.append(seg_dir / seg_len)
+
+        if len(segment_dirs) >= 2:
+            # Calculate variance in direction (using dot products)
+            # High dot product = consistent direction
+            dot_products = []
+            for i in range(len(segment_dirs) - 1):
+                dot = np.dot(segment_dirs[i], segment_dirs[i + 1])
+                dot_products.append(dot)
+
+            # Variance measure: 1 - mean(dot_products)
+            # 0 = perfectly consistent, 1 = completely inconsistent
+            mean_dot = np.mean(dot_products)
+            variance = 1.0 - max(0.0, mean_dot)
+
+            if variance > config.max_direction_variance:
+                return False, f"Direction too inconsistent (var={variance:.2f})"
+
+            # Check for upward-pointing segments
+            upward_count = sum(1 for d in segment_dirs if d[2] > 0.3)
+            if upward_count > len(segment_dirs) * 0.3:
+                return False, f"Too many upward segments ({upward_count}/{len(segment_dirs)})"
+
+    return True, "OK"
+
+
+def _validate_scalp_root(
+    path_indices: List[int],
+    scalp_indices: Set[int],
     vertices: np.ndarray,
-    all_strand_paths: List[List[int]],
-    strand_idx: int
-) -> List[int]:
+    config: GeodesicConfig
+) -> Tuple[bool, str]:
     """
-    Assign vertices to the nearest strand for weight calculation.
+    Validate that strand root is properly anchored to scalp.
 
-    Uses a simple approach: for each vertex not on any path,
-    find which strand path it's closest to.
+    Args:
+        path_indices: Vertex indices along path (root first)
+        scalp_indices: Set of scalp vertex indices
+        vertices: Vertex positions
+        config: Detection configuration
 
-    This is called per-strand to find vertices that should be
-    weighted to this strand.
+    Returns:
+        Tuple of (is_valid, reason)
     """
-    # For now, just return vertices along the path
-    # Full implementation would do spatial assignment
-    return strand.path_vertex_indices.copy()
+    if not config.require_scalp_root:
+        return True, "Scalp root not required"
+
+    if len(path_indices) == 0:
+        return False, "Empty path"
+
+    root_idx = path_indices[0]
+
+    # Check if root is directly on scalp
+    if root_idx in scalp_indices:
+        return True, "Root on scalp"
+
+    # Check if root is close to any scalp vertex
+    root_pos = vertices[root_idx]
+    scalp_positions = vertices[list(scalp_indices)]
+
+    if len(scalp_positions) > 0:
+        distances = np.linalg.norm(scalp_positions - root_pos, axis=1)
+        min_dist = np.min(distances)
+
+        # Allow roots within 1cm of scalp
+        if min_dist < 0.01:
+            return True, f"Root near scalp ({min_dist*100:.1f}cm)"
+
+    return False, "Root not on scalp"
 
 
 def detect_strands_geodesic(
     vertices: np.ndarray,
     faces: np.ndarray,
     config: Optional[GeodesicConfig] = None,
-    verbose: bool = False
+    verbose: bool = False,
+    external_scalp_indices: Optional[np.ndarray] = None
 ) -> Optional[List[HairStrand]]:
     """
     Detect hair strand paths using geodesic distance computation.
@@ -698,6 +799,9 @@ def detect_strands_geodesic(
         faces: (M, 3) array of triangle face indices
         config: Detection configuration (uses defaults if None)
         verbose: Enable verbose output
+        external_scalp_indices: Optional pre-computed scalp vertex indices from
+                               human mesh reference. If provided, uses these directly
+                               instead of detecting scalp from hair mesh.
 
     Returns:
         List of HairStrand objects, or None if detection fails
@@ -730,9 +834,18 @@ def detect_strands_geodesic(
         return None
 
     # Step 1: Identify scalp vertices
-    scalp_indices = _identify_scalp_vertices(vertices, config)
-    if verbose:
-        print(f"  Identified {len(scalp_indices)} scalp vertices (top {config.scalp_percentile}%)")
+    # Use external scalp indices if provided (from human mesh reference)
+    if external_scalp_indices is not None and len(external_scalp_indices) >= 3:
+        scalp_indices = external_scalp_indices
+        if verbose:
+            print(f"  Using external scalp reference: {len(scalp_indices)} vertices")
+    else:
+        # Fall back to Z-height based detection (simpler, more robust)
+        z_coords = vertices[:, 2]
+        z_threshold = np.percentile(z_coords, 100 - config.scalp_percentile)
+        scalp_indices = np.where(z_coords >= z_threshold)[0]
+        if verbose:
+            print(f"  Using Z-height scalp: {len(scalp_indices)} vertices (top {config.scalp_percentile}%)")
 
     if len(scalp_indices) < 3:
         if verbose:
@@ -743,18 +856,32 @@ def detect_strands_geodesic(
     if verbose:
         print("  Computing geodesic distances...")
 
-    geodesic_dist = _compute_geodesic_distance(vertices, faces, scalp_indices, verbose)
-    if geodesic_dist is None:
+    geodesic_dist, reachable_indices = _compute_geodesic_distance(
+        vertices, faces, scalp_indices, verbose
+    )
+    if geodesic_dist is None or reachable_indices is None:
         if verbose:
             print("  Geodesic computation failed")
         return None
 
-    max_dist = np.max(geodesic_dist)
+    # Check connectivity - warn if many vertices unreachable
+    reachable_ratio = len(reachable_indices) / num_verts
+    if reachable_ratio < 0.3:
+        if verbose:
+            print(f"  Warning: Only {reachable_ratio*100:.1f}% vertices reachable - mesh may be disconnected")
+        # Continue anyway - we'll work with what we have
+
+    # Create set of reachable vertices for filtering
+    reachable_set = set(reachable_indices)
+
+    max_dist = np.max(geodesic_dist[reachable_indices])
     if verbose:
         print(f"  Max geodesic distance: {max_dist*100:.1f}cm")
 
-    # Step 3: Find tip candidates
-    tip_candidates = _find_tip_candidates(vertices, geodesic_dist, config)
+    # Step 3: Find tip candidates (only from reachable vertices)
+    tip_candidates = _find_tip_candidates(
+        vertices, geodesic_dist, config, reachable_indices
+    )
     if verbose:
         print(f"  Found {len(tip_candidates)} tip candidates")
 
@@ -779,10 +906,13 @@ def detect_strands_geodesic(
 
     # Step 6: Trace paths from tips to scalp
     if verbose:
-        print("  Tracing strand paths...")
+        print("  Tracing and validating strand paths...")
 
     strands = []
     all_paths = []
+    rejected_root = 0
+    rejected_direction = 0
+    rejected_length = 0
 
     for tip_idx in representative_tips:
         # Trace path
@@ -802,6 +932,21 @@ def detect_strands_geodesic(
         length = _calculate_path_length(path_coords)
 
         if length < config.min_strand_length:
+            rejected_length += 1
+            continue
+
+        # Validate scalp root anchoring
+        root_valid, _ = _validate_scalp_root(
+            path_indices, scalp_set, vertices, config
+        )
+        if not root_valid:
+            rejected_root += 1
+            continue
+
+        # Validate direction (downward, consistent)
+        dir_valid, _ = _validate_strand_direction(path_coords, config)
+        if not dir_valid:
+            rejected_direction += 1
             continue
 
         # Calculate direction
@@ -830,7 +975,10 @@ def detect_strands_geodesic(
         all_paths.append(path_indices)
 
     if verbose:
-        print(f"  Generated {len(strands)} valid strands")
+        total_rejected = rejected_length + rejected_root + rejected_direction
+        print(f"  Generated {len(strands)} valid strands "
+              f"(rejected {total_rejected}: {rejected_length} too short, "
+              f"{rejected_root} bad root, {rejected_direction} bad direction)")
         if strands:
             lengths = [s.length * 100 for s in strands]
             print(f"  Strand lengths: min={min(lengths):.1f}cm, "

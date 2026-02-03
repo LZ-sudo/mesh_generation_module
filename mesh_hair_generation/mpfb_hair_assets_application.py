@@ -283,9 +283,11 @@ def setup_hair_subrig(
 
         # Step 1: Add bones to main armature using mesh analysis
         # Uses dynamic bone positioning from generate_hair_rigging
+        # Pass human_obj for accurate scalp reference from MPFB human mesh
         created_bones, weight_info = add_hair_bones_to_armature(
             armature_obj,
             hair_obj,
+            human_obj=human_obj,
             parent_bone_name="head",
             verbose=verbose
         )
@@ -369,102 +371,36 @@ def setup_hair_rigging(
     verbose: bool = False
 ):
     """
-    Set up rigging for hair mesh.
+    Set up rigging for hair mesh using dynamic bone generation.
 
-    If a .mpfbskel file is provided, uses MPFB2's subrig system to create
-    dedicated hair bones. Otherwise, falls back to weight transfer from human.
+    Analyzes the hair mesh geometry and generates physics bones dynamically,
+    using the human mesh's scalp as reference for accurate bone placement.
 
     Args:
         hair_obj: The hair mesh object
-        human_obj: The human mesh object (for weight transfer)
+        human_obj: The human mesh object (used for scalp reference)
         armature_obj: The armature/rig object
-        mpfbskel_path: Optional path to .mpfbskel subrig file
-        mhw_path: Optional path to .mhw weight file
+        mpfbskel_path: Unused (kept for API compatibility)
+        mhw_path: Unused (kept for API compatibility)
         verbose: Enable verbose output
 
     Returns:
         True if successful, False otherwise
     """
     try:
-        import bpy
-
         if verbose:
-            print("  Setting up hair rigging...")
+            print("  Setting up hair rigging with dynamic bone generation...")
 
-        # If we have a subrig file, use MPFB2's proper subrig system
-        if mpfbskel_path and mpfbskel_path.exists():
-            if verbose:
-                print("  Found .mpfbskel file - using MPFB2 subrig system")
-            subrig_armature = setup_hair_subrig(
-                hair_obj,
-                human_obj,
-                armature_obj,
-                mpfbskel_path,
-                mhw_path,
-                verbose
-            )
-            return subrig_armature is not None
-
-        # Fallback: Simple weight transfer from human (no dedicated hair bones)
-        if verbose:
-            print("  No .mpfbskel file - using weight transfer fallback")
-
-        # Check if hair already has armature modifier
-        has_armature = any(m.type == 'ARMATURE' for m in hair_obj.modifiers)
-
-        if has_armature:
-            if verbose:
-                print("  Hair already has armature modifier")
-            return True
-
-        # Add armature modifier to hair
-        arm_mod = hair_obj.modifiers.new(name="Armature", type='ARMATURE')
-        arm_mod.object = armature_obj
-
-        if verbose:
-            print("  Added armature modifier")
-
-        # Parent hair to armature (without changing position)
-        hair_obj.parent = armature_obj
-        hair_obj.matrix_parent_inverse = armature_obj.matrix_world.inverted()
-
-        if verbose:
-            print("  Parented hair to armature")
-
-        # Transfer weights from human to hair using data transfer modifier
-        try:
-            # Add data transfer modifier
-            dt_mod = hair_obj.modifiers.new(name="DataTransfer", type='DATA_TRANSFER')
-            dt_mod.object = human_obj
-            dt_mod.use_vert_data = True
-            dt_mod.data_types_verts = {'VGROUP_WEIGHTS'}
-            dt_mod.vert_mapping = 'NEAREST'
-
-            # Apply the modifier to bake the weights
-            bpy.context.view_layer.objects.active = hair_obj
-            bpy.ops.object.modifier_apply(modifier=dt_mod.name)
-
-            if verbose:
-                print("  Transferred bone weights from human to hair")
-
-        except Exception as e:
-            print(f"  Warning: Weight transfer failed: {e}")
-            if verbose:
-                print("  Trying automatic weights as fallback...")
-
-            # Fallback to automatic weights
-            try:
-                bpy.context.view_layer.objects.active = armature_obj
-                hair_obj.select_set(True)
-                bpy.ops.object.parent_set(type='ARMATURE_AUTO')
-
-                if verbose:
-                    print("  Applied automatic weights")
-            except Exception as e2:
-                print(f"  Automatic weights also failed: {e2}")
-                return False
-
-        return True
+        # Always use dynamic bone generation with human mesh scalp reference
+        success = setup_hair_subrig(
+            hair_obj,
+            human_obj,
+            armature_obj,
+            mpfbskel_path,
+            mhw_path,
+            verbose
+        )
+        return success
 
     except Exception as e:
         print(f"Error setting up hair rigging: {e}")

@@ -181,25 +181,165 @@ def load_obj_faces(obj_path: Path) -> List[Tuple[int, int, int]]:
 
 
 # ============================================================================
+# Scalp Reference Extraction
+# ============================================================================
+
+def extract_scalp_reference(
+    human_obj,
+    armature_obj,
+    head_bone_name: str = "head",
+    verbose: bool = False
+) -> Optional[Tuple[Tuple[float, float, float], float]]:
+    """
+    Extract scalp reference point and radius from MPFB human mesh.
+
+    Uses the head bone position and vertices weighted to the head to determine
+    the scalp center and approximate radius for hair strand detection.
+
+    Args:
+        human_obj: The MPFB human mesh object
+        armature_obj: The armature object containing the head bone
+        head_bone_name: Name of the head bone (default: "head")
+        verbose: Enable verbose output
+
+    Returns:
+        Tuple of ((x, y, z) scalp center, scalp_radius) or None if extraction fails
+    """
+    import bpy
+
+    try:
+        # Get head bone position from armature
+        if armature_obj is None or armature_obj.type != 'ARMATURE':
+            if verbose:
+                print("  No valid armature provided for scalp reference")
+            return None
+
+        armature_data = armature_obj.data
+        head_bone = armature_data.bones.get(head_bone_name)
+
+        if head_bone is None:
+            if verbose:
+                print(f"  Head bone '{head_bone_name}' not found in armature")
+            return None
+
+        # Get head bone world position (use head of bone as scalp center)
+        # The head bone's head position is at the neck, tail is at top of head
+        bone_head_local = head_bone.head_local
+        bone_tail_local = head_bone.tail_local
+
+        # Transform to world coordinates
+        armature_matrix = armature_obj.matrix_world
+        bone_head_world = armature_matrix @ bone_head_local
+        bone_tail_world = armature_matrix @ bone_tail_local
+
+        # Scalp center is approximately at the top of the head (bone tail)
+        # but slightly lower to account for where hair attaches
+        scalp_center = (
+            (bone_head_world.x + bone_tail_world.x) / 2,
+            (bone_head_world.y + bone_tail_world.y) / 2,
+            bone_tail_world.z  # Top of head
+        )
+
+        # Calculate scalp radius from head bone length
+        bone_length = (bone_tail_world - bone_head_world).length
+        scalp_radius = bone_length * 0.6  # Approximate scalp radius
+
+        if verbose:
+            print(f"  Scalp reference extracted:")
+            print(f"    Center: ({scalp_center[0]:.3f}, {scalp_center[1]:.3f}, {scalp_center[2]:.3f})")
+            print(f"    Radius: {scalp_radius*100:.1f}cm")
+
+        return scalp_center, scalp_radius
+
+    except Exception as e:
+        if verbose:
+            print(f"  Error extracting scalp reference: {e}")
+        return None
+
+
+def find_scalp_vertices_from_reference(
+    vertices: 'np.ndarray',
+    scalp_center: Tuple[float, float, float],
+    scalp_radius: float,
+    z_tolerance: float = 0.05,
+    verbose: bool = False
+) -> 'np.ndarray':
+    """
+    Find hair mesh vertices that are in the scalp region based on external reference.
+
+    Uses the scalp center from the human mesh to identify which hair vertices
+    are at the root (scalp attachment) region.
+
+    Args:
+        vertices: (N, 3) hair mesh vertex positions
+        scalp_center: (x, y, z) scalp center from human mesh
+        scalp_radius: Approximate radius of scalp region
+        z_tolerance: Z-height tolerance for scalp region (meters)
+        verbose: Enable verbose output
+
+    Returns:
+        Array of vertex indices in the scalp region
+    """
+    # numpy is imported at module level via geodesic_strand_detection
+    import numpy as np
+
+    scalp_center_arr = np.array(scalp_center)
+
+    # Find vertices near the scalp center in XY plane and at similar Z height
+    xy_distances = np.sqrt(
+        (vertices[:, 0] - scalp_center_arr[0])**2 +
+        (vertices[:, 1] - scalp_center_arr[1])**2
+    )
+
+    z_coords = vertices[:, 2]
+    z_max = z_coords.max()
+
+    # Scalp vertices are:
+    # 1. Within scalp_radius * 1.5 in XY plane (generous to catch all hair roots)
+    # 2. In the upper portion of the hair mesh (top 20% by Z or within z_tolerance of scalp)
+    z_threshold = max(scalp_center_arr[2] - z_tolerance, z_max - (z_max - z_coords.min()) * 0.2)
+
+    scalp_mask = (xy_distances <= scalp_radius * 1.5) & (z_coords >= z_threshold)
+    scalp_indices = np.where(scalp_mask)[0]
+
+    # If we got very few vertices, fall back to just using Z-height
+    if len(scalp_indices) < 10:
+        if verbose:
+            print(f"    Only {len(scalp_indices)} vertices near scalp center, using Z-height fallback")
+        z_percentile = np.percentile(z_coords, 85)  # Top 15%
+        scalp_mask = z_coords >= z_percentile
+        scalp_indices = np.where(scalp_mask)[0]
+
+    if verbose:
+        print(f"    Found {len(scalp_indices)} scalp vertices from reference")
+
+    return scalp_indices
+
+
+# ============================================================================
 # Geodesic-Based Hair Analysis
 # ============================================================================
 
 def analyze_hair_mesh_geodesic(
     hair_obj,
     config: Optional[HairPhysicsConfig] = None,
+    scalp_reference: Optional[Tuple[Tuple[float, float, float], float]] = None,
     verbose: bool = False
 ) -> Optional[List['HairStrand']]:
     """
     Analyze hair mesh using geodesic distance computation.
 
     This detects hair strand paths on continuous mesh hair assets by:
-    1. Finding scalp vertices (high Z)
+    1. Finding scalp vertices using external reference (preferred) or Z-height
     2. Computing geodesic distance from scalp
     3. Tracing paths from tips back to scalp
 
     Args:
         hair_obj: The Blender hair mesh object
         config: Hair physics configuration
+        scalp_reference: Optional tuple of (scalp_center, scalp_radius) from human mesh.
+                        If provided, uses this to identify scalp vertices instead of
+                        boundary detection.
         verbose: Enable verbose output
 
     Returns:
@@ -235,8 +375,21 @@ def analyze_hair_mesh_geodesic(
         # Convert config
         geo_config = config.to_geodesic_config()
 
-        # Detect strands
-        strands = detect_strands_geodesic(vertices, faces, geo_config, verbose)
+        # Determine scalp vertices
+        scalp_indices = None
+        if scalp_reference is not None:
+            scalp_center, scalp_radius = scalp_reference
+            if verbose:
+                print("  Using external scalp reference from human mesh...")
+            scalp_indices = find_scalp_vertices_from_reference(
+                vertices, scalp_center, scalp_radius, verbose=verbose
+            )
+
+        # Detect strands (pass scalp_indices if we have them)
+        strands = detect_strands_geodesic(
+            vertices, faces, geo_config, verbose,
+            external_scalp_indices=scalp_indices
+        )
 
         if strands is None:
             if verbose:
@@ -579,6 +732,7 @@ def save_rigging_files(
 def add_hair_bones_to_armature(
     armature_obj,
     hair_obj,
+    human_obj=None,
     parent_bone_name: str = "head",
     config: Optional[HairPhysicsConfig] = None,
     verbose: bool = False
@@ -592,6 +746,8 @@ def add_hair_bones_to_armature(
     Args:
         armature_obj: Blender armature object to add bones to
         hair_obj: Hair mesh object to analyze
+        human_obj: Optional MPFB human mesh object for scalp reference.
+                  If provided, uses the head bone position to identify scalp region.
         parent_bone_name: Name of the bone to parent hair bones to (default: "head")
         config: Hair physics configuration (uses defaults if None)
         verbose: Enable verbose output
@@ -607,11 +763,20 @@ def add_hair_bones_to_armature(
     if config is None:
         config = HairPhysicsConfig()
 
+    # Extract scalp reference from human mesh if provided
+    scalp_reference = None
+    if human_obj is not None and armature_obj is not None:
+        if verbose:
+            print("  Extracting scalp reference from human mesh...")
+        scalp_reference = extract_scalp_reference(
+            human_obj, armature_obj, parent_bone_name, verbose
+        )
+
     # Analyze hair mesh to detect strands
     if verbose:
         print("  Analyzing hair mesh for strand detection...")
 
-    strands = analyze_hair_mesh_geodesic(hair_obj, config, verbose)
+    strands = analyze_hair_mesh_geodesic(hair_obj, config, scalp_reference, verbose)
 
     if strands is None or len(strands) == 0:
         if verbose:
