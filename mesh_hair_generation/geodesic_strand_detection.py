@@ -93,6 +93,17 @@ class GeodesicConfig:
     weight_falloff: float = 2.0
     """Falloff exponent for vertex weight calculation."""
 
+    # Bone containment (Issue 1: bones outside mesh)
+    bone_inward_offset: float = 0.002
+    """Meters - offset bone positions inward toward mesh center (2mm default)."""
+
+    # Path overlap filtering (Issue 2: overlapping chains)
+    path_overlap_distance: float = 0.015
+    """Meters - paths closer than this are considered overlapping (1.5cm default)."""
+
+    path_overlap_ratio: float = 0.5
+    """Ratio of path that must be within overlap distance to trigger removal (0-1)."""
+
 
 @dataclass
 class HairStrand:
@@ -521,6 +532,132 @@ def _cluster_tips_greedy(
     return representatives
 
 
+def _compute_path_distance(
+    path1_coords: List[Tuple[float, float, float]],
+    path2_coords: List[Tuple[float, float, float]],
+    overlap_threshold: float,
+    sample_count: int = 10
+) -> Tuple[float, float]:
+    """
+    Compute distance metrics between two strand paths.
+
+    Samples points along path1 and finds minimum distance from each
+    sample to any segment of path2.
+
+    Args:
+        path1_coords: First path coordinates
+        path2_coords: Second path coordinates
+        overlap_threshold: Distance threshold for considering points as overlapping
+        sample_count: Number of points to sample along path1
+
+    Returns:
+        Tuple of (mean_distance, overlap_ratio)
+        - mean_distance: Average minimum distance from path1 samples to path2
+        - overlap_ratio: Fraction of path1 samples within overlap_threshold of path2
+    """
+    if len(path1_coords) < 2 or len(path2_coords) < 2:
+        return float('inf'), 0.0
+
+    path1 = np.array(path1_coords)
+    path2 = np.array(path2_coords)
+
+    # Sample evenly-spaced points along path1
+    # Use fewer samples for short paths
+    actual_samples = min(sample_count, len(path1))
+    if actual_samples < 2:
+        actual_samples = len(path1)
+
+    indices = np.linspace(0, len(path1) - 1, actual_samples, dtype=int)
+    sample_points = path1[indices]
+
+    min_distances = []
+    overlap_count = 0
+
+    for sample_pt in sample_points:
+        # Find minimum distance from this sample to any segment of path2
+        min_dist = float('inf')
+
+        for i in range(len(path2) - 1):
+            p0 = path2[i]
+            p1 = path2[i + 1]
+
+            # Distance from point to line segment
+            segment = p1 - p0
+            seg_len_sq = np.dot(segment, segment)
+
+            if seg_len_sq < 0.00001:
+                dist = np.linalg.norm(sample_pt - p0)
+            else:
+                t = max(0.0, min(1.0, np.dot(sample_pt - p0, segment) / seg_len_sq))
+                projection = p0 + t * segment
+                dist = np.linalg.norm(sample_pt - projection)
+
+            min_dist = min(min_dist, dist)
+
+        min_distances.append(min_dist)
+        if min_dist < overlap_threshold:
+            overlap_count += 1
+
+    mean_distance = np.mean(min_distances) if min_distances else float('inf')
+    overlap_ratio = overlap_count / len(sample_points) if sample_points.size > 0 else 0.0
+
+    return mean_distance, overlap_ratio
+
+
+def _filter_overlapping_strands(
+    strands: List[HairStrand],
+    config: GeodesicConfig,
+    verbose: bool = False
+) -> List[HairStrand]:
+    """
+    Remove strands whose paths significantly overlap with other strands.
+
+    When two strands overlap, keeps the longer one (longer strands typically
+    represent more important/prominent hair sections).
+
+    Args:
+        strands: List of detected strands
+        config: Configuration with overlap thresholds
+        verbose: Enable verbose output
+
+    Returns:
+        Filtered list of strands with overlaps removed
+    """
+    if len(strands) <= 1:
+        return strands
+
+    # Sort strands by length (descending) - longer strands have priority
+    sorted_strands = sorted(strands, key=lambda s: s.length, reverse=True)
+
+    kept_strands = []
+    removed_count = 0
+
+    for strand in sorted_strands:
+        is_overlapping = False
+
+        # Check overlap with all previously-kept strands
+        for kept in kept_strands:
+            _, overlap_ratio = _compute_path_distance(
+                strand.path_coords,
+                kept.path_coords,
+                config.path_overlap_distance
+            )
+
+            if overlap_ratio >= config.path_overlap_ratio:
+                is_overlapping = True
+                break
+
+        if is_overlapping:
+            removed_count += 1
+        else:
+            kept_strands.append(strand)
+
+    if verbose and removed_count > 0:
+        print(f"    Removed {removed_count} overlapping strands")
+
+    return kept_strands
+
+
 def _build_adjacency(
     faces: np.ndarray,
     num_vertices: int
@@ -648,6 +785,69 @@ def _smooth_path(
         coords = smoothed
 
     return [tuple(c) for c in coords]
+
+
+def _offset_path_inward(
+    path_coords: List[Tuple[float, float, float]],
+    offset_distance: float,
+    vertices: np.ndarray
+) -> List[Tuple[float, float, float]]:
+    """
+    Offset path coordinates inward toward the mesh center.
+
+    For each path point (except endpoints), computes the local tangent direction
+    and offsets the point perpendicular to the tangent, toward the mesh centroid.
+    This helps ensure bones stay within the hair mesh volume.
+
+    Args:
+        path_coords: Smoothed path coordinates (root to tip)
+        offset_distance: How far to offset inward (meters)
+        vertices: All mesh vertices (for computing mesh centroid)
+
+    Returns:
+        Offset path coordinates
+    """
+    if len(path_coords) < 3 or offset_distance <= 0:
+        return path_coords
+
+    # Compute mesh centroid as reference for "inward" direction
+    mesh_centroid = np.mean(vertices, axis=0)
+
+    coords = np.array(path_coords)
+    offset_coords = coords.copy()
+
+    # Process interior points (skip root and tip endpoints)
+    for i in range(1, len(coords) - 1):
+        point = coords[i]
+
+        # Compute tangent direction from adjacent points
+        tangent = coords[i + 1] - coords[i - 1]
+        tangent_len = np.linalg.norm(tangent)
+        if tangent_len < 0.0001:
+            continue
+        tangent = tangent / tangent_len
+
+        # Vector from point toward mesh centroid
+        to_centroid = mesh_centroid - point
+        to_centroid_len = np.linalg.norm(to_centroid)
+        if to_centroid_len < 0.0001:
+            continue
+
+        # Project to_centroid onto plane perpendicular to tangent
+        # This gives us the "inward" direction perpendicular to the strand
+        inward = to_centroid - np.dot(to_centroid, tangent) * tangent
+        inward_len = np.linalg.norm(inward)
+
+        if inward_len < 0.0001:
+            # Point is directly on line to centroid, use arbitrary perpendicular
+            continue
+
+        inward = inward / inward_len
+
+        # Offset the point inward
+        offset_coords[i] = point + inward * offset_distance
+
+    return [tuple(c) for c in offset_coords]
 
 
 def _calculate_path_length(coords: List[Tuple[float, float, float]]) -> float:
@@ -928,6 +1128,12 @@ def detect_strands_geodesic(
             path_indices, vertices, config.path_smoothing_iterations
         )
 
+        # Offset path inward to keep bones within mesh volume
+        if config.bone_inward_offset > 0:
+            path_coords = _offset_path_inward(
+                path_coords, config.bone_inward_offset, vertices
+            )
+
         # Calculate length
         length = _calculate_path_length(path_coords)
 
@@ -974,11 +1180,20 @@ def detect_strands_geodesic(
         strands.append(strand)
         all_paths.append(path_indices)
 
+    # Filter overlapping strands (Issue 2: overlapping chains)
+    if strands and len(strands) > 1 and config.path_overlap_distance > 0:
+        pre_filter_count = len(strands)
+        strands = _filter_overlapping_strands(strands, config, verbose)
+        overlap_removed = pre_filter_count - len(strands)
+    else:
+        overlap_removed = 0
+
     if verbose:
         total_rejected = rejected_length + rejected_root + rejected_direction
         print(f"  Generated {len(strands)} valid strands "
               f"(rejected {total_rejected}: {rejected_length} too short, "
-              f"{rejected_root} bad root, {rejected_direction} bad direction)")
+              f"{rejected_root} bad root, {rejected_direction} bad direction, "
+              f"{overlap_removed} overlapping)")
         if strands:
             lengths = [s.length * 100 for s in strands]
             print(f"  Strand lengths: min={min(lengths):.1f}cm, "

@@ -95,6 +95,13 @@ class HairPhysicsConfig:
     # Weight parameters
     weight_falloff: float = 2.0
 
+    # Bone containment (Issue 1: bones outside mesh)
+    bone_inward_offset: float = 0.002
+
+    # Path overlap filtering (Issue 2: overlapping chains)
+    path_overlap_distance: float = 0.015
+    path_overlap_ratio: float = 0.5
+
     # Physics hints (stored as custom properties)
     stiffness: float = 0.8
     damping: float = 0.5
@@ -116,7 +123,10 @@ class HairPhysicsConfig:
             bones_per_10cm=self.bones_per_10cm,
             min_bones_per_strand=self.min_bones_per_strand,
             max_bones_per_strand=self.max_bones_per_strand,
-            weight_falloff=self.weight_falloff
+            weight_falloff=self.weight_falloff,
+            bone_inward_offset=self.bone_inward_offset,
+            path_overlap_distance=self.path_overlap_distance,
+            path_overlap_ratio=self.path_overlap_ratio
         )
 
 
