@@ -104,6 +104,13 @@ class GeodesicConfig:
     path_overlap_ratio: float = 0.5
     """Ratio of path that must be within overlap distance to trigger removal (0-1)."""
 
+    # Angular sectoring (Issue 3: uncovered regions)
+    num_angular_sectors: int = 8
+    """Number of angular sectors around scalp for even strand distribution (0 to disable)."""
+
+    min_strands_per_sector: int = 1
+    """Minimum strands to select per sector before allowing extras."""
+
 
 @dataclass
 class HairStrand:
@@ -528,6 +535,176 @@ def _cluster_tips_greedy(
 
         if len(representatives) >= config.max_strands:
             break
+
+    return representatives
+
+
+def _compute_tip_sector(
+    tip_position: np.ndarray,
+    scalp_center: np.ndarray,
+    num_sectors: int
+) -> int:
+    """
+    Compute which angular sector a tip belongs to.
+
+    Uses horizontal angle (atan2 of x, y) relative to scalp center
+    to assign tips to sectors around the head.
+
+    Args:
+        tip_position: (3,) tip vertex position
+        scalp_center: (3,) scalp center position
+        num_sectors: Number of angular sectors
+
+    Returns:
+        Sector index (0 to num_sectors-1)
+    """
+    dx = tip_position[0] - scalp_center[0]
+    dy = tip_position[1] - scalp_center[1]
+    angle = np.arctan2(dy, dx)  # -pi to pi
+    # Map angle to sector: shift to [0, 2*pi] then divide
+    normalized_angle = angle + np.pi  # [0, 2*pi]
+    sector = int(normalized_angle / (2 * np.pi) * num_sectors) % num_sectors
+    return sector
+
+
+def _cluster_tips_with_sectors(
+    vertices: np.ndarray,
+    tip_indices: np.ndarray,
+    geodesic_dist: np.ndarray,
+    scalp_indices: np.ndarray,
+    config: GeodesicConfig
+) -> List[int]:
+    """
+    Cluster tip candidates with angular sector-based distribution.
+
+    Ensures even distribution of strands around the head by dividing
+    tips into angular sectors and selecting from each sector.
+
+    Args:
+        vertices: (N, 3) vertex positions
+        tip_indices: Indices of tip candidate vertices
+        geodesic_dist: (N,) geodesic distances
+        scalp_indices: Indices of scalp vertices (for computing center)
+        config: Detection configuration
+
+    Returns:
+        List of representative tip vertex indices with even distribution
+    """
+    if len(tip_indices) == 0:
+        return []
+
+    if len(tip_indices) == 1:
+        return [tip_indices[0]]
+
+    num_sectors = config.num_angular_sectors
+    min_per_sector = config.min_strands_per_sector
+
+    # Compute scalp center from scalp vertices
+    scalp_center = np.mean(vertices[scalp_indices], axis=0)
+
+    tip_positions = vertices[tip_indices]
+    tip_distances = geodesic_dist[tip_indices]
+
+    # Assign each tip to a sector
+    sector_tips: Dict[int, List[Tuple[int, int, float]]] = {i: [] for i in range(num_sectors)}
+    for local_idx, tip_idx in enumerate(tip_indices):
+        sector = _compute_tip_sector(tip_positions[local_idx], scalp_center, num_sectors)
+        sector_tips[sector].append((local_idx, tip_idx, tip_distances[local_idx]))
+
+    # Sort tips within each sector by geodesic distance (descending)
+    for sector in sector_tips:
+        sector_tips[sector].sort(key=lambda x: -x[2])
+
+    representatives = []
+    used_local = set()
+    cluster_dist_sq = config.tip_cluster_distance ** 2
+
+    # Phase 1: Select minimum strands per sector
+    for sector in range(num_sectors):
+        tips_in_sector = sector_tips[sector]
+        selected_in_sector = 0
+
+        for local_idx, tip_idx, _ in tips_in_sector:
+            if local_idx in used_local:
+                continue
+
+            # Check if too close to existing representative
+            tip_pos = tip_positions[local_idx]
+            too_close = False
+            for rep_idx in representatives:
+                rep_local_idx = np.where(tip_indices == rep_idx)[0][0]
+                rep_pos = tip_positions[rep_local_idx]
+                dist_sq = np.sum((tip_pos - rep_pos) ** 2)
+                if dist_sq < cluster_dist_sq:
+                    too_close = True
+                    break
+
+            if too_close:
+                used_local.add(local_idx)
+                continue
+
+            representatives.append(tip_idx)
+            used_local.add(local_idx)
+            selected_in_sector += 1
+
+            # Mark nearby tips as used
+            for other_local_idx in range(len(tip_indices)):
+                if other_local_idx in used_local:
+                    continue
+                other_pos = tip_positions[other_local_idx]
+                dist_sq = np.sum((tip_pos - other_pos) ** 2)
+                if dist_sq < cluster_dist_sq:
+                    used_local.add(other_local_idx)
+
+            if selected_in_sector >= min_per_sector:
+                break
+
+            if len(representatives) >= config.max_strands:
+                return representatives
+
+    # Phase 2: Fill remaining slots with best available tips
+    if len(representatives) < config.max_strands:
+        # Collect remaining tips from all sectors, sorted by geodesic distance
+        remaining_tips = []
+        for sector in range(num_sectors):
+            for local_idx, tip_idx, geo_dist in sector_tips[sector]:
+                if local_idx not in used_local:
+                    remaining_tips.append((local_idx, tip_idx, geo_dist))
+
+        remaining_tips.sort(key=lambda x: -x[2])
+
+        for local_idx, tip_idx, _ in remaining_tips:
+            if local_idx in used_local:
+                continue
+
+            tip_pos = tip_positions[local_idx]
+            too_close = False
+            for rep_idx in representatives:
+                rep_local_idx = np.where(tip_indices == rep_idx)[0][0]
+                rep_pos = tip_positions[rep_local_idx]
+                dist_sq = np.sum((tip_pos - rep_pos) ** 2)
+                if dist_sq < cluster_dist_sq:
+                    too_close = True
+                    break
+
+            if too_close:
+                used_local.add(local_idx)
+                continue
+
+            representatives.append(tip_idx)
+            used_local.add(local_idx)
+
+            # Mark nearby tips as used
+            for other_local_idx in range(len(tip_indices)):
+                if other_local_idx in used_local:
+                    continue
+                other_pos = tip_positions[other_local_idx]
+                dist_sq = np.sum((tip_pos - other_pos) ** 2)
+                if dist_sq < cluster_dist_sq:
+                    used_local.add(other_local_idx)
+
+            if len(representatives) >= config.max_strands:
+                break
 
     return representatives
 
@@ -1090,10 +1267,18 @@ def detect_strands_geodesic(
             print("  No tip candidates found")
         return None
 
-    # Step 4: Cluster tips
-    representative_tips = _cluster_tips(vertices, tip_candidates, geodesic_dist, config)
-    if verbose:
-        print(f"  Clustered to {len(representative_tips)} representative tips")
+    # Step 4: Cluster tips (with angular sectoring if enabled)
+    if config.num_angular_sectors > 0:
+        representative_tips = _cluster_tips_with_sectors(
+            vertices, tip_candidates, geodesic_dist, scalp_indices, config
+        )
+        if verbose:
+            print(f"  Clustered to {len(representative_tips)} representative tips "
+                  f"(using {config.num_angular_sectors} angular sectors)")
+    else:
+        representative_tips = _cluster_tips(vertices, tip_candidates, geodesic_dist, config)
+        if verbose:
+            print(f"  Clustered to {len(representative_tips)} representative tips")
 
     if len(representative_tips) < 1:
         if verbose:

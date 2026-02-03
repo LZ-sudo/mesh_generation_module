@@ -102,6 +102,10 @@ class HairPhysicsConfig:
     path_overlap_distance: float = 0.015
     path_overlap_ratio: float = 0.5
 
+    # Angular sectoring (Issue 3: uncovered regions)
+    num_angular_sectors: int = 8
+    min_strands_per_sector: int = 1
+
     # Physics hints (stored as custom properties)
     stiffness: float = 0.8
     damping: float = 0.5
@@ -126,7 +130,9 @@ class HairPhysicsConfig:
             weight_falloff=self.weight_falloff,
             bone_inward_offset=self.bone_inward_offset,
             path_overlap_distance=self.path_overlap_distance,
-            path_overlap_ratio=self.path_overlap_ratio
+            path_overlap_ratio=self.path_overlap_ratio,
+            num_angular_sectors=self.num_angular_sectors,
+            min_strands_per_sector=self.min_strands_per_sector
         )
 
 
