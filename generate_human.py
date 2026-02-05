@@ -48,13 +48,13 @@ def parse_arguments():
         description='Generate human mesh with MPFB2 in headless Blender',
         epilog="""
 Example usage:
-    python run_blender.py --script generate_human.py -- --config human_female.json
+    python run_blender.py --script generate_human.py --config human_female.json
 
-    python run_blender.py --script generate_human.py -- --config human_female.json --rig-type default_no_toes
+    python run_blender.py --script generate_human.py --config human_female.json --rig-type default_no_toes
 
-    python run_blender.py --script generate_human.py -- --config human_female.json --fk-ik-hybrid --instrumented-arm right
+    python run_blender.py --script generate_human.py --config human_female.json --fk-ik-hybrid --instrumented-arm right
 
-    python run_blender.py --script generate_human.py -- --config human_female.json --fk-ik-hybrid --instrumented-arm right --t-pose
+    python run_blender.py --script generate_human.py --config human_female.json --fk-ik-hybrid --instrumented-arm right --t-pose
     """
     
     )
