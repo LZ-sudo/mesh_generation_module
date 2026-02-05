@@ -1,0 +1,39 @@
+# Material definition for Short
+
+name Short
+description Short_hair_b material
+ambientColor 0.33 0.33 0.33
+diffuseColor 0.0 0.0 0.0
+specularColor 0.01 0.01 0.01
+shininess 0.0
+emissiveColor 0.0 0.0 0.0
+opacity 1.0
+translucency 0.0
+
+shadeless False
+wireframe False
+transparent True
+alphaToCoverage True
+backfaceCull False
+depthless False
+
+castShadows True
+
+receiveShadows True
+
+diffuseTexture BHL_StraightHairB_Alpha.png
+normalmapTexture /home/rashad/Pictures/Pictures/Textures/Blender_HairLab/BHL_StraightHairB_FlowMap.png
+normalmapIntensity 1.0
+transparencymapTexture BHL_StraightHairB_Alpha.png
+transparencymapIntensity 1.0
+
+shader shaders/glsl/phong
+
+shaderConfig diffuse True
+shaderConfig bump True
+shaderConfig normal True
+shaderConfig displacement True
+shaderConfig spec True
+shaderConfig vertexColors True
+shaderConfig transparency True
+shaderConfig ambientOcclusion True

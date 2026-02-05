@@ -1,0 +1,35 @@
+# Material definition for female01Material
+
+name female01Material
+ambientColor 1.0 1.0 1.0
+diffuseColor 1.0 1.0 1.0
+specularColor 0.2 0.2 0.2
+shininess 0.5
+emissiveColor 0.0 0.0 0.0
+opacity 1.0
+translucency 0.0
+
+shadeless False
+wireframe False
+transparent True
+alphaToCoverage True
+backfaceCull True
+depthless False
+
+diffuseTexture diffuse_black.png
+normalmapTexture normals.png
+normalmapIntensity 1.0
+
+shader data/shaders/glsl/litsphere
+
+shaderParam AdditiveShading 0.2
+shaderParam litsphereTexture data/litspheres/lit_refl_sharp_aniso_hard.png
+
+shaderConfig ambientOcclusion True
+shaderConfig normal True
+shaderConfig bump True
+shaderConfig displacement False
+shaderConfig vertexColors True
+shaderConfig diffuse True
+shaderConfig transparency True
+shaderConfig spec False

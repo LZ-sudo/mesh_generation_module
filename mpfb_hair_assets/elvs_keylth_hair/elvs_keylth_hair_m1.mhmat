@@ -1,0 +1,42 @@
+# Material definition for elvs_keylth_hair_m1
+
+name elvs_keylth_hair_m1
+description elvs_keylth_hair_m1 material
+ambientColor 1.0 1.0 1.0
+diffuseColor 0.5 0.5 0.5
+specularColor 0.5 0.5 0.5
+shininess 0.5
+emissiveColor 0.0 0.0 0.0
+opacity 1.0
+translucency 0.0
+
+shadeless False
+wireframe False
+transparent True
+alphaToCoverage True
+backfaceCull False
+depthless False
+
+castShadows True
+
+receiveShadows True
+
+diffuseTexture keylthtex1.png
+normalmapTexture keylthnormals.png
+normalmapIntensity 1.5
+
+shader shaders/glsl/litsphere
+
+shaderParam litsphereTexture litspheres/lit_hair.png
+shaderParam AdditiveShading 0.03
+
+shaderDefine ALPHA_MAP
+
+shaderConfig diffuse True
+shaderConfig bump True
+shaderConfig normal True
+shaderConfig displacement True
+shaderConfig spec True
+shaderConfig vertexColors True
+shaderConfig transparency True
+shaderConfig ambientOcclusion True
