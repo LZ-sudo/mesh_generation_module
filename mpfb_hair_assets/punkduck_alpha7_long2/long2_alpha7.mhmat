@@ -1,0 +1,37 @@
+# Material definition for long2_alpha7
+
+name long2_alpha7
+description Long2_alpha7 material
+ambientColor 1.0 1.0 1.0
+diffuseColor 0.529411764706 0.333333333333 0.243137254902
+specularColor 0.5 0.5 0.5
+shininess 0.1961
+emissiveColor 0.0 0.0 0.0
+opacity 1.0
+translucency 0.0
+
+shadeless True
+wireframe False
+transparent True
+alphaToCoverage True
+backfaceCull False
+depthless False
+
+castShadows True
+
+receiveShadows True
+
+diffuseTexture long2_alpha7.png
+
+shader shaders/glsl/litsphere
+
+shaderParam litsphereTexture litspheres/lit_hair.png
+
+shaderConfig ambientOcclusion True
+shaderConfig normal False
+shaderConfig bump False
+shaderConfig displacement False
+shaderConfig vertexColors False
+shaderConfig spec False
+shaderConfig transparency True
+shaderConfig diffuse True

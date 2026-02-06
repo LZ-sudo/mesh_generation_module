@@ -1,0 +1,41 @@
+# Material definition for 04saken_chinesebob01
+
+name 04saken_chinesebob01
+description O4saken_chinesebob01 material
+ambientColor 0.490196078431 0.490196078431 0.490196078431
+diffuseColor 1.0 1.0 1.0
+specularColor 0.2 0.2 0.2
+shininess 0.1961
+emissiveColor 0.0 0.0 0.0
+opacity 1.0
+translucency 0.0
+
+shadeless False
+wireframe False
+transparent True
+alphaToCoverage True
+backfaceCull False
+depthless False
+
+castShadows True
+
+receiveShadows True
+
+#diffuseTexture hair/o4s_curly01/o4saken_curly01.png
+#normalmapTexture hair/o4s_curly01/o4saken_curly01_nrm.png
+diffuseTexture o4saken_chinesebob01.png
+normalmapTexture o4saken_chinesebob01_nrm.png
+normalmapIntensity 1.0
+
+shader shaders/glsl/litsphere
+
+shaderParam litsphereTexture litspheres/lit_refl_sharp_aniso_hard.png
+
+shaderConfig ambientOcclusion True
+shaderConfig normal True
+shaderConfig bump False
+shaderConfig displacement False
+shaderConfig vertexColors False
+shaderConfig spec False
+shaderConfig transparency True
+shaderConfig diffuse True
