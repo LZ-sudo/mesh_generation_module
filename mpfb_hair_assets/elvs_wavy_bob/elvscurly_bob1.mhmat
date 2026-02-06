@@ -1,0 +1,43 @@
+# Material definition for material.002Material
+
+name material.002Material
+description UnnamedMaterial material
+ambientColor 1.0 1.0 1.0
+diffuseColor 0.64 0.64 0.64
+specularColor 0.5 0.5 0.5
+shininess 0.0
+emissiveColor 0.0 0.0 0.0
+opacity 1.0
+translucency 0.5
+
+shadeless False
+wireframe False
+transparent False
+alphaToCoverage True
+backfaceCull False
+depthless False
+
+castShadows True
+
+receiveShadows True
+
+diffuseTexture black.png
+
+shader shaders/glsl/toon
+
+shaderParam silhouetteThreshold 0.5
+shaderParam shininess 17.0
+shaderParam specularIntensity 0.4
+shaderParam diffuse_th 0.3
+shaderParam specular_th 0.5
+shaderParam ambientIntensity 0.4
+shaderParam diffuseIntensity 0.3
+
+shaderConfig ambientOcclusion True
+shaderConfig normal False
+shaderConfig bump False
+shaderConfig displacement False
+shaderConfig vertexColors False
+shaderConfig spec False
+shaderConfig transparency True
+shaderConfig diffuse True
