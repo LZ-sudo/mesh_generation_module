@@ -484,10 +484,7 @@ Examples:
 
         elif args.method == 'lhs':
             # Latin Hypercube Sampling
-            if args.n_samples > 10000:
-                print(f"\nWARNING: n_samples={args.n_samples} exceeds TabPFN's 10,000 limit!")
-                print(f"  Recommended: Use --n-samples 9900 or less")
-
+        
             print(f"  LHS samples: {args.n_samples:,}")
             print(f"  Random seed: {args.seed}")
 
