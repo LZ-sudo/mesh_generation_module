@@ -133,6 +133,9 @@ def add_hair_to_human(human_obj, hair_asset_path: Path, verbose: bool = False):
         bpy.context.view_layer.objects.active = human_obj
         human_obj.select_set(True)
 
+        # Track objects before import to find the newly created one
+        objects_before = set(bpy.data.objects)
+
         # Add the MHCLO asset
         HumanService.add_mhclo_asset(
             str(hair_asset_path),
@@ -141,11 +144,14 @@ def add_hair_to_human(human_obj, hair_asset_path: Path, verbose: bool = False):
             subdiv_levels=0
         )
 
-        # Find the hair object in the scene
+        # Find the newly created hair object by comparing before/after
+        objects_after = set(bpy.data.objects)
+        new_objects = objects_after - objects_before
+
+        # Find the mesh object (should be only one new mesh)
         hair_obj = None
-        for obj in bpy.data.objects:
-            if obj != human_obj and obj.type == 'MESH' and 'hair' in obj.name.lower():
-                # Check if this is a newly created object (not in our previous object list)
+        for obj in new_objects:
+            if obj.type == 'MESH':
                 hair_obj = obj
                 break
 
