@@ -36,8 +36,8 @@ Usage:
         armature_obj, hair_obj, human_obj, verbose=True
     )
 
-    # Apply weights to hair mesh
-    calculate_hair_vertex_weights(hair_obj, weight_info, verbose=True)
+    # Apply weights to hair mesh (pass armature_obj for bone pruning)
+    calculate_hair_vertex_weights(hair_obj, weight_info, armature_obj, verbose=True)
 """
 
 import sys
@@ -106,6 +106,15 @@ class HairPhysicsConfig:
     num_angular_sectors: int = 8
     min_strands_per_sector: int = 1
 
+    # Sector-aware tip selection (Issue 3 refinement: front strand coverage)
+    sector_aware_tip_selection: bool = True
+    min_sector_tip_percentile: float = 85.0
+
+    # Bone pruning (Issue 4: remove ineffective bones)
+    prune_ineffective_bones: bool = True
+    min_bone_total_influence: float = 1
+    min_bone_vertex_count: int = 5
+
     # Physics hints (stored as custom properties)
     stiffness: float = 0.8
     damping: float = 0.5
@@ -132,7 +141,9 @@ class HairPhysicsConfig:
             path_overlap_distance=self.path_overlap_distance,
             path_overlap_ratio=self.path_overlap_ratio,
             num_angular_sectors=self.num_angular_sectors,
-            min_strands_per_sector=self.min_strands_per_sector
+            min_strands_per_sector=self.min_strands_per_sector,
+            sector_aware_tip_selection=self.sector_aware_tip_selection,
+            min_sector_tip_percentile=self.min_sector_tip_percentile
         )
 
 
@@ -425,6 +436,131 @@ def _resample_path(
 
 
 # ============================================================================
+# Bone Pruning Utility
+# ============================================================================
+
+def _prune_ineffective_bones(
+    armature_obj,
+    bone_weights: Dict[str, List[Tuple[int, float]]],
+    config: HairPhysicsConfig,
+    verbose: bool = False
+) -> Dict[str, List[Tuple[int, float]]]:
+    """
+    Remove bones with insufficient mesh influence from armature.
+
+    Analyzes bone weights to identify bones that don't significantly
+    influence the mesh. Removes these bones from the armature and
+    returns updated bone_weights dict.
+
+    Args:
+        armature_obj: Blender armature object
+        bone_weights: Dict of bone_name -> list of (vert_idx, weight)
+        config: Hair physics configuration
+        verbose: Enable verbose output
+
+    Returns:
+        Updated bone_weights dict with pruned bones removed
+    """
+    import bpy
+
+    if not config.prune_ineffective_bones:
+        return bone_weights
+
+    # Analyze bone influence
+    bones_to_remove = set()
+    bone_stats = {}
+
+    for bone_name, vert_weights in bone_weights.items():
+        if not vert_weights:
+            bones_to_remove.add(bone_name)
+            continue
+
+        # Calculate total influence and vertex count
+        total_influence = sum(weight for _, weight in vert_weights)
+        vertex_count = len(vert_weights)
+
+        bone_stats[bone_name] = {
+            'total_influence': total_influence,
+            'vertex_count': vertex_count
+        }
+
+        # Check against thresholds
+        if (total_influence < config.min_bone_total_influence or
+            vertex_count < config.min_bone_vertex_count):
+            bones_to_remove.add(bone_name)
+
+    if not bones_to_remove:
+        return bone_weights
+
+    # Parse bone names to identify which are tips in bone chains
+    # Format: hair_<strand_idx>_<bone_idx>
+    # Only prune from tips backward, never from middle of chain
+    tip_bones_to_remove = set()
+
+    for bone_name in bones_to_remove:
+        parts = bone_name.split('_')
+        if len(parts) >= 3:
+            try:
+                strand_idx = int(parts[1])
+                bone_idx = int(parts[2])
+
+                # Check if this is a tip bone (no child bone exists)
+                child_bone_name = f"{parts[0]}_{strand_idx}_{bone_idx + 1}"
+                if child_bone_name not in bone_weights or child_bone_name in bones_to_remove:
+                    tip_bones_to_remove.add(bone_name)
+            except (ValueError, IndexError):
+                # Invalid bone name format, skip
+                pass
+
+    if not tip_bones_to_remove:
+        if verbose:
+            print(f"  Bone pruning: {len(bones_to_remove)} ineffective bones, but none are tips (not removing)")
+        return bone_weights
+
+    # Remove bones from armature
+    try:
+        original_mode = bpy.context.object.mode if bpy.context.object else 'OBJECT'
+        original_active = bpy.context.view_layer.objects.active
+
+        bpy.context.view_layer.objects.active = armature_obj
+        bpy.ops.object.mode_set(mode='EDIT')
+
+        edit_bones = armature_obj.data.edit_bones
+        removed_count = 0
+
+        for bone_name in tip_bones_to_remove:
+            bone = edit_bones.get(bone_name)
+            if bone:
+                edit_bones.remove(bone)
+                removed_count += 1
+
+        bpy.ops.object.mode_set(mode='OBJECT')
+
+        # Restore original state
+        bpy.context.view_layer.objects.active = original_active
+        if original_active and original_mode != 'OBJECT':
+            bpy.ops.object.mode_set(mode=original_mode)
+
+        if verbose:
+            print(f"  Bone pruning: removed {removed_count} ineffective tip bones")
+
+    except Exception as e:
+        if verbose:
+            print(f"  Warning: Could not prune bones: {e}")
+        # Continue with original weights if pruning fails
+        return bone_weights
+
+    # Update bone_weights to exclude removed bones
+    pruned_weights = {
+        bone_name: weights
+        for bone_name, weights in bone_weights.items()
+        if bone_name not in tip_bones_to_remove
+    }
+
+    return pruned_weights
+
+
+# ============================================================================
 # Direct Blender Armature Integration
 # ============================================================================
 
@@ -595,6 +731,7 @@ def add_hair_bones_to_armature(
 def calculate_hair_vertex_weights(
     hair_obj,
     weight_info: Dict,
+    armature_obj=None,
     verbose: bool = False
 ) -> bool:
     """
@@ -607,6 +744,7 @@ def calculate_hair_vertex_weights(
         hair_obj: Hair mesh object to assign weights to
         weight_info: Dict containing strands, vertices, and config from
                      add_hair_bones_to_armature
+        armature_obj: Optional armature object (required for bone pruning)
         verbose: Enable verbose output
 
     Returns:
@@ -715,6 +853,10 @@ def calculate_hair_vertex_weights(
                     if next_bone not in bone_weights:
                         bone_weights[next_bone] = []
                     bone_weights[next_bone].append((vert_idx, secondary_weight))
+
+        # Prune ineffective bones (if enabled and armature provided)
+        if armature_obj is not None:
+            bone_weights = _prune_ineffective_bones(armature_obj, bone_weights, config, verbose)
 
         # Create vertex groups and assign weights
         total_weights = 0

@@ -111,6 +111,13 @@ class GeodesicConfig:
     min_strands_per_sector: int = 1
     """Minimum strands to select per sector before allowing extras."""
 
+    # Sector-aware tip selection (Issue 3 refinement: front strand coverage)
+    sector_aware_tip_selection: bool = True
+    """Enable sector-aware tip candidate selection for better coverage."""
+
+    min_sector_tip_percentile: float = 85.0
+    """Minimum percentile for sector-local tip candidates (used when sectors lack global candidates)."""
+
 
 @dataclass
 class HairStrand:
@@ -381,38 +388,86 @@ def _find_tip_candidates(
     vertices: np.ndarray,
     geodesic_dist: np.ndarray,
     config: GeodesicConfig,
-    reachable_indices: Optional[np.ndarray] = None
+    reachable_indices: Optional[np.ndarray] = None,
+    scalp_indices: Optional[np.ndarray] = None
 ) -> np.ndarray:
     """
     Find hair tip candidate vertices based on geodesic distance.
 
     Tips are vertices with high geodesic distance from the scalp.
+    When sector-aware selection is enabled, ensures each angular sector
+    gets tip candidates even if they have lower geodesic distance.
 
     Args:
         vertices: (N, 3) vertex positions
         geodesic_dist: (N,) geodesic distances from scalp
         config: Detection configuration
         reachable_indices: Optional array of reachable vertex indices to filter by
+        scalp_indices: Optional array of scalp vertex indices (needed for sector-aware selection)
 
     Returns:
         Array of tip candidate vertex indices
     """
-    # If reachable indices provided, only consider those for percentile calculation
+    # Step 1: Apply global threshold to get initial candidates
     if reachable_indices is not None and len(reachable_indices) > 0:
         reachable_distances = geodesic_dist[reachable_indices]
         threshold = np.percentile(reachable_distances, config.tip_percentile)
         # Get vertices above threshold that are also reachable
         reachable_set = set(reachable_indices)
         tip_mask = geodesic_dist >= threshold
-        tip_indices = np.array([i for i in np.where(tip_mask)[0] if i in reachable_set])
+        global_tip_indices = np.array([i for i in np.where(tip_mask)[0] if i in reachable_set])
     else:
         # Find distance threshold for top N%
         threshold = np.percentile(geodesic_dist, config.tip_percentile)
         # Get vertices above threshold
         tip_mask = geodesic_dist >= threshold
-        tip_indices = np.where(tip_mask)[0]
+        global_tip_indices = np.where(tip_mask)[0]
+        reachable_indices = np.arange(len(vertices))
 
-    return tip_indices
+    # Step 2: Sector-aware selection (if enabled)
+    if (config.sector_aware_tip_selection and
+        config.num_angular_sectors > 0 and
+        scalp_indices is not None and
+        len(scalp_indices) >= 3):
+
+        # Compute scalp center
+        scalp_center = np.mean(vertices[scalp_indices], axis=0)
+        num_sectors = config.num_angular_sectors
+
+        # Assign all reachable vertices to sectors
+        sector_vertices: Dict[int, List[int]] = {i: [] for i in range(num_sectors)}
+        for v_idx in reachable_indices:
+            sector = _compute_tip_sector(vertices[v_idx], scalp_center, num_sectors)
+            sector_vertices[sector].append(v_idx)
+
+        # Check which sectors have global candidates
+        global_tip_set = set(global_tip_indices)
+        sector_global_counts = {i: 0 for i in range(num_sectors)}
+        for tip_idx in global_tip_indices:
+            sector = _compute_tip_sector(vertices[tip_idx], scalp_center, num_sectors)
+            sector_global_counts[sector] += 1
+
+        # For sectors with no global candidates, apply local percentile
+        sector_local_tips = []
+        for sector in range(num_sectors):
+            if sector_global_counts[sector] == 0 and len(sector_vertices[sector]) > 0:
+                # This sector has no global candidates, apply local threshold
+                sector_v_indices = np.array(sector_vertices[sector])
+                sector_distances = geodesic_dist[sector_v_indices]
+
+                # Use lower percentile for sector-local selection
+                local_threshold = np.percentile(sector_distances, config.min_sector_tip_percentile)
+                local_mask = sector_distances >= local_threshold
+                local_tips = sector_v_indices[local_mask]
+                sector_local_tips.extend(local_tips)
+
+        # Combine global and sector-local candidates (remove duplicates)
+        if len(sector_local_tips) > 0:
+            all_tip_indices = np.unique(np.concatenate([global_tip_indices, np.array(sector_local_tips)]))
+            return all_tip_indices
+
+    # No sector-aware selection, return global candidates
+    return global_tip_indices
 
 
 def _cluster_tips(
@@ -1257,7 +1312,7 @@ def detect_strands_geodesic(
 
     # Step 3: Find tip candidates (only from reachable vertices)
     tip_candidates = _find_tip_candidates(
-        vertices, geodesic_dist, config, reachable_indices
+        vertices, geodesic_dist, config, reachable_indices, scalp_indices
     )
     if verbose:
         print(f"  Found {len(tip_candidates)} tip candidates")

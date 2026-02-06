@@ -243,6 +243,7 @@ def setup_hair_rigging(
             weights_assigned = calculate_hair_vertex_weights(
                 hair_obj,
                 weight_info,
+                armature_obj,
                 verbose=verbose
             )
 
