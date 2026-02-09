@@ -982,6 +982,7 @@ def export_fbx(basemesh, armature, output_path: str, export_settings: Dict[str, 
     print(f"  - Scale: {default_settings['global_scale']}")
     print(f"  - Axis: Forward={default_settings['axis_forward']}, Up={default_settings['axis_up']}")
     print(f"  - Bone axis: Primary={default_settings['primary_bone_axis']}, Secondary={default_settings['secondary_bone_axis']}")
+    print(f"  - Animation baking: {'ENABLED' if default_settings['bake_anim'] else 'DISABLED'}")
 
     # Export FBX
     bpy.ops.export_scene.fbx(

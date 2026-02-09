@@ -185,10 +185,11 @@ def setup_hair_rigging(
     using the human mesh's scalp as reference for accurate bone placement.
 
     Steps:
-    1. Analyze hair mesh geometry to determine bone positions
-    2. Add bones to main armature (parented to head bone)
-    3. Calculate and assign vertex weights
-    4. Set up armature modifier on hair mesh
+    1. Detect rig type and determine correct parent bone name
+    2. Analyze hair mesh geometry to determine bone positions
+    3. Add bones to main armature (parented to head bone)
+    4. Calculate and assign vertex weights
+    5. Set up armature modifier on hair mesh
 
     Args:
         hair_obj: The hair mesh object
@@ -198,6 +199,11 @@ def setup_hair_rigging(
 
     Returns:
         True if successful, False otherwise
+
+    Note:
+        Automatically detects rig type:
+        - default_no_toes rig uses 'head' bone
+        - mixamo rig uses 'mixamorig:Head' bone
     """
     try:
         import bpy
@@ -205,13 +211,37 @@ def setup_hair_rigging(
         if verbose:
             print("  Setting up hair rigging with dynamic bone generation...")
 
+        # Detect rig type by checking bone names
+        bone_names = [bone.name for bone in armature_obj.data.bones]
+
+        # Determine parent bone name based on rig type
+        if 'mixamorig:Head' in bone_names:
+            parent_bone_name = 'mixamorig:Head'
+            if verbose:
+                print(f"    Detected Mixamo rig, using parent bone: {parent_bone_name}")
+        elif 'head' in bone_names:
+            parent_bone_name = 'head'
+            if verbose:
+                print(f"    Detected default rig, using parent bone: {parent_bone_name}")
+        else:
+            # Fallback: search for any bone with "head" in name
+            head_bones = [name for name in bone_names if 'head' in name.lower()]
+            if head_bones:
+                parent_bone_name = head_bones[0]
+                if verbose:
+                    print(f"    Using fallback head bone: {parent_bone_name}")
+            else:
+                print("  ✗ Error: Cannot find head bone in armature")
+                print(f"    Available bones: {bone_names[:10]}...")
+                return False
+
         # Step 1: Add bones to main armature using mesh analysis
         # Pass human_obj for accurate scalp reference from MPFB human mesh
         created_bones, weight_info = add_hair_bones_to_armature(
             armature_obj,
             hair_obj,
             human_obj=human_obj,
-            parent_bone_name="head",
+            parent_bone_name=parent_bone_name,
             verbose=verbose
         )
 

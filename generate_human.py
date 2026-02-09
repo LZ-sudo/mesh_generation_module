@@ -70,28 +70,8 @@ Example usage:
         '--rig-type',
         type=str,
         default='default_no_toes',
-        choices=['default', 'default_no_toes', 'game_engine'],
-        help='Type of rig to add (default: default_no_toes)'
-    )
-    
-    parser.add_argument(
-        '--no-rig',
-        action='store_true',
-        help='Skip adding rig (export mesh only)'
-    )
-
-    parser.add_argument(
-        '--fk-ik-hybrid',
-        action='store_true',
-        help='Configure FK/IK hybrid rig for IMU sensor-based motion capture'
-    )
-
-    parser.add_argument(
-        '--instrumented-arm',
-        type=str,
-        default='left',
-        choices=['left', 'right'],
-        help='Which arm has IMU sensors attached (default: left)'
+        choices=['default_no_toes', 'mixamo'],
+        help='Type of rig to add (default_no_toes for measurements, mixamo for animations)'
     )
 
     parser.add_argument(
@@ -118,6 +98,13 @@ Example usage:
         '--t-pose',
         action='store_true',
         help='Export the model in T-pose instead of the default A-pose'
+    )
+
+    parser.add_argument(
+        '--animation',
+        type=str,
+        default=None,
+        help='Path to Mixamo animation FBX file (requires --rig-type mixamo). Optional.'
     )
 
     return parser.parse_args(argv)
@@ -252,37 +239,16 @@ def main():
                 traceback.print_exc()
 
     # Add rigging
-    armature = None
-    if not args.no_rig:
-        print("\n" + "-"*70)
-        print("STEP 5: Adding Rig")
-        print("-"*70)
+    print("\n" + "-"*70)
+    print("STEP 5: Adding Rig")
+    print("-"*70)
 
-        try:
-            armature, _ = utils.add_standard_rig(basemesh, args.rig_type)
-
-            # Configure FK/IK hybrid rig if requested
-            if args.fk_ik_hybrid:
-                print("\n" + "-"*70)
-                print("STEP 5.5: Configuring FK/IK Hybrid Rig")
-                print("-"*70)
-                try:
-                    utils.configure_fk_ik_hybrid_rig(armature, args.instrumented_arm)
-                except Exception as e:
-                    print(f"\n⚠ Warning: Failed to configure FK/IK hybrid rig: {e}")
-                    
-                    if args.verbose:
-                        traceback.print_exc()
-        except Exception as e:
-            print(f"\n⚠ Warning: Failed to add rig: {e}")
-            print("Continuing without rig...")
-            
-            if args.verbose:
-                traceback.print_exc()
-    else:
-        print("\n" + "-"*70)
-        print("STEP 5: Skipping Rig (--no-rig specified)")
-        print("-"*70)
+    try:
+        armature, _ = utils.add_standard_rig(basemesh, args.rig_type)
+    except Exception as e:
+        print(f"\n✗ Error adding rig: {e}")
+        traceback.print_exc()
+        sys.exit(1)
 
     # Apply hair asset if requested
     hair_obj = None
@@ -336,6 +302,47 @@ def main():
             if args.verbose:
                 traceback.print_exc()
 
+    # Apply animation if provided
+    if args.animation and armature:
+        print("\n" + "-"*70)
+        print("STEP 5.7: Applying Mixamo Animation")
+        print("-"*70)
+
+        # Check if rig type is Mixamo
+        if args.rig_type != 'mixamo':
+            print("⚠ Warning: Animation import requires --rig-type mixamo")
+            print(f"  Current rig type: {args.rig_type}")
+            print("  Skipping animation import...")
+        else:
+            try:
+                # Import animation utilities
+                sys.path.insert(0, str(script_dir / "mesh_rigging_animation"))
+                import animation_utils
+
+                # Import Mixamo animation and replace rig
+                # This uses the animated rig from the FBX directly
+                new_armature, success = animation_utils.import_and_apply_mixamo_animation(
+                    mesh_obj=basemesh,
+                    current_armature=armature,
+                    animation_fbx_path=args.animation,
+                    remove_root_motion=True,
+                    verbose=args.verbose
+                )
+
+                if success and new_armature:
+                    print("✓ Mixamo animation applied successfully")
+                    # Update armature reference to the new animated rig
+                    armature = new_armature
+                else:
+                    print("⚠ Warning: Failed to apply animation")
+                    print("  Continuing with export without animation...")
+
+            except Exception as e:
+                print(f"⚠ Warning: Error applying animation: {e}")
+                if args.verbose:
+                    traceback.print_exc()
+                print("  Continuing with export...")
+
     # Export FBX
     print("\n" + "-"*70)
     print("STEP 6: Exporting FBX")
@@ -344,6 +351,16 @@ def main():
     try:
         # Get export settings from config if provided
         export_settings = config.get("export_settings", {})
+
+        # Enable animation baking if animation was applied
+        has_animation = (armature and
+                        armature.animation_data and
+                        armature.animation_data.action is not None)
+
+        if has_animation:
+            export_settings['bake_anim'] = True
+            if args.verbose:
+                print(f"  Animation detected - enabling bake_anim in export")
 
         # Prepare list of additional objects (hair, clothes, etc.)
         additional_objects = []
