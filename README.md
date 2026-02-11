@@ -454,26 +454,14 @@ python build_lookup_table.py --config config.json --no-delete
 ## References
 
 ### Software & Libraries
-- [Blender](https://www.blender.org) - 3D creation suite (GPL v3)
-- [MPFB2](http://www.makehumancommunity.org/) - MakeHuman for Blender (AGPL v3)
-- [retarget_bvh](https://bitbucket.org/Diffeomorphic/retarget_bvh/downloads/) - BVH/FBX animation retargeting addon by Thomas Larsson (GPL v2+)
+- [Blender](https://www.blender.org) - 3D creation suite
+- [MPFB2](http://www.makehumancommunity.org/) - MakeHuman for Blender
+- [MPFB Community Contributed Assets](http://www.makehumancommunity.org/content/user_contributed_assets.html) - Community hair assets
+- [retarget_bvh](https://bitbucket.org/Diffeomorphic/retarget_bvh/downloads/) - BVH/FBX animation retargeting addon by Thomas Larsson
 - [TabM](https://github.com/yandex-research/tabm) - Tabular regression model
 - [PyTorch](https://pytorch.org/) - Machine learning framework
-- [Mediapipe](https://ai.google.dev/edge/mediapipe/solutions/guide) - CV landmark detection
 
 ### Motion Capture Data
-- [CMU Graphics Lab Motion Capture Database](https://mocap.cs.cmu.edu) - Motion capture animations (freely redistributable, copyable, and modifiable without permission)
+- [CMU Graphics Lab Motion Capture Database](https://mocap.cs.cmu.edu) - Motion capture animations
 - [cmubvh](https://github.com/Shriinivas/cmubvh) - CMU mocap data converted to BVH format for use with retarget_bvh
 
-### Related Work
-- [MakeHuman](http://www.makehumancommunity.org/) - Open-source character creation
-
-## License
-
-This tool uses GPL v3 (Blender) and AGPL v3 (MPFB2) licensed software. Generated meshes are yours to use freely.
-
-## Credits
-
-- **Blender Foundation** - [blender.org](https://www.blender.org)
-- **MPFB2 Team** - [makehumancommunity.org](http://www.makehumancommunity.org/)
-- **Yandex Research** - TabM regression model
