@@ -5,7 +5,6 @@ output/
 test_scripts/
 json_inputs/
 lookup_tables/
-macroparameters_inference_weight_files/
 reference_code_files/
 CLAUDE.md
 

@@ -5,6 +5,8 @@ Automated tool for generating customizable 3D human meshes using Blender and MPF
 ## Module Structure
 
 ```
+├── macroparameters_inference_weight_files/ # tabM inference weights for MPFB macroparameters estimation
+│
 mesh_generation_module/
 ├── measurement_functions/          # Body measurement extraction
 │   ├── measurements.py             # Bone-based measurement functions
@@ -30,6 +32,7 @@ mesh_generation_module/
 │       ├── [HairName].mhclo        # Asset definition
 │       ├── [HairName].obj          # 3D mesh geometry
 │       └── [HairName].mhmat        # Material definition
+│       └── ...                     # Other files (normals, texture etc.)
 ├── run_blender.py                  # Blender launcher utility
 ├── generate_human.py               # Single character generation
 ├── compute_all_parameters.py       # End-to-end parameter computation
@@ -40,22 +43,22 @@ mesh_generation_module/
 
 ### Mesh Generation
 - **Parametric Humans**: Generate diverse characters from macroparameters (age, muscle, weight, height, proportions, gender, race)
-- **Cross-Platform**: Works on Windows, macOS, and Linux
+- **Windows-tested**: Developed and tested on Windows
 - **Headless Operation**: No GUI required for batch processing
-- **Rigging Support**: Automatic skeletal rig with multiple rig types (`default_no_toes`, `cmu_mb`)
+- **Rigging Support**: Automatic skeletal rig with 2 rig types (`default_no_toes`, `cmu_mb`)
 - **Animation Baking**: Retarget CMU Motion Capture Database BVH animations onto generated characters via the retarget_bvh addon
 - **Hair Assets**: Apply MakeHuman hair with automatic rigging and bone weight transfer
 - **FBX Export**: Compatible with Unity, Unreal Engine, and other 3D applications
 
 ### Measurement System
 - **Bone-Based Measurements**: 10 precise measurements extracted from armature
-- **Default Pose**: All measurements taken in anatomically consistent default pose
-- **CV-Compatible**: Measurements designed to match Mediapipe pose estimation landmarks
+- **T-Pose**: All measurements taken in anatomically consistent T-pose
+- **CV-Compatible**: Measurements designed to match ViTPose, Mediapipe pose estimation landmarks
 
 ### Machine Learning Pipeline
 - **TabM Regression**: Neural network for measurements → macroparameters inference
 - **Two-Phase Microparameter Adjustment**: Iterative refinement for accurate mesh recreation
-- **Batch Training**: Generate lookup tables with thousands of samples for training
+- **Training with synthetic data**: Generate lookup tables with thousands of samples for training
 
 ### Measurements Extracted
 
@@ -73,7 +76,7 @@ mesh_generation_module/
 | `shoulder_to_waist_cm` | Torso length | Perpendicular distance between shoulder and hip lines |
 | `neck_length_cm`* | Neck length | Bone chain: neck01 → neck02 (measured but not used for inference) |
 
-*Note: `neck_length_cm` is measured but not used as input for macroparameter inference because CV (Mediapipe) cannot reliably measure it. It's used only for microparameter adjustment (Phase 2 height reconciliation).
+*Note: `neck_length_cm` is measured but not used as input for macroparameter inference because CV (ViTPose) cannot reliably measure it. It's used only for microparameter adjustment (Phase 2 height reconciliation).
 
 ## Installation
 
@@ -84,8 +87,8 @@ mesh_generation_module/
    - Open Blender → Edit → Preferences → Extensions
    - Search for "MPFB" and click Install
    - Restart Blender
-3. **retarget_bvh Addon** *(optional, required for BVH animation baking)* - Download from [Diffeomorphic/retarget_bvh](https://bitbucket.org/Diffeomorphic/retarget_bvh/downloads/) (GNU GPL v2+):
-   - Download the latest `.zip` release
+3. **retarget_bvh Addon** *(Required for BVH animation baking)* - Download from [Diffeomorphic/retarget_bvh](https://bitbucket.org/Diffeomorphic/retarget_bvh/downloads/) (GNU GPL v2+):
+   - Download the 2026-01-30 `.zip` release
    - Open Blender → Edit → Preferences → Add-ons → Install from Disk
    - Select the downloaded zip and enable the addon
 4. **Python 3.11** (Required for Blender API compatibility)
@@ -113,52 +116,9 @@ pip install -r requirements.txt
 
 ## Quick Start
 
-### 1. Generate Single Character
+### 1. Generate Lookup Table
 
-Create a configuration file (e.g., `human_male_test.json`):
-
-```json
-{
-  "macro_settings": {
-    "gender": 1.0,
-    "age": 0.48862963914871216,
-    "muscle": 0.6260563731193542,
-    "weight": 0.7747020721435547,
-    "height": 0.5371153950691223,
-    "proportions": 0.7396003007888794,
-    "cupsize": 0.5,
-    "firmness": 0.5,
-    "race": {
-      "asian": 1.0,
-      "caucasian": 0.0,
-      "african": 0.0
-    }
-  },
-  "micro_settings": {
-    "measure-lowerleg-height-incr": 0.02744101061206962,
-    "measure-upperleg-height-incr": 0.02744101061206962,
-    "measure-napetowaist-dist-incr": 0.02744101061206962,
-    "measure-waisttohip-dist-incr": 0.02744101061206962,
-    "torso-scale-horiz-incr": 0.026564937015151894,
-    "measure-waist-circ-incr": 0.026564937015151894,
-    "head-scale-horiz-incr": 0.016596781655837403,
-    "head-scale-depth-incr": 0.016596781655837403,
-    "measure-neck-height-incr": 0.005397638885732131,
-    "measure-upperarm-length-incr": 0.02246926840901563,
-    "measure-lowerarm-length-incr": 0.021840181286682137
-  }
-}
-```
-
-Generate the mesh:
-
-```bash
-python run_blender.py --script generate_human.py -- --config human_test.json
-```
-
-### 2. Generate Lookup Table
-
-Create a lookup table configuration (e.g., `configs/lookup_table_config_female_asian.json`):
+Use a lookup table configuration in configs (e.g., `configs/lookup_table_config_female_asian.json`):
 
 ```json
 {
@@ -210,7 +170,7 @@ python build_lookup_table.py --config configs/lookup_table_config_female_asian.j
 
 Output: `lookup_tables/lookup_table_female_asian.csv`
 
-### 3. Train ML Model
+### 2. Train ML Model
 
 Train a TabM regression model on the lookup table:
 
@@ -221,7 +181,7 @@ python measurement_to_parameters_inference_models/train_model.py \
   --epochs 100
 ```
 
-### 4. Infer Parameters from Measurements
+### 3. Infer Parameters from Measurements
 
 Create a measurements JSON file (e.g., `subject_measurements.json`):
 
@@ -251,6 +211,45 @@ python compute_all_parameters.py \
   --input subject_measurements.json \
   --models models/female_asian_models.pkl \
   --output parameters.json
+```
+
+A mesh configuration file will be generated from compute_all_parameters.py:
+
+### 1. Generate Single Character
+
+Create a configuration file (e.g., `human_male_test.json`):
+
+```json
+{
+  "macro_settings": {
+    "gender": 1.0,
+    "age": 0.48862963914871216,
+    "muscle": 0.6260563731193542,
+    "weight": 0.7747020721435547,
+    "height": 0.5371153950691223,
+    "proportions": 0.7396003007888794,
+    "cupsize": 0.5,
+    "firmness": 0.5,
+    "race": {
+      "asian": 1.0,
+      "caucasian": 0.0,
+      "african": 0.0
+    }
+  },
+  "micro_settings": {
+    "measure-lowerleg-height-incr": 0.02744101061206962,
+    "measure-upperleg-height-incr": 0.02744101061206962,
+    "measure-napetowaist-dist-incr": 0.02744101061206962,
+    "measure-waisttohip-dist-incr": 0.02744101061206962,
+    "torso-scale-horiz-incr": 0.026564937015151894,
+    "measure-waist-circ-incr": 0.026564937015151894,
+    "head-scale-horiz-incr": 0.016596781655837403,
+    "head-scale-depth-incr": 0.016596781655837403,
+    "measure-neck-height-incr": 0.005397638885732131,
+    "measure-upperarm-length-incr": 0.02246926840901563,
+    "measure-lowerarm-length-incr": 0.021840181286682137
+  }
+}
 ```
 
 Generate the mesh from computed parameters:
@@ -426,14 +425,12 @@ After running `compute_all_parameters.py`:
 
 ### Blender Path Detection
 
-The script automatically finds Blender. To manually specify:
+The script automatically finds Blender. To manually specify, edit .blender_config.json:
 
-```bash
-# Set environment variable
-export BLENDER_PATH="/path/to/blender"
-
-# Or use command line
-python run_blender.py --blender-path "/path/to/blender" --script generate_human.py -- --config human.json
+```json
+{
+  "blender_path": "C:\\Program Files\\Blender Foundation\\Blender 5.0\\blender.exe"
+}
 ```
 
 ### Lookup Table Configuration
@@ -445,6 +442,8 @@ Configuration files specify fixed and grid parameters:
 - Total combinations = product of all grid dimensions
 
 Example: 11 × 11 × 11 × 11 × 1 = 14,641 combinations
+
+Grid search approach is still available, but **LHS** is the preferred approach for data generation due to its less sparse and more comprehensive coverage
 
 ### Performance Tuning
 
@@ -458,42 +457,6 @@ python build_lookup_table.py --config config.json --dry-run
 # Keep models for debugging
 python build_lookup_table.py --config config.json --no-delete
 ```
-
-## Troubleshooting
-
-### "Blender not found"
-
-1. Set environment variable:
-   ```bash
-   export BLENDER_PATH="/Applications/Blender.app/Contents/MacOS/Blender"  # macOS
-   # $env:BLENDER_PATH="C:\Program Files\Blender Foundation\Blender 4.5\blender.exe"  # Windows
-   ```
-
-2. Or specify manually:
-   ```bash
-   python run_blender.py --blender-path "/path/to/blender" --script generate_human.py -- --config human.json
-   ```
-
-### "MPFB2 addon not found"
-
-1. Open Blender GUI
-2. Edit → Preferences → Extensions
-3. Search "MPFB" and click Install
-4. Restart Blender
-
-### Missing measurements in CSV
-
-Ensure all 10 required measurements are present in input JSON:
-- height_cm, shoulder_width_cm, hip_width_cm, head_width_cm
-- upper_arm_length_cm, forearm_length_cm, hand_length_cm
-- upper_leg_length_cm, lower_leg_length_cm, shoulder_to_waist_cm
-
-### Poor reconstruction accuracy
-
-1. **Train with more data**: Increase grid granularity (smaller step sizes)
-2. **Match demographics**: Use models trained on same gender/race as target
-3. **Check measurement quality**: Ensure CV measurements are accurate
-4. **Use microparameter adjustment**: Don't skip `--no-micro-adjustment` flag
 
 ## References
 
