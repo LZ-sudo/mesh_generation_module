@@ -91,7 +91,7 @@ mesh_generation_module/
    - Download the 2026-01-30 `.zip` release
    - Open Blender → Edit → Preferences → Add-ons → Install from Disk
    - Select the downloaded zip and enable the addon
-4. **Python 3.11** (Required for Blender API compatibility)
+4. **Python 3.11-3.13** (Support for dependencies)
 
 ### Python Dependencies
 
