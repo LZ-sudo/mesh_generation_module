@@ -106,10 +106,10 @@ def apply_cmu_mb_animation(
             try:
                 mod.BD.ensureInited(bpy.context.scene)
                 if verbose:
-                    print("  retarget_bvh BD initialized")
+                    print("  BD initialized: source/target rig tables loaded")
             except Exception as bd_err:
-                if verbose:
-                    print(f"  Warning: BD.ensureInited failed: {bd_err}")
+                print(f"  Warning: BD.ensureInited failed: {bd_err}")
+                print("  Retarget will use Automatic rig detection")
             break
 
     bpy.context.view_layer.objects.active = armature
@@ -137,9 +137,25 @@ def apply_cmu_mb_animation(
     bpy.context.scene.frame_start = int(frame_range[0])
     bpy.context.scene.frame_end = int(frame_range[1])
 
-    if verbose:
-        print(f"  Action: {action.name}")
-        print(f"  Frames: {int(frame_range[0])} - {int(frame_range[1])}")
+    print(f"  Action: {action.name}, Frames: {int(frame_range[0])} - {int(frame_range[1])}")
+
+    # Remove orphaned actions left by retarget_bvh. With bake_anim_use_all_actions=True
+    # the FBX exporter iterates bpy.data.actions and exports every action whose slot
+    # validates against the armature - including the source BVH action that
+    # retarget_bvh loaded then orphaned when it deleted the source rig. If that
+    # orphaned action shares bone names with the target armature (which it does for
+    # CMU MB rigs), it passes find_validate_action_slot() and is exported as a second
+    # take. The FBX importer activates the first take on import, which may be the
+    # wrong one and appear as T-pose.
+    removed = []
+    for orphan in list(bpy.data.actions):
+        if orphan is action:
+            continue
+        if orphan.users == 0:
+            removed.append(orphan.name)
+            bpy.data.actions.remove(orphan)
+    if removed:
+        print(f"  Removed orphaned actions: {removed}")
 
     return armature, True
 

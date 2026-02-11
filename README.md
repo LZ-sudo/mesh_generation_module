@@ -19,6 +19,8 @@ mesh_generation_module/
 │   └── build_lookup_table.py       # Lookup table generator (For training TabM model)
 ├── mesh_hair_generation/           # Hair asset application
 │   └── mpfb_hair_assets_application.py  # Hair asset library
+├── mesh_rigging_animation/         # Animation retargeting
+│   └── animation_utils.py          # CMU MB BVH/FBX animation retargeting library
 ├── configs/                        # Configuration files
 │   └── lookup_table_config_*.json  # Lookup table configurations
 ├── lookup_tables/                  # Generated measurement databases
@@ -40,7 +42,8 @@ mesh_generation_module/
 - **Parametric Humans**: Generate diverse characters from macroparameters (age, muscle, weight, height, proportions, gender, race)
 - **Cross-Platform**: Works on Windows, macOS, and Linux
 - **Headless Operation**: No GUI required for batch processing
-- **Rigging Support**: Automatic skeletal rig with multiple rig types (default, default_no_toes, game_engine)
+- **Rigging Support**: Automatic skeletal rig with multiple rig types (`default_no_toes`, `cmu_mb`)
+- **Animation Baking**: Retarget CMU Motion Capture Database BVH animations onto generated characters via the retarget_bvh addon
 - **Hair Assets**: Apply MakeHuman hair with automatic rigging and bone weight transfer
 - **FBX Export**: Compatible with Unity, Unreal Engine, and other 3D applications
 
@@ -81,7 +84,11 @@ mesh_generation_module/
    - Open Blender → Edit → Preferences → Extensions
    - Search for "MPFB" and click Install
    - Restart Blender
-3. **Python 3.11** (Required for Blender API compatibility)
+3. **retarget_bvh Addon** *(optional, required for BVH animation baking)* - Download from [Diffeomorphic/retarget_bvh](https://bitbucket.org/Diffeomorphic/retarget_bvh/downloads/) (GNU GPL v2+):
+   - Download the latest `.zip` release
+   - Open Blender → Edit → Preferences → Add-ons → Install from Disk
+   - Select the downloaded zip and enable the addon
+4. **Python 3.11** (Required for Blender API compatibility)
 
 ### Python Dependencies
 
@@ -275,14 +282,11 @@ All macroparameters use values between **0.0 and 1.0**:
 ### Rig Types
 
 ```bash
-# Default rig with toes
-python run_blender.py --script generate_human.py -- --config human.json --rig-type default
-
-# Simplified rig without toes (recommended for games)
+# Default rig without toes (for measurement extraction)
 python run_blender.py --script generate_human.py -- --config human.json --rig-type default_no_toes
 
-# Optimized for game engines
-python run_blender.py --script generate_human.py -- --config human.json --rig-type game_engine
+# CMU MB rig (for CMU Graphics Lab Motion Capture Database BVH animation baking)
+python run_blender.py --script generate_human.py -- --config human.json --rig-type cmu_mb
 ```
 
 ### Hair Assets
@@ -293,15 +297,6 @@ Apply MakeHuman hair assets (.mhclo format) with automatic rigging for dynamic m
 # Generate human with hair
 python run_blender.py --script generate_human.py -- --config human.json --hair Short_Hair_B
 ```
-
-**Setting up hair assets:**
-
-1. Download hair assets from [MakeHuman Community Assets](http://www.makehumancommunity.org/content/user_contributed_assets.html)
-2. Create folder structure: `mpfb_hair_assets/[HairName]/`
-3. Place three required files in the folder:
-   - `[HairName].mhclo` - Asset definition
-   - `[HairName].obj` - 3D mesh geometry
-   - `[HairName].mhmat` - Material definition
 
 **Available hair assets:**
 
@@ -318,6 +313,20 @@ print(assets)  # e.g., ['Short_Hair_B', 'Long_Hair_A', ...]
 - 137-bone skeleton for realistic dynamic movement
 - Compatible with Unreal Engine physics and cloth simulation
 - Exports with proper parent-child hierarchy
+
+### Animation Baking
+
+Retarget BVH motion capture animations from the [CMU Graphics Lab Motion Capture Database](http://mocap.cs.cmu.edu/) onto generated characters. Requires the `cmu_mb` rig type and the retarget_bvh addon.
+
+```bash
+# Generate character with CMU MB rig and bake a BVH animation
+python run_blender.py --script generate_human.py -- \
+  --config human.json \
+  --rig-type cmu_mb \
+  --animation path/to/animation.bvh
+```
+
+The retargeted animation is baked into the exported FBX, ready for use in Unity, Unreal Engine, or any other 3D application.
 
 ### Two-Phase Microparameter Adjustment
 
@@ -491,13 +500,17 @@ Ensure all 10 required measurements are present in input JSON:
 ### Software & Libraries
 - [Blender](https://www.blender.org) - 3D creation suite (GPL v3)
 - [MPFB2](http://www.makehumancommunity.org/) - MakeHuman for Blender (AGPL v3)
+- [retarget_bvh](https://bitbucket.org/Diffeomorphic/retarget_bvh/downloads/) - BVH/FBX animation retargeting addon by Thomas Larsson (GPL v2+)
 - [TabM](https://github.com/yandex-research/tabm) - Tabular regression model
 - [PyTorch](https://pytorch.org/) - Machine learning framework
 - [Mediapipe](https://ai.google.dev/edge/mediapipe/solutions/guide) - CV landmark detection
 
+### Motion Capture Data
+- [CMU Graphics Lab Motion Capture Database](https://mocap.cs.cmu.edu) - Motion capture animations (freely redistributable, copyable, and modifiable without permission)
+- [cmubvh](https://github.com/Shriinivas/cmubvh) - CMU mocap data converted to BVH format for use with retarget_bvh
+
 ### Related Work
 - [MakeHuman](http://www.makehumancommunity.org/) - Open-source character creation
-- [SMPL](https://smpl.is.tue.mpg.de/) - Skinned Multi-Person Linear model
 
 ## License
 
