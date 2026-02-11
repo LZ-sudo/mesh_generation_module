@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# NOTE: This module is currently unused. Hair physics has been replaced by
+# Chaos Cloth simulation in Unreal Engine. The hair mesh is now skinned
+# directly to the head bone via setup_hair_for_cloth() in
+# mpfb_hair_assets_application.py. Kept for future reference.
 """
 Hair Physics Rigging Generator
 

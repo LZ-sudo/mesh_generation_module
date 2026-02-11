@@ -3,12 +3,13 @@
 MPFB Hair Assets Application Library
 
 This module provides functions to apply MakeHuman hair assets (.mhclo format)
-to MPFB2 human meshes with proper rigging for game engines like Unreal.
+to MPFB2 human meshes with head-bone rigging for Chaos Cloth simulation in
+Unreal Engine.
 
 Functions:
     - find_hair_asset(): Locate a hair asset by name in the mpfb_hair_assets folder
     - add_hair_to_human(): Add hair asset to a human mesh
-    - setup_hair_rigging(): Set up rigging for hair with dynamic bone generation
+    - setup_hair_for_cloth(): Rig hair mesh to head bone with Chaos Cloth weight hints
     - apply_hair_asset(): Complete workflow to add and rig hair asset
 
 Example usage:
@@ -28,6 +29,8 @@ from typing import Optional
 import importlib
 import traceback
 
+import numpy as np
+
 # Add parent directory to path for utils import
 # (this file is in mesh_hair_generation, utils is in parent dir)
 script_dir = Path(__file__).parent.absolute()
@@ -36,12 +39,6 @@ if str(parent_dir) not in sys.path:
     sys.path.insert(0, str(parent_dir))
 
 import utils
-
-# Import hair rigging functions from generate_hair_rigging
-from generate_hair_rigging import (
-    add_hair_bones_to_armature,
-    calculate_hair_vertex_weights,
-)
 
 
 def find_hair_asset(hair_name: str, assets_dir: Optional[Path] = None) -> dict:
@@ -172,92 +169,104 @@ def add_hair_to_human(human_obj, hair_asset_path: Path, verbose: bool = False):
         raise
 
 
-def setup_hair_rigging(
+def setup_hair_for_cloth(
     hair_obj,
     human_obj,
     armature_obj,
     verbose: bool = False
 ):
     """
-    Set up rigging for hair mesh using dynamic bone generation.
+    Set up hair mesh for Chaos Cloth simulation in Unreal Engine.
 
-    Analyzes the hair mesh geometry and generates physics bones dynamically,
-    using the human mesh's scalp as reference for accurate bone placement.
+    Skins all hair vertices to the head bone with weight 1.0, so the hair
+    follows the character's head. Also adds a vertex color layer
+    ('cloth_weights') encoding simulation weight hints: 0.0 at the
+    scalp/roots (pinned), 1.0 at the hair tips (free to simulate), computed
+    from each vertex's distance to the head bone center.
 
-    Steps:
-    1. Detect rig type and determine correct parent bone name
-    2. Analyze hair mesh geometry to determine bone positions
-    3. Add bones to main armature (parented to head bone)
-    4. Calculate and assign vertex weights
-    5. Set up armature modifier on hair mesh
+    In Unreal Engine, after FBX import:
+    - Add a Chaos Cloth asset to the Skeletal Mesh
+    - Reference the 'cloth_weights' vertex color layer to auto-populate
+      Max Distance values in the Cloth Paint tool
 
     Args:
         hair_obj: The hair mesh object
-        human_obj: The human mesh object (used for scalp reference)
+        human_obj: The human mesh object (unused, kept for API compatibility)
         armature_obj: The armature/rig object
         verbose: Enable verbose output
 
     Returns:
         True if successful, False otherwise
-
-    Note:
-        Automatically detects rig type:
-        - default_no_toes rig uses 'head' bone
-        - mixamo rig uses 'mixamorig:Head' bone
     """
     try:
-        import bpy
-
         if verbose:
-            print("  Setting up hair rigging with dynamic bone generation...")
+            print("  Setting up hair mesh for Chaos Cloth simulation...")
 
-        # Detect rig type by checking bone names
+        # Detect head bone name
         bone_names = [bone.name for bone in armature_obj.data.bones]
 
-        # Determine parent bone name based on rig type
         if 'mixamorig:Head' in bone_names:
-            parent_bone_name = 'mixamorig:Head'
-            if verbose:
-                print(f"    Detected Mixamo rig, using parent bone: {parent_bone_name}")
+            head_bone_name = 'mixamorig:Head'
         elif 'head' in bone_names:
-            parent_bone_name = 'head'
-            if verbose:
-                print(f"    Detected default rig, using parent bone: {parent_bone_name}")
+            head_bone_name = 'head'
         else:
-            # Fallback: search for any bone with "head" in name
             head_bones = [name for name in bone_names if 'head' in name.lower()]
             if head_bones:
-                parent_bone_name = head_bones[0]
-                if verbose:
-                    print(f"    Using fallback head bone: {parent_bone_name}")
+                head_bone_name = head_bones[0]
             else:
-                print("  ✗ Error: Cannot find head bone in armature")
+                print("  Error: Cannot find head bone in armature")
                 print(f"    Available bones: {bone_names[:10]}...")
                 return False
 
-        # Step 1: Add bones to main armature using mesh analysis
-        # Pass human_obj for accurate scalp reference from MPFB human mesh
-        created_bones, weight_info = add_hair_bones_to_armature(
-            armature_obj,
-            hair_obj,
-            human_obj=human_obj,
-            parent_bone_name=parent_bone_name,
-            verbose=verbose
-        )
+        if verbose:
+            print(f"    Head bone: {head_bone_name}")
 
-        if not created_bones:
-            print("  Failed to create hair bones")
-            return False
+        mesh = hair_obj.data
+
+        # Clear existing vertex groups and assign all vertices to head bone
+        hair_obj.vertex_groups.clear()
+        head_vg = hair_obj.vertex_groups.new(name=head_bone_name)
+        all_indices = [v.index for v in mesh.vertices]
+        head_vg.add(all_indices, 1.0, 'REPLACE')
 
         if verbose:
-            print(f"  Hair bones added: {len(created_bones)}")
+            print(f"    Assigned {len(all_indices)} vertices to '{head_bone_name}' with weight 1.0")
 
-        # Step 2: Parent hair mesh to armature
+        # Compute cloth weight hints from distance to head bone (rest pose)
+        # head_local is in armature local space; matrix_world converts to world space
+        head_bone = armature_obj.data.bones[head_bone_name]
+        head_bone_world_pos = armature_obj.matrix_world @ head_bone.head_local
+        world_matrix = hair_obj.matrix_world
+        vertices_world = np.array([world_matrix @ v.co for v in mesh.vertices])
+        head_pos = np.array(head_bone_world_pos)
+        distances = np.linalg.norm(vertices_world - head_pos, axis=1)
+
+        min_d, max_d = distances.min(), distances.max()
+        if max_d > min_d:
+            cloth_weights = (distances - min_d) / (max_d - min_d)
+        else:
+            cloth_weights = np.zeros(len(distances))
+
+        # Add vertex color layer for cloth weight hints (0.0=pinned, 1.0=free)
+        if "cloth_weights" in mesh.color_attributes:
+            mesh.color_attributes.remove(mesh.color_attributes["cloth_weights"])
+        color_attr = mesh.color_attributes.new(
+            name="cloth_weights",
+            type='BYTE_COLOR',
+            domain='POINT'
+        )
+        for i, w in enumerate(cloth_weights):
+            w_f = float(w)
+            color_attr.data[i].color = (w_f, w_f, w_f, 1.0)
+
+        if verbose:
+            print("    Added 'cloth_weights' vertex color layer (0.0=scalp, 1.0=tips)")
+
+        # Parent hair mesh to armature
         hair_obj.parent = armature_obj
         hair_obj.matrix_parent_inverse = armature_obj.matrix_world.inverted()
 
-        # Step 3: Add armature modifier to hair
-        # Remove existing armature modifiers first
+        # Remove existing armature modifiers
         for mod in list(hair_obj.modifiers):
             if mod.type == 'ARMATURE':
                 hair_obj.modifiers.remove(mod)
@@ -267,50 +276,13 @@ def setup_hair_rigging(
         arm_mod.use_vertex_groups = True
 
         if verbose:
-            print("  Added armature modifier to hair")
-
-        # Step 4: Calculate and assign vertex weights
-        weights_assigned = False
-
-        if weight_info:
-            # Use dynamically calculated weights (preferred)
-            if verbose:
-                print("  Calculating vertex weights from mesh analysis...")
-            weights_assigned = calculate_hair_vertex_weights(
-                hair_obj,
-                weight_info,
-                armature_obj,
-                verbose=verbose
-            )
-
-        # Step 5: Fallback - transfer weights from human if dynamic weights failed
-        if not weights_assigned:
-            if verbose:
-                print("  Transferring weights from human mesh as fallback...")
-            try:
-                # Add data transfer modifier to copy weights from human
-                dt_mod = hair_obj.modifiers.new(name="DataTransfer", type='DATA_TRANSFER')
-                dt_mod.object = human_obj
-                dt_mod.use_vert_data = True
-                dt_mod.data_types_verts = {'VGROUP_WEIGHTS'}
-                dt_mod.vert_mapping = 'NEAREST'
-
-                # Apply the modifier to bake the weights
-                bpy.context.view_layer.objects.active = hair_obj
-                bpy.ops.object.modifier_apply(modifier=dt_mod.name)
-
-                if verbose:
-                    print("  Transferred weights from human mesh")
-            except Exception as e:
-                print(f"  Warning: Weight transfer failed: {e}")
-
-        if verbose:
-            print("  Hair rigging setup complete")
+            print("    Added armature modifier")
+            print("  Hair mesh ready for Chaos Cloth simulation in Unreal Engine")
 
         return True
 
     except Exception as e:
-        print(f"Error setting up hair rigging: {e}")
+        print(f"Error setting up hair for cloth: {e}")
         if verbose:
             traceback.print_exc()
         return False
@@ -369,8 +341,7 @@ def apply_hair_asset(
             print(f"Failed to create hair object")
             return None
 
-        # Set up rigging with dynamic bone generation
-        success = setup_hair_rigging(
+        success = setup_hair_for_cloth(
             hair_obj,
             human_obj,
             armature_obj,
@@ -378,7 +349,7 @@ def apply_hair_asset(
         )
 
         if not success:
-            print(f"Warning: Hair rigging setup had issues")
+            print(f"Warning: Hair cloth setup had issues")
 
         if verbose:
             print(f"Hair asset applied successfully")

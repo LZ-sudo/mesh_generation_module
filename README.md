@@ -107,13 +107,6 @@ myenv/Scripts/activate  # Windows
 pip install -r requirements.txt
 ```
 
-**Key dependencies:**
-- PyTorch (for ML models)
-- tabm (TabM regression)
-- pandas, numpy (data processing)
-- scikit-learn (preprocessing)
-- tqdm (progress bars)
-
 ## Quick Start
 
 ### 1. Generate Lookup Table
