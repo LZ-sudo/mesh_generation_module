@@ -70,8 +70,8 @@ Example usage:
         '--rig-type',
         type=str,
         default='default_no_toes',
-        choices=['default_no_toes', 'mixamo'],
-        help='Type of rig to add (default_no_toes for measurements, mixamo for animations)'
+        choices=['default_no_toes', 'cmu_mb'],
+        help='Type of rig to add (default_no_toes for measurements, cmu_mb for CMU mocap BVH/FBX animation retargeting via retarget_bvh)'
     )
 
     parser.add_argument(
@@ -104,7 +104,7 @@ Example usage:
         '--animation',
         type=str,
         default=None,
-        help='Path to Mixamo animation FBX file (requires --rig-type mixamo). Optional.'
+        help='Path to animation file (BVH or FBX). Requires --rig-type cmu_mb. Retargeted via the retarget_bvh addon (mcp.load_and_retarget). Optional.'
     )
 
     return parser.parse_args(argv)
@@ -305,40 +305,33 @@ def main():
     # Apply animation if provided
     if args.animation and armature:
         print("\n" + "-"*70)
-        print("STEP 5.7: Applying Mixamo Animation")
+        print("STEP 5.7: Applying Animation")
         print("-"*70)
 
-        # Check if rig type is Mixamo
-        if args.rig_type != 'mixamo':
-            print("⚠ Warning: Animation import requires --rig-type mixamo")
+        if args.rig_type != 'cmu_mb':
+            print("Warning: Animation import requires --rig-type cmu_mb")
             print(f"  Current rig type: {args.rig_type}")
             print("  Skipping animation import...")
         else:
             try:
-                # Import animation utilities
                 sys.path.insert(0, str(script_dir / "mesh_rigging_animation"))
                 import animation_utils
 
-                # Import Mixamo animation and replace rig
-                # This uses the animated rig from the FBX directly
-                new_armature, success = animation_utils.import_and_apply_mixamo_animation(
-                    mesh_obj=basemesh,
-                    current_armature=armature,
-                    animation_fbx_path=args.animation,
-                    remove_root_motion=True,
+                new_armature, success = animation_utils.apply_cmu_mb_animation(
+                    armature=armature,
+                    animation_path=args.animation,
                     verbose=args.verbose
                 )
 
                 if success and new_armature:
-                    print("✓ Mixamo animation applied successfully")
-                    # Update armature reference to the new animated rig
+                    print("Animation applied successfully")
                     armature = new_armature
                 else:
-                    print("⚠ Warning: Failed to apply animation")
+                    print("Warning: Failed to apply animation")
                     print("  Continuing with export without animation...")
 
             except Exception as e:
-                print(f"⚠ Warning: Error applying animation: {e}")
+                print(f"Warning: Error applying animation: {e}")
                 if args.verbose:
                     traceback.print_exc()
                 print("  Continuing with export...")
@@ -359,8 +352,18 @@ def main():
 
         if has_animation:
             export_settings['bake_anim'] = True
+            # bake_anim_use_all_actions=True is required for Blender 5.0 slot-based
+            # actions. It is the ONLY export path that explicitly reassigns
+            # ob.animation_data.action_slot before sampling frames, which triggers
+            # the depsgraph to evaluate slot-based animation correctly.
+            # The single-action path (use_all_actions=False) skips the slot
+            # reassignment and samples rest poses at every frame (static export).
+            export_settings['bake_anim_use_all_actions'] = True
+            export_settings['bake_anim_use_nla_strips'] = False
+            # Disable simplification: factor > 0 can collapse animation curves.
+            export_settings['bake_anim_simplify_factor'] = 0.0
             if args.verbose:
-                print(f"  Animation detected - enabling bake_anim in export")
+                print(f"  Animation detected - enabling bake_anim with use_all_actions=True (Blender 5.0 slot path)")
 
         # Prepare list of additional objects (hair, clothes, etc.)
         additional_objects = []

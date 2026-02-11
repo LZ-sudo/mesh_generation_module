@@ -907,9 +907,21 @@ def export_fbx(basemesh, armature, output_path: str, export_settings: Dict[str, 
     bpy.ops.object.select_all(action='DESELECT')
 
     if armature:
-        armature.select_set(True)
-        bpy.context.view_layer.objects.active = armature
-        bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
+        arm_has_anim = (
+            armature.animation_data is not None
+            and armature.animation_data.action is not None
+        )
+        if arm_has_anim:
+            # Skip transform_apply on animated armatures. Calling it after
+            # animation is assigned disrupts the depsgraph evaluation in
+            # Blender 5.0's slot-based action system, causing the FBX bake to
+            # read the rest pose at every frame (completely static export).
+            # The MPFB2 Mixamo rig already has identity transforms so this is safe.
+            print("  Skipping transform_apply on armature (has animation data)")
+        else:
+            armature.select_set(True)
+            bpy.context.view_layer.objects.active = armature
+            bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
 
     basemesh.select_set(True)
     bpy.context.view_layer.objects.active = basemesh
@@ -983,6 +995,22 @@ def export_fbx(basemesh, armature, output_path: str, export_settings: Dict[str, 
     print(f"  - Axis: Forward={default_settings['axis_forward']}, Up={default_settings['axis_up']}")
     print(f"  - Bone axis: Primary={default_settings['primary_bone_axis']}, Secondary={default_settings['secondary_bone_axis']}")
     print(f"  - Animation baking: {'ENABLED' if default_settings['bake_anim'] else 'DISABLED'}")
+
+    # Confirm animation is still assigned immediately before export.
+    # transform_apply or any other intervening op could silently clear it.
+    if default_settings['bake_anim'] and armature:
+        action = (armature.animation_data.action
+                  if armature.animation_data else None)
+        if action:
+            fr = action.frame_range
+            print(f"  - Action before export  : {action.name}  "
+                  f"frames {int(fr[0])}-{int(fr[1])}")
+            slot = (armature.animation_data.action_slot
+                    if hasattr(armature.animation_data, 'action_slot') else None)
+            print(f"  - Slot before export    : "
+                  f"{slot.name_display if slot else 'none'}")
+        else:
+            print("  WARNING: bake_anim is True but armature has no action assigned!")
 
     # Export FBX
     bpy.ops.export_scene.fbx(
