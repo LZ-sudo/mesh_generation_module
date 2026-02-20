@@ -24,21 +24,31 @@ from cometa_parser import IMUFrame, QuaternionFrame
 
 @dataclass
 class CalibrationData:
-    """Calibration quaternions for transforming Cometa frame to BVH frame."""
-    chest_offset: np.ndarray  # [w, x, y, z]
-    upper_arm_offset: np.ndarray
-    forearm_offset: np.ndarray
-    hand_offset: np.ndarray
+    """
+    Calibration quaternions for transforming Cometa frame to BVH frame.
+
+    Uses anatomical T-pose calibration with correct skeletal targets:
+    - Chest: calibrated to identity (upright, facing forward)
+    - Upper arm: calibrated to -90° Y rotation (horizontal extension to the right)
+    - Forearm: calibrated to match upper arm in T-pose (straight elbow)
+    - Hand: calibrated to match forearm in T-pose (straight wrist)
+    - This ensures correct T-pose while preserving motion range
+    """
+    chest_offset: np.ndarray  # [w, x, y, z] - calibration to identity (upright)
+    upper_arm_offset: np.ndarray  # [w, x, y, z] - calibration to horizontal (-90° Y)
+    forearm_offset: np.ndarray  # [w, x, y, z] - calibration to match upper arm in T-pose
+    hand_offset: np.ndarray  # [w, x, y, z] - calibration to match forearm in T-pose
 
     def __str__(self):
         return (
-            f"Chest:     [{self.chest_offset[0]:+.4f}, {self.chest_offset[1]:+.4f}, "
+            f"Calibration offsets:\n"
+            f"  Chest:     [{self.chest_offset[0]:+.4f}, {self.chest_offset[1]:+.4f}, "
             f"{self.chest_offset[2]:+.4f}, {self.chest_offset[3]:+.4f}]\n"
-            f"Upper Arm: [{self.upper_arm_offset[0]:+.4f}, {self.upper_arm_offset[1]:+.4f}, "
+            f"  Upper Arm: [{self.upper_arm_offset[0]:+.4f}, {self.upper_arm_offset[1]:+.4f}, "
             f"{self.upper_arm_offset[2]:+.4f}, {self.upper_arm_offset[3]:+.4f}]\n"
-            f"Forearm:   [{self.forearm_offset[0]:+.4f}, {self.forearm_offset[1]:+.4f}, "
+            f"  Forearm:   [{self.forearm_offset[0]:+.4f}, {self.forearm_offset[1]:+.4f}, "
             f"{self.forearm_offset[2]:+.4f}, {self.forearm_offset[3]:+.4f}]\n"
-            f"Hand:      [{self.hand_offset[0]:+.4f}, {self.hand_offset[1]:+.4f}, "
+            f"  Hand:      [{self.hand_offset[0]:+.4f}, {self.hand_offset[1]:+.4f}, "
             f"{self.hand_offset[2]:+.4f}, {self.hand_offset[3]:+.4f}]"
         )
 
@@ -55,12 +65,15 @@ def compute_tpose_calibration(
     The T-pose in BVH (CMU mocap convention):
     - Character facing +Z (forward), Y-up, X-right (right-handed)
     - Chest/spine: Upright, facing forward → identity rotation (1, 0, 0, 0)
-    - Right upper arm: Extended horizontally to the right (+X direction)
-      → 90° rotation around Y-axis
+    - Right upper arm: Extended horizontally to the right (-X direction from shoulder)
+      → -90° rotation around Y-axis
     - Right forearm: Continuation of upper arm (straight elbow)
-      → same as upper arm (90° around Y)
+      → same as upper arm (-90° around Y)
     - Right hand: Palm down, fingers forward
       → same as forearm with possible wrist offset
+
+    This function computes sensor-to-bone calibration offsets that transform
+    raw sensor orientations to these anatomically correct T-pose targets.
 
     Args:
         frames: List of all IMU frames
@@ -92,49 +105,92 @@ def compute_tpose_calibration(
     hand_avg = _average_quaternions([f.hand for f in tpose_frames])
 
     if verbose:
-        print(f"\n  T-pose average quaternions (Cometa frame):")
+        print(f"\n  T-pose average quaternions (raw sensor frame):")
         print(f"    Chest:     [{chest_avg[0]:+.4f}, {chest_avg[1]:+.4f}, {chest_avg[2]:+.4f}, {chest_avg[3]:+.4f}]")
         print(f"    Upper Arm: [{upper_arm_avg[0]:+.4f}, {upper_arm_avg[1]:+.4f}, {upper_arm_avg[2]:+.4f}, {upper_arm_avg[3]:+.4f}]")
         print(f"    Forearm:   [{forearm_avg[0]:+.4f}, {forearm_avg[1]:+.4f}, {forearm_avg[2]:+.4f}, {forearm_avg[3]:+.4f}]")
         print(f"    Hand:      [{hand_avg[0]:+.4f}, {hand_avg[1]:+.4f}, {hand_avg[2]:+.4f}, {hand_avg[3]:+.4f}]")
 
-    # Define BVH T-pose target quaternions
-    # BVH coordinate system: Y-up, Z-forward, X-right
+    # ANATOMICAL T-POSE CALIBRATION STRATEGY:
     #
-    # Strategy: The sensors are mounted on the body and have their own coordinate frame.
-    # We need to find the rotation that transforms from sensor frame to BVH bone frame.
+    # Problem: Each sensor has its own mounting orientation. We need to calibrate
+    # sensors to match the anatomical T-pose in BVH coordinate frame.
     #
-    # Based on analysis of T-pose sensor data, the sensors appear to use a coordinate
-    # system where their axes don't align with anatomical/skeletal axes. We empirically
-    # determine the transform by analyzing what rotation makes the T-pose sensor reading
-    # map to the desired BVH T-pose (identity rotation).
+    # BVH T-pose (CMU mocap convention):
+    # - Character faces +Z (forward), +Y is up, +X is right
+    # - Chest: Upright, facing forward → identity rotation
+    # - Right arm: Extended horizontally to the right → -90° rotation around Y-axis
+    # - Right forearm: Continuation of upper arm (straight elbow) → match upper arm
+    # - Right hand: Palm down, fingers forward → match forearm
     #
-    # For now, we'll use identity targets and let the calibration figure out the offset.
-    # If the arms still twist incorrectly, we may need to add an additional axis remapping.
+    # Solution: Use anatomically correct T-pose targets:
+    # 1. Calibrate chest to identity (upright)
+    # 2. Calibrate upper arm to horizontal extension (-90° Y rotation)
+    # 3. Calibrate forearm to match upper arm (straight elbow)
+    # 4. Calibrate hand to match forearm (straight wrist)
 
-    chest_target = np.array([1.0, 0.0, 0.0, 0.0])  # Identity
-    upper_arm_target = np.array([1.0, 0.0, 0.0, 0.0])  # Identity
-    forearm_target = np.array([1.0, 0.0, 0.0, 0.0])  # Identity
-    hand_target = np.array([1.0, 0.0, 0.0, 0.0])  # Identity
+    identity = np.array([1.0, 0.0, 0.0, 0.0])
+
+    # Right arm horizontal extension: -90° rotation around Y-axis
+    # Using scipy for reliable conversion
+    arm_tpose_rot = Rotation.from_euler('Y', -90, degrees=True)
+    arm_tpose_quat_xyzw = arm_tpose_rot.as_quat()  # [x, y, z, w] format
+    arm_tpose_target = np.array([
+        arm_tpose_quat_xyzw[3],  # w
+        arm_tpose_quat_xyzw[0],  # x
+        arm_tpose_quat_xyzw[1],  # y
+        arm_tpose_quat_xyzw[2]   # z
+    ])
+
+    # Step 1: Compute absolute calibration offsets for chest and upper arm
+    chest_offset = quaternion_multiply(identity, quaternion_inverse(chest_avg))
+    upper_arm_offset = quaternion_multiply(arm_tpose_target, quaternion_inverse(upper_arm_avg))
+
+    # Step 2: For forearm and hand, calibrate them to MATCH their parent in T-pose
+    # This ensures zero relative rotation when joints are straight
+    # Target: forearm should match arm orientation in T-pose (straight elbow)
+    # Target: hand should match forearm orientation in T-pose (straight wrist)
+
+    # Apply arm calibration to get calibrated arm orientation in T-pose
+    upper_arm_cal_tpose = quaternion_multiply(upper_arm_offset, upper_arm_avg)  # Should be identity
+
+    # Forearm should match calibrated arm orientation
+    # forearm_offset * forearm_avg = upper_arm_cal_tpose
+    # forearm_offset = upper_arm_cal_tpose * forearm_avg^-1
+    forearm_offset = quaternion_multiply(upper_arm_cal_tpose, quaternion_inverse(forearm_avg))
+
+    # Hand should match calibrated forearm orientation
+    # First get calibrated forearm in T-pose
+    forearm_cal_tpose = quaternion_multiply(forearm_offset, forearm_avg)
+    # hand_offset * hand_avg = forearm_cal_tpose
+    # hand_offset = forearm_cal_tpose * hand_avg^-1
+    hand_offset = quaternion_multiply(forearm_cal_tpose, quaternion_inverse(hand_avg))
 
     if verbose:
-        print(f"\n  BVH T-pose target quaternions:")
-        print(f"    Chest:     [{chest_target[0]:+.4f}, {chest_target[1]:+.4f}, {chest_target[2]:+.4f}, {chest_target[3]:+.4f}]")
-        print(f"    Upper Arm: [{upper_arm_target[0]:+.4f}, {upper_arm_target[1]:+.4f}, {upper_arm_target[2]:+.4f}, {upper_arm_target[3]:+.4f}]")
-        print(f"    Forearm:   [{forearm_target[0]:+.4f}, {forearm_target[1]:+.4f}, {forearm_target[2]:+.4f}, {forearm_target[3]:+.4f}]")
-        print(f"    Hand:      [{hand_target[0]:+.4f}, {hand_target[1]:+.4f}, {hand_target[2]:+.4f}, {hand_target[3]:+.4f}]")
+        print(f"\n  Calibration offsets:")
+        print(f"    Chest:     [{chest_offset[0]:+.4f}, {chest_offset[1]:+.4f}, "
+              f"{chest_offset[2]:+.4f}, {chest_offset[3]:+.4f}] -> identity (upright)")
+        print(f"    Upper Arm: [{upper_arm_offset[0]:+.4f}, {upper_arm_offset[1]:+.4f}, "
+              f"{upper_arm_offset[2]:+.4f}, {upper_arm_offset[3]:+.4f}] -> -90° Y (horizontal)")
+        print(f"    Forearm:   [{forearm_offset[0]:+.4f}, {forearm_offset[1]:+.4f}, "
+              f"{forearm_offset[2]:+.4f}, {forearm_offset[3]:+.4f}] -> match arm")
+        print(f"    Hand:      [{hand_offset[0]:+.4f}, {hand_offset[1]:+.4f}, "
+              f"{hand_offset[2]:+.4f}, {hand_offset[3]:+.4f}] -> match forearm")
 
-    # Compute calibration offsets: q_offset = q_target * q_measured_inverse
-    # When applied: q_calibrated = q_offset * q_measured
-    chest_offset = quaternion_multiply(chest_target, quaternion_inverse(chest_avg))
-    upper_arm_offset = quaternion_multiply(upper_arm_target, quaternion_inverse(upper_arm_avg))
-    forearm_offset = quaternion_multiply(forearm_target, quaternion_inverse(forearm_avg))
-    hand_offset = quaternion_multiply(hand_target, quaternion_inverse(hand_avg))
+        # Verify T-pose calibration
+        print(f"\n  T-pose verification (calibrated orientations):")
+        print(f"    Upper Arm: [{upper_arm_cal_tpose[0]:+.4f}, {upper_arm_cal_tpose[1]:+.4f}, "
+              f"{upper_arm_cal_tpose[2]:+.4f}, {upper_arm_cal_tpose[3]:+.4f}]")
+        print(f"    Forearm:   [{forearm_cal_tpose[0]:+.4f}, {forearm_cal_tpose[1]:+.4f}, "
+              f"{forearm_cal_tpose[2]:+.4f}, {forearm_cal_tpose[3]:+.4f}]")
+        hand_cal_tpose = quaternion_multiply(hand_offset, hand_avg)
+        print(f"    Hand:      [{hand_cal_tpose[0]:+.4f}, {hand_cal_tpose[1]:+.4f}, "
+              f"{hand_cal_tpose[2]:+.4f}, {hand_cal_tpose[3]:+.4f}]")
 
     calib = CalibrationData(chest_offset, upper_arm_offset, forearm_offset, hand_offset)
 
     if verbose:
-        print(f"\n  Computed calibration offsets (q_target * q_measured^-1):")
+        print(f"\n  Calibration computed:")
         print(f"    {calib}")
 
     return calib
@@ -147,13 +203,22 @@ def apply_calibration(
     """
     Apply calibration to transform a single IMU frame from Cometa to BVH coordinates.
 
+    Uses anatomical T-pose calibration offsets:
+    - Chest: calibrated to identity (upright)
+    - Upper arm: calibrated to -90° Y rotation (horizontal)
+    - Forearm: calibrated to match upper arm in T-pose
+    - Hand: calibrated to match forearm in T-pose
+
+    This ensures correct anatomical T-pose while preserving motion range.
+
     Args:
         frame: Raw IMU frame (Cometa coordinate frame)
-        calib: Calibration data
+        calib: Calibration data with anatomical offsets
 
     Returns:
         Calibrated IMU frame (BVH coordinate frame)
     """
+    # Apply calibration offsets directly (simple quaternion multiplication)
     chest_cal = quaternion_multiply(calib.chest_offset, frame.chest.as_array())
     upper_arm_cal = quaternion_multiply(calib.upper_arm_offset, frame.upper_arm.as_array())
     forearm_cal = quaternion_multiply(calib.forearm_offset, frame.forearm.as_array())

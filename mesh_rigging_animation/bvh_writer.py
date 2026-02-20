@@ -358,13 +358,17 @@ def _write_motion(f, frames: List[IMUFrame], frame_time: float, verbose: bool):
         q_chest = frame.chest.as_array()
         spine1_rot = quaternion_to_euler(q_chest, order='ZYX')
 
-        # Right Arm: relative to RightShoulder (which is static/identity)
-        q_arm = frame.upper_arm.as_array()
-        right_arm_rot = quaternion_to_euler(q_arm, order='ZYX')
+        # Right Arm: relative to Chest/Spine1 (via static RightShoulder)
+        # RightShoulder is a child of Spine1 and parent of RightArm
+        # Since RightShoulder is static (identity), RightArm inherits Spine1's orientation
+        # So we need: arm rotation relative to chest orientation
+        q_arm_world = frame.upper_arm.as_array()
+        q_arm_local = quaternion_multiply(quaternion_inverse(q_chest), q_arm_world)
+        right_arm_rot = quaternion_to_euler(q_arm_local, order='ZYX')
 
         # Right Forearm: relative to Right Arm (HIERARCHICAL - compute local rotation)
         q_forearm_world = frame.forearm.as_array()
-        q_forearm_local = quaternion_multiply(quaternion_inverse(q_arm), q_forearm_world)
+        q_forearm_local = quaternion_multiply(quaternion_inverse(q_arm_world), q_forearm_world)
         right_forearm_rot = quaternion_to_euler(q_forearm_local, order='ZYX')
 
         # Right Hand: relative to Right Forearm (HIERARCHICAL - compute local rotation)
