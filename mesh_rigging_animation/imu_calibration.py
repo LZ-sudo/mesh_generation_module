@@ -27,15 +27,15 @@ class CalibrationData:
     """
     Calibration quaternions for transforming Cometa frame to BVH frame.
 
-    Uses anatomical T-pose calibration with correct skeletal targets:
-    - Chest: calibrated to identity (upright, facing forward)
-    - Upper arm: calibrated to -90° Y rotation (horizontal extension to the right)
-    - Forearm: calibrated to match upper arm in T-pose (straight elbow)
-    - Hand: calibrated to match forearm in T-pose (straight wrist)
-    - This ensures correct T-pose while preserving motion range
+    Uses hierarchical T-pose calibration to achieve zero rotation in T-pose:
+    - Chest: calibrated to identity (upright, zero rotation)
+    - Upper arm: calibrated to identity (zero rotation, arm horizontal via skeleton OFFSET)
+    - Forearm: calibrated to match upper arm (straight elbow, zero relative rotation)
+    - Hand: calibrated to match forearm (straight wrist, zero relative rotation)
+    - This ensures anatomically correct T-pose while preserving full motion range
     """
-    chest_offset: np.ndarray  # [w, x, y, z] - calibration to identity (upright)
-    upper_arm_offset: np.ndarray  # [w, x, y, z] - calibration to horizontal (-90° Y)
+    chest_offset: np.ndarray  # [w, x, y, z] - calibration to identity (zero rotation)
+    upper_arm_offset: np.ndarray  # [w, x, y, z] - calibration to identity (zero rotation)
     forearm_offset: np.ndarray  # [w, x, y, z] - calibration to match upper arm in T-pose
     hand_offset: np.ndarray  # [w, x, y, z] - calibration to match forearm in T-pose
 
@@ -64,16 +64,16 @@ def compute_tpose_calibration(
 
     The T-pose in BVH (CMU mocap convention):
     - Character facing +Z (forward), Y-up, X-right (right-handed)
+    - Skeleton structure defines pose via OFFSET values (bone positions)
+    - All rotation channels should be ZERO (identity) in T-pose
     - Chest/spine: Upright, facing forward → identity rotation (1, 0, 0, 0)
-    - Right upper arm: Extended horizontally to the right (-X direction from shoulder)
-      → -90° rotation around Y-axis
-    - Right forearm: Continuation of upper arm (straight elbow)
-      → same as upper arm (-90° around Y)
-    - Right hand: Palm down, fingers forward
-      → same as forearm with possible wrist offset
+    - Right upper arm: Zero rotation (arm extends horizontally via OFFSET structure)
+    - Right forearm: Zero relative rotation to upper arm (straight elbow)
+    - Right hand: Zero relative rotation to forearm (straight wrist)
 
     This function computes sensor-to-bone calibration offsets that transform
-    raw sensor orientations to these anatomically correct T-pose targets.
+    raw sensor orientations to achieve zero rotation in T-pose, allowing the
+    skeleton's OFFSET structure to define the anatomical pose.
 
     Args:
         frames: List of all IMU frames
@@ -111,40 +111,30 @@ def compute_tpose_calibration(
         print(f"    Forearm:   [{forearm_avg[0]:+.4f}, {forearm_avg[1]:+.4f}, {forearm_avg[2]:+.4f}, {forearm_avg[3]:+.4f}]")
         print(f"    Hand:      [{hand_avg[0]:+.4f}, {hand_avg[1]:+.4f}, {hand_avg[2]:+.4f}, {hand_avg[3]:+.4f}]")
 
-    # ANATOMICAL T-POSE CALIBRATION STRATEGY:
+    # HIERARCHICAL T-POSE CALIBRATION STRATEGY:
     #
     # Problem: Each sensor has its own mounting orientation. We need to calibrate
-    # sensors to match the anatomical T-pose in BVH coordinate frame.
+    # sensors so that in T-pose, all bones have zero (identity) rotation.
     #
-    # BVH T-pose (CMU mocap convention):
-    # - Character faces +Z (forward), +Y is up, +X is right
-    # - Chest: Upright, facing forward → identity rotation
-    # - Right arm: Extended horizontally to the right → -90° rotation around Y-axis
-    # - Right forearm: Continuation of upper arm (straight elbow) → match upper arm
-    # - Right hand: Palm down, fingers forward → match forearm
+    # BVH T-pose structure (CMU mocap convention):
+    # - Skeleton structure defines T-pose via OFFSET values (bone positions)
+    # - Rotation channels should be ZERO in T-pose
+    # - Arm extends horizontally due to OFFSET, not rotation
+    # - Character faces +Z, Y-up, X-right (right-handed coordinates)
     #
-    # Solution: Use anatomically correct T-pose targets:
-    # 1. Calibrate chest to identity (upright)
-    # 2. Calibrate upper arm to horizontal extension (-90° Y rotation)
-    # 3. Calibrate forearm to match upper arm (straight elbow)
-    # 4. Calibrate hand to match forearm (straight wrist)
+    # Solution: Use hierarchical relative calibration:
+    # 1. Calibrate chest to identity (upright, zero rotation)
+    # 2. Calibrate upper arm to identity (zero rotation relative to chest)
+    # 3. Calibrate forearm to match upper arm (straight elbow, zero relative rotation)
+    # 4. Calibrate hand to match forearm (straight wrist, zero relative rotation)
 
     identity = np.array([1.0, 0.0, 0.0, 0.0])
 
-    # Right arm horizontal extension: -90° rotation around Y-axis
-    # Using scipy for reliable conversion
-    arm_tpose_rot = Rotation.from_euler('Y', -90, degrees=True)
-    arm_tpose_quat_xyzw = arm_tpose_rot.as_quat()  # [x, y, z, w] format
-    arm_tpose_target = np.array([
-        arm_tpose_quat_xyzw[3],  # w
-        arm_tpose_quat_xyzw[0],  # x
-        arm_tpose_quat_xyzw[1],  # y
-        arm_tpose_quat_xyzw[2]   # z
-    ])
-
     # Step 1: Compute absolute calibration offsets for chest and upper arm
+    # Both should be calibrated to identity (zero rotation) in T-pose
+    # The horizontal arm extension comes from the skeleton OFFSET structure, not rotation
     chest_offset = quaternion_multiply(identity, quaternion_inverse(chest_avg))
-    upper_arm_offset = quaternion_multiply(arm_tpose_target, quaternion_inverse(upper_arm_avg))
+    upper_arm_offset = quaternion_multiply(identity, quaternion_inverse(upper_arm_avg))
 
     # Step 2: For forearm and hand, calibrate them to MATCH their parent in T-pose
     # This ensures zero relative rotation when joints are straight
@@ -169,9 +159,9 @@ def compute_tpose_calibration(
     if verbose:
         print(f"\n  Calibration offsets:")
         print(f"    Chest:     [{chest_offset[0]:+.4f}, {chest_offset[1]:+.4f}, "
-              f"{chest_offset[2]:+.4f}, {chest_offset[3]:+.4f}] -> identity (upright)")
+              f"{chest_offset[2]:+.4f}, {chest_offset[3]:+.4f}] -> identity")
         print(f"    Upper Arm: [{upper_arm_offset[0]:+.4f}, {upper_arm_offset[1]:+.4f}, "
-              f"{upper_arm_offset[2]:+.4f}, {upper_arm_offset[3]:+.4f}] -> -90° Y (horizontal)")
+              f"{upper_arm_offset[2]:+.4f}, {upper_arm_offset[3]:+.4f}] -> identity")
         print(f"    Forearm:   [{forearm_offset[0]:+.4f}, {forearm_offset[1]:+.4f}, "
               f"{forearm_offset[2]:+.4f}, {forearm_offset[3]:+.4f}] -> match arm")
         print(f"    Hand:      [{hand_offset[0]:+.4f}, {hand_offset[1]:+.4f}, "
@@ -203,17 +193,18 @@ def apply_calibration(
     """
     Apply calibration to transform a single IMU frame from Cometa to BVH coordinates.
 
-    Uses anatomical T-pose calibration offsets:
-    - Chest: calibrated to identity (upright)
-    - Upper arm: calibrated to -90° Y rotation (horizontal)
-    - Forearm: calibrated to match upper arm in T-pose
-    - Hand: calibrated to match forearm in T-pose
+    Uses hierarchical T-pose calibration offsets:
+    - Chest: calibrated to identity (zero rotation)
+    - Upper arm: calibrated to identity (zero rotation)
+    - Forearm: calibrated to match upper arm (zero relative rotation in T-pose)
+    - Hand: calibrated to match forearm (zero relative rotation in T-pose)
 
-    This ensures correct anatomical T-pose while preserving motion range.
+    This ensures all bones have zero rotation in T-pose, allowing the skeleton's
+    OFFSET structure to define the anatomical pose while preserving full motion range.
 
     Args:
         frame: Raw IMU frame (Cometa coordinate frame)
-        calib: Calibration data with anatomical offsets
+        calib: Calibration data with hierarchical offsets
 
     Returns:
         Calibrated IMU frame (BVH coordinate frame)

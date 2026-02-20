@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """
-Cometa IMU data parser for extracting quaternion time series.
+Cometa IMU data parser for extracting sensor data.
 
 This module parses Cometa Systems IMU sensor output files (tab-separated text
-format) and extracts quaternion orientation data for conversion to BVH animation.
+format) and extracts both raw sensor data (accel, gyro, mag) and pre-fused
+quaternion orientation data for conversion to BVH animation.
 
 Functions:
+    - parse_raw_imu_data(): Parse Cometa TXT file and extract raw IMU data (accel, gyro, mag)
     - parse_cometa_file(): Parse Cometa TXT file and extract quaternion time series
     - detect_tpose_frames(): Identify T-pose calibration frames at the start of recording
     - validate_sensor_data(): Check data quality and detect issues
@@ -41,6 +43,33 @@ class QuaternionFrame:
 
 
 @dataclass
+class RawIMUData:
+    """Raw sensor data from one IMU (accelerometer, gyroscope, magnetometer)."""
+    timestamp: float
+    acc_x: float  # Accelerometer X (g)
+    acc_y: float  # Accelerometer Y (g)
+    acc_z: float  # Accelerometer Z (g)
+    gyro_x: float  # Gyroscope X (deg/s)
+    gyro_y: float  # Gyroscope Y (deg/s)
+    gyro_z: float  # Gyroscope Z (deg/s)
+    mag_x: float  # Magnetometer X (µT)
+    mag_y: float  # Magnetometer Y (µT)
+    mag_z: float  # Magnetometer Z (µT)
+
+    def accel_array(self) -> np.ndarray:
+        """Return accelerometer as numpy array [x, y, z] in g."""
+        return np.array([self.acc_x, self.acc_y, self.acc_z])
+
+    def gyro_array(self) -> np.ndarray:
+        """Return gyroscope as numpy array [x, y, z] in deg/s."""
+        return np.array([self.gyro_x, self.gyro_y, self.gyro_z])
+
+    def mag_array(self) -> np.ndarray:
+        """Return magnetometer as numpy array [x, y, z] in µT."""
+        return np.array([self.mag_x, self.mag_y, self.mag_z])
+
+
+@dataclass
 class IMUFrame:
     """Complete frame of IMU data from all sensors."""
     timestamp: float
@@ -48,6 +77,16 @@ class IMUFrame:
     upper_arm: QuaternionFrame
     forearm: QuaternionFrame
     hand: QuaternionFrame
+
+
+@dataclass
+class RawIMUFrame:
+    """Complete frame of raw IMU data from all sensors."""
+    timestamp: float
+    chest: RawIMUData
+    upper_arm: RawIMUData
+    forearm: RawIMUData
+    hand: RawIMUData
 
 
 def parse_cometa_file(
@@ -173,6 +212,208 @@ def parse_cometa_file(
         print(f"  Sample rate: ~{sample_rate:.0f} Hz")
 
     return frames
+
+
+def parse_raw_imu_data(
+    file_path: Path,
+    verbose: bool = False
+) -> List[RawIMUFrame]:
+    """
+    Parse Cometa Systems IMU file and extract RAW sensor data (accel, gyro, mag).
+
+    This function extracts the raw accelerometer, gyroscope, and magnetometer
+    data instead of the pre-fused quaternions. Use this for sensor fusion with
+    VQF or other algorithms.
+
+    Args:
+        file_path: Path to Cometa .txt file
+        verbose: Print parsing progress
+
+    Returns:
+        List of RawIMUFrame objects, one per timestamp
+
+    Raises:
+        FileNotFoundError: If file doesn't exist
+        ValueError: If file format is invalid or sensor columns missing
+    """
+    if not file_path.exists():
+        raise FileNotFoundError(f"Cometa file not found: {file_path}")
+
+    if verbose:
+        print(f"Parsing Cometa RAW IMU file: {file_path.name}")
+
+    with open(file_path, 'r', encoding='utf-8') as f:
+        lines = f.readlines()
+
+    if len(lines) < 6:
+        raise ValueError(f"File too short (expected header + data, got {len(lines)} lines)")
+
+    # Line 5 (index 4) is the header
+    header_line = lines[4].strip()
+    headers = header_line.split('\t')
+
+    if verbose:
+        print(f"  Found {len(headers)} columns")
+
+    # Find raw IMU column indices for each sensor
+    sensor_columns = _find_raw_imu_columns(headers)
+
+    if verbose:
+        print(f"  Identified {len(sensor_columns)} sensors with raw IMU data")
+
+    # Parse data rows
+    frames = []
+    data_lines = lines[5:]  # Skip header and blank lines
+
+    for line_num, line in enumerate(data_lines, start=6):
+        line = line.strip()
+        if not line:
+            continue
+
+        values = line.split('\t')
+        if len(values) < len(headers):
+            if verbose:
+                print(f"  Warning: Line {line_num} has {len(values)} values, expected {len(headers)}. Skipping.")
+            continue
+
+        try:
+            timestamp = float(values[0])
+
+            # Extract raw IMU data for all sensors
+            chest = RawIMUData(
+                timestamp,
+                float(values[sensor_columns['Chest']['acc_x']]),
+                float(values[sensor_columns['Chest']['acc_y']]),
+                float(values[sensor_columns['Chest']['acc_z']]),
+                float(values[sensor_columns['Chest']['gyro_x']]),
+                float(values[sensor_columns['Chest']['gyro_y']]),
+                float(values[sensor_columns['Chest']['gyro_z']]),
+                float(values[sensor_columns['Chest']['mag_x']]),
+                float(values[sensor_columns['Chest']['mag_y']]),
+                float(values[sensor_columns['Chest']['mag_z']])
+            )
+
+            upper_arm = RawIMUData(
+                timestamp,
+                float(values[sensor_columns['R.Right.Arm']['acc_x']]),
+                float(values[sensor_columns['R.Right.Arm']['acc_y']]),
+                float(values[sensor_columns['R.Right.Arm']['acc_z']]),
+                float(values[sensor_columns['R.Right.Arm']['gyro_x']]),
+                float(values[sensor_columns['R.Right.Arm']['gyro_y']]),
+                float(values[sensor_columns['R.Right.Arm']['gyro_z']]),
+                float(values[sensor_columns['R.Right.Arm']['mag_x']]),
+                float(values[sensor_columns['R.Right.Arm']['mag_y']]),
+                float(values[sensor_columns['R.Right.Arm']['mag_z']])
+            )
+
+            forearm = RawIMUData(
+                timestamp,
+                float(values[sensor_columns['R.Right.Forearm']['acc_x']]),
+                float(values[sensor_columns['R.Right.Forearm']['acc_y']]),
+                float(values[sensor_columns['R.Right.Forearm']['acc_z']]),
+                float(values[sensor_columns['R.Right.Forearm']['gyro_x']]),
+                float(values[sensor_columns['R.Right.Forearm']['gyro_y']]),
+                float(values[sensor_columns['R.Right.Forearm']['gyro_z']]),
+                float(values[sensor_columns['R.Right.Forearm']['mag_x']]),
+                float(values[sensor_columns['R.Right.Forearm']['mag_y']]),
+                float(values[sensor_columns['R.Right.Forearm']['mag_z']])
+            )
+
+            hand = RawIMUData(
+                timestamp,
+                float(values[sensor_columns['R.Right.Hand']['acc_x']]),
+                float(values[sensor_columns['R.Right.Hand']['acc_y']]),
+                float(values[sensor_columns['R.Right.Hand']['acc_z']]),
+                float(values[sensor_columns['R.Right.Hand']['gyro_x']]),
+                float(values[sensor_columns['R.Right.Hand']['gyro_y']]),
+                float(values[sensor_columns['R.Right.Hand']['gyro_z']]),
+                float(values[sensor_columns['R.Right.Hand']['mag_x']]),
+                float(values[sensor_columns['R.Right.Hand']['mag_y']]),
+                float(values[sensor_columns['R.Right.Hand']['mag_z']])
+            )
+
+            frame = RawIMUFrame(timestamp, chest, upper_arm, forearm, hand)
+            frames.append(frame)
+
+        except (ValueError, IndexError) as e:
+            if verbose:
+                print(f"  Warning: Failed to parse line {line_num}: {e}")
+            continue
+
+    if not frames:
+        raise ValueError("No valid raw IMU data frames found in file")
+
+    if verbose:
+        print(f"  Parsed {len(frames)} raw IMU frames")
+        print(f"  Duration: {frames[-1].timestamp:.2f} seconds")
+        sample_rate = len(frames) / frames[-1].timestamp if frames[-1].timestamp > 0 else 0
+        print(f"  Sample rate: ~{sample_rate:.0f} Hz")
+
+    return frames
+
+
+def _find_raw_imu_columns(headers: List[str]) -> Dict[str, Dict[str, int]]:
+    """
+    Find column indices for raw IMU data (accel, gyro, mag) for each sensor.
+
+    Expected column name patterns:
+    - "Chest_ImuAcc :X(g)", "Chest_ImuAcc :Y(g)", "Chest_ImuAcc :Z(g)"
+    - "Chest_ImuGyro :X(D/s)", "Chest_ImuGyro :Y(D/s)", "Chest_ImuGyro :Z(D/s)"
+    - "Chest_ImuMag :X(uT)", "Chest_ImuMag :Y(uT)", "Chest_ImuMag :Z(uT)"
+
+    Args:
+        headers: List of column names from Cometa file
+
+    Returns:
+        Dictionary mapping sensor names to IMU component indices
+
+    Raises:
+        ValueError: If required sensor columns are missing
+    """
+    sensor_names = ['Chest', 'R.Right.Arm', 'R.Right.Forearm', 'R.Right.Hand']
+    components = ['X', 'Y', 'Z']
+
+    result = {}
+
+    for sensor in sensor_names:
+        sensor_cols = {}
+
+        # Accelerometer columns
+        for comp in components:
+            pattern = f"{sensor}_ImuAcc :{comp}(g):"
+            try:
+                idx = headers.index(pattern)
+                sensor_cols[f'acc_{comp.lower()}'] = idx
+            except ValueError:
+                raise ValueError(
+                    f"Missing accelerometer column '{pattern}' for sensor '{sensor}'"
+                )
+
+        # Gyroscope columns
+        for comp in components:
+            pattern = f"{sensor}_ImuGyro :{comp}(D/s):"
+            try:
+                idx = headers.index(pattern)
+                sensor_cols[f'gyro_{comp.lower()}'] = idx
+            except ValueError:
+                raise ValueError(
+                    f"Missing gyroscope column '{pattern}' for sensor '{sensor}'"
+                )
+
+        # Magnetometer columns
+        for comp in components:
+            pattern = f"{sensor}_ImuMag :{comp}(uT):"
+            try:
+                idx = headers.index(pattern)
+                sensor_cols[f'mag_{comp.lower()}'] = idx
+            except ValueError:
+                raise ValueError(
+                    f"Missing magnetometer column '{pattern}' for sensor '{sensor}'"
+                )
+
+        result[sensor] = sensor_cols
+
+    return result
 
 
 def _find_quaternion_columns(headers: List[str]) -> Dict[str, Dict[str, int]]:
@@ -354,6 +595,10 @@ if __name__ == "__main__":
     print("Cometa IMU Parser")
     print("=" * 70)
     print("\nThis is a library module. Import it in your scripts:")
+    print("\n  # Option 1: Extract RAW IMU data (for VQF fusion)")
+    print("  from cometa_parser import parse_raw_imu_data")
+    print("  raw_frames = parse_raw_imu_data(Path('imu_data.txt'), verbose=True)")
+    print("\n  # Option 2: Extract pre-fused quaternions (legacy)")
     print("  from cometa_parser import parse_cometa_file, detect_tpose_frames")
     print("  frames = parse_cometa_file(Path('imu_data.txt'), verbose=True)")
     print("  tpose_start, tpose_end = detect_tpose_frames(frames)")

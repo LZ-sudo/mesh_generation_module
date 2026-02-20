@@ -6,46 +6,66 @@ This script converts Cometa Systems IMU sensor data (tab-separated text format)
 to BVH (Biovision Hierarchy) animation files compatible with motion capture
 pipelines and 3D animation software like Blender.
 
-The conversion pipeline (with calibration):
-1. Parse Cometa TXT file -> extract quaternion time series
-2. Detect T-pose frames -> compute coordinate frame calibration
-3. Apply calibration -> transform quaternions to BVH coordinate frame
-4. Downsample to 120 Hz -> match CMU mocap frame rate
-5. Write BVH file -> full-body CMU skeleton with static root
-
-OR (with --skip-calibration):
-1. Parse Cometa TXT file -> extract quaternion time series
-2. Downsample to 120 Hz -> match CMU mocap frame rate
-3. Write BVH file using raw quaternions with hierarchical forward kinematics
+Pipeline (VQF sensor fusion + calibration):
+1. Parse Cometa TXT file -> extract RAW IMU data (accel, gyro, mag)
+2. Preliminary VQF fusion -> for T-pose detection
+3. Detect T-pose frames -> identify static calibration region
+4. Compute sensor calibration -> correct gyro bias, accel scale (Ferraris method)
+5. Apply sensor calibration -> fix intrinsic sensor errors (bias, scale, drift)
+6. Final VQF sensor fusion -> compute quaternions (2.9° RMSE, magnetic rejection)
+7. Compute T-pose alignment -> sensor-to-segment rotational offset
+8. Apply T-pose alignment -> transform to anatomical bone frame
+9. Downsample to 120 Hz -> match CMU mocap frame rate
+10. Write BVH file -> full-body CMU skeleton with static root
 
 Usage:
-    python imu_to_bvh.py --input imu_data/capture.txt --output output/animation.bvh
-    python imu_to_bvh.py -i capture.txt -o animation.bvh --skip-calibration
-    python imu_to_bvh.py -i capture.txt -o animation.bvh --fps 120 --verbose
+    # Default: Full pipeline (sensor calibration + VQF + T-pose alignment)
+    python imu_to_bvh.py -i capture.txt -o animation.bvh
+
+    # Skip sensor calibration (if sensors are factory-calibrated)
+    python imu_to_bvh.py -i capture.txt -o animation.bvh --skip-sensor-calibration
+
+    # Skip T-pose alignment (preserves full motion range but may have errors)
+    python imu_to_bvh.py -i capture.txt -o animation.bvh --skip-tpose-calibration
+
+    # Verbose output for debugging
+    python imu_to_bvh.py -i capture.txt -o animation.bvh --verbose
 """
 
 import argparse
 import sys
 from pathlib import Path
 
-from cometa_parser import parse_cometa_file, detect_tpose_frames, validate_sensor_data
+from cometa_parser import parse_raw_imu_data, detect_tpose_frames, validate_sensor_data
 from imu_calibration import compute_tpose_calibration, apply_calibration
+from sensor_calibration import compute_sensor_calibration, apply_sensor_calibration
 from bvh_writer import write_bvh_file
+from vqf_fusion import fuse_sensor_data
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Convert Cometa IMU sensor data to BVH animation format',
+        description='Convert Cometa IMU sensor data to BVH animation format using VQF fusion',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
+  # Default: Full pipeline (sensor calibration + VQF + T-pose alignment)
   python imu_to_bvh.py -i imu_data/capture.txt -o output/anim.bvh
+
+  # Skip sensor calibration (if sensors are factory-calibrated)
+  python imu_to_bvh.py -i capture.txt -o anim.bvh --skip-sensor-calibration
+
+  # Skip T-pose alignment (preserves full motion range)
+  python imu_to_bvh.py -i capture.txt -o anim.bvh --skip-tpose-calibration
+
+  # Custom FPS + verbose output
   python imu_to_bvh.py -i capture.txt -o anim.bvh --fps 120 --verbose
-  python imu_to_bvh.py -i capture.txt -o anim.bvh --tpose-duration 2.0
 
 Notes:
   - Input file must be Cometa Systems .txt format (tab-separated)
-  - T-pose calibration is automatic (uses first 1-2 seconds)
+  - VQF sensor fusion: 2.9 deg RMSE vs 5.3-16.7 deg for Madgwick/Mahony/EKF
+  - Sensor calibration: Corrects gyro bias and accel scale (Ferraris method)
+  - T-pose calibration: Automatic sensor-to-segment alignment (first 1-2 seconds)
   - Output BVH has 4-bone right arm skeleton (Chest -> Shoulder -> Elbow -> Wrist)
   - Static root position (suitable for upper body ADL animations)
         """
@@ -80,9 +100,15 @@ Notes:
     )
 
     parser.add_argument(
-        '--skip-calibration',
+        '--skip-tpose-calibration',
         action='store_true',
-        help='Skip T-pose calibration and use raw quaternions (preserves full motion range)'
+        help='Skip T-pose segment alignment (preserves full motion range)'
+    )
+
+    parser.add_argument(
+        '--skip-sensor-calibration',
+        action='store_true',
+        help='Skip sensor intrinsic calibration (gyro bias, accel scale)'
     )
 
     parser.add_argument(
@@ -111,52 +137,142 @@ Notes:
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     print("=" * 70)
-    print("IMU TO BVH CONVERTER")
+    print("IMU TO BVH CONVERTER (VQF + Calibration Pipeline)")
     print("=" * 70)
     print(f"\nInput:  {input_path}")
     print(f"Output: {output_path}")
     print(f"Target FPS: {args.fps}")
     print()
 
-    # Step 1: Parse Cometa file
-    print("Step 1: Parsing Cometa IMU file...")
+    # Step 1: Parse raw IMU data
+    print("Step 1: Parsing Cometa IMU file (RAW sensor data)...")
     try:
-        frames = parse_cometa_file(input_path, verbose=args.verbose)
-        print(f"  Parsed {len(frames)} frames")
-        print(f"  Duration: {frames[-1].timestamp:.2f} seconds")
+        raw_frames = parse_raw_imu_data(input_path, verbose=args.verbose)
+        print(f"  Parsed {len(raw_frames)} raw IMU frames")
+        print(f"  Duration: {raw_frames[-1].timestamp:.2f} seconds")
     except Exception as e:
-        print(f"  ERROR: Failed to parse file: {e}")
+        print(f"  ERROR: Failed to parse raw IMU data: {e}")
         if args.verbose:
             import traceback
             traceback.print_exc()
         return 1
 
-    # Step 2: Validate data (optional)
+    # Step 2: Preliminary VQF fusion for T-pose detection
+    print("\nStep 2: Preliminary VQF fusion for T-pose detection...")
+    try:
+        sample_rate = len(raw_frames) / raw_frames[-1].timestamp if raw_frames[-1].timestamp > 0 else 2000.0
+        preliminary_frames = fuse_sensor_data(raw_frames, sample_rate=sample_rate, verbose=args.verbose)
+        print(f"  Preliminary fusion complete ({len(preliminary_frames)} frames)")
+    except Exception as e:
+        print(f"  ERROR: Preliminary VQF fusion failed: {e}")
+        if args.verbose:
+            import traceback
+            traceback.print_exc()
+        return 1
+
+    # Step 3: Detect T-pose region
+    print("\nStep 3: Detecting T-pose calibration region...")
+    try:
+        tpose_start, tpose_end = detect_tpose_frames(
+            preliminary_frames,
+            duration_seconds=args.tpose_duration,
+            verbose=args.verbose
+        )
+        print(f"  T-pose region: frames {tpose_start}-{tpose_end}")
+        print(f"  Timestamps: {preliminary_frames[tpose_start].timestamp:.3f}s to {preliminary_frames[tpose_end].timestamp:.3f}s")
+    except Exception as e:
+        print(f"  ERROR: Failed to detect T-pose: {e}")
+        if args.verbose:
+            import traceback
+            traceback.print_exc()
+        return 1
+
+    # Step 4-5: Sensor intrinsic calibration
+    if args.skip_sensor_calibration:
+        print("\nStep 4: Skipping sensor intrinsic calibration...")
+        print("  Using raw sensor data without bias/scale correction")
+        calibrated_raw_frames = raw_frames
+    else:
+        print("\nStep 4: Computing sensor intrinsic calibration (Ferraris method)...")
+        try:
+            sensor_calib = compute_sensor_calibration(
+                raw_frames,
+                tpose_start,
+                tpose_end,
+                verbose=args.verbose
+            )
+            print("  Sensor calibration computed (gyro bias, accel scale)")
+        except Exception as e:
+            print(f"  ERROR: Failed to compute sensor calibration: {e}")
+            if args.verbose:
+                import traceback
+                traceback.print_exc()
+            return 1
+
+        print("\nStep 5: Applying sensor calibration to raw IMU data...")
+        try:
+            calibrated_raw_frames = apply_sensor_calibration(
+                raw_frames,
+                sensor_calib,
+                verbose=args.verbose
+            )
+            print(f"  Applied sensor calibration to {len(calibrated_raw_frames)} frames")
+        except Exception as e:
+            print(f"  ERROR: Failed to apply sensor calibration: {e}")
+            if args.verbose:
+                import traceback
+                traceback.print_exc()
+            return 1
+
+    # Step 6: Final VQF sensor fusion
+    step_num = 6 if not args.skip_sensor_calibration else 5
+    print(f"\nStep {step_num}: Final VQF sensor fusion...")
+    try:
+        frames = fuse_sensor_data(calibrated_raw_frames, sample_rate=sample_rate, verbose=args.verbose)
+        print(f"  Fused {len(frames)} frames using VQF algorithm")
+        print(f"  VQF achieves 2.9 deg RMSE vs 5.3-16.7 deg for Madgwick/Mahony/EKF")
+        if not args.skip_sensor_calibration:
+            print(f"  Sensor calibration corrected gyro bias and accel scale")
+    except Exception as e:
+        print(f"  ERROR: VQF sensor fusion failed: {e}")
+        if args.verbose:
+            import traceback
+            traceback.print_exc()
+        return 1
+
+    # Step 7: Validate data (optional)
     if args.validate:
-        print("\nStep 2: Validating sensor data...")
+        step_num = 7 if not args.skip_sensor_calibration else 6
+        print(f"\nStep {step_num}: Validating sensor data...")
         is_valid = validate_sensor_data(frames, verbose=args.verbose)
         if not is_valid:
             print("  WARNING: Data validation found issues (see above)")
             print("  Continuing with conversion...")
 
-    # Step 3-5: Calibration (optional)
-    if args.skip_calibration:
-        print(f"\n{'Step 3' if args.validate else 'Step 2'}: Skipping T-pose calibration (using raw quaternions)...")
+    # Step 8-10: T-pose segment alignment
+    if args.skip_tpose_calibration:
+        step_num = 8 if not args.skip_sensor_calibration else 7
+        if args.validate:
+            step_num += 1
+        print(f"\nStep {step_num}: Skipping T-pose segment alignment...")
         print("  Using raw sensor quaternions with hierarchical forward kinematics")
         print("  Note: T-pose may not be perfectly aligned, but motion range will be preserved")
         calibrated_frames = frames
         step_offset = 1
     else:
-        # Step 3: Detect T-pose
-        print(f"\n{'Step 3' if args.validate else 'Step 2'}: Detecting T-pose calibration frames...")
+        # Step 8: Detect T-pose again (from final fused frames)
+        step_num = 8 if not args.skip_sensor_calibration else 7
+        if args.validate:
+            step_num += 1
+        print(f"\nStep {step_num}: Detecting T-pose for segment alignment...")
         try:
-            tpose_start, tpose_end = detect_tpose_frames(
+            tpose_start_seg, tpose_end_seg = detect_tpose_frames(
                 frames,
                 duration_seconds=args.tpose_duration,
                 verbose=args.verbose
             )
-            print(f"  T-pose region: frames {tpose_start}-{tpose_end}")
-            print(f"  Timestamps: {frames[tpose_start].timestamp:.3f}s to {frames[tpose_end].timestamp:.3f}s")
+            print(f"  T-pose region: frames {tpose_start_seg}-{tpose_end_seg}")
+            print(f"  Timestamps: {frames[tpose_start_seg].timestamp:.3f}s to {frames[tpose_end_seg].timestamp:.3f}s")
         except Exception as e:
             print(f"  ERROR: Failed to detect T-pose: {e}")
             if args.verbose:
@@ -164,43 +280,45 @@ Notes:
                 traceback.print_exc()
             return 1
 
-        # Step 4: Compute calibration
-        print(f"\n{'Step 4' if args.validate else 'Step 3'}: Computing T-pose calibration...")
+        # Step 9: Compute T-pose calibration
+        step_num += 1
+        print(f"\nStep {step_num}: Computing T-pose segment alignment...")
         try:
-            calib = compute_tpose_calibration(frames, tpose_start, tpose_end, verbose=args.verbose)
-            print("  Calibration computed successfully")
+            tpose_calib = compute_tpose_calibration(frames, tpose_start_seg, tpose_end_seg, verbose=args.verbose)
+            print("  T-pose calibration computed successfully")
         except Exception as e:
-            print(f"  ERROR: Failed to compute calibration: {e}")
+            print(f"  ERROR: Failed to compute T-pose calibration: {e}")
             if args.verbose:
                 import traceback
                 traceback.print_exc()
             return 1
 
-        # Step 5: Apply calibration
-        print(f"\n{'Step 5' if args.validate else 'Step 4'}: Applying calibration to all frames...")
+        # Step 10: Apply T-pose calibration
+        step_num += 1
+        print(f"\nStep {step_num}: Applying T-pose segment alignment...")
         try:
             calibrated_frames = []
             chunk_size = 5000
             for i in range(0, len(frames), chunk_size):
                 chunk = frames[i:i + chunk_size]
-                calibrated_chunk = [apply_calibration(f, calib) for f in chunk]
+                calibrated_chunk = [apply_calibration(f, tpose_calib) for f in chunk]
                 calibrated_frames.extend(calibrated_chunk)
                 if args.verbose and len(frames) > chunk_size:
                     print(f"    Calibrated {min(i + chunk_size, len(frames))}/{len(frames)} frames...")
 
-            print(f"  Calibrated {len(calibrated_frames)} frames")
+            print(f"  Applied T-pose calibration to {len(calibrated_frames)} frames")
         except Exception as e:
-            print(f"  ERROR: Failed to apply calibration: {e}")
+            print(f"  ERROR: Failed to apply T-pose calibration: {e}")
             if args.verbose:
                 import traceback
                 traceback.print_exc()
             return 1
 
-        step_offset = 4
+        step_offset = 3
 
-    # Step 6: Write BVH
-    step_num = step_offset + 2 if args.validate else step_offset + 1
-    print(f"\nStep {step_num}: Writing BVH file...")
+    # Final step: Write BVH
+    final_step = step_offset + (7 if not args.skip_sensor_calibration else 6) + (1 if args.validate else 0)
+    print(f"\nStep {final_step}: Writing BVH file...")
     try:
         success = write_bvh_file(
             calibrated_frames,
@@ -231,14 +349,33 @@ Notes:
     print(f"Frames: {len(calibrated_frames)} (downsampled from {len(frames)})")
     print(f"Duration: {frames[-1].timestamp:.2f} seconds at {args.fps} FPS")
 
-    if args.skip_calibration:
-        print("\nMode: Raw quaternions (no calibration)")
+    # Print pipeline summary
+    print("\n" + "-" * 70)
+    print("PIPELINE SUMMARY:")
+    print("-" * 70)
+
+    print("Sensor Fusion: VQF (2.9 deg RMSE)")
+    print("  - Raw IMU data -> VQF sensor fusion -> Quaternions")
+    print("  - Superior accuracy vs Madgwick/Mahony/EKF")
+    print("  - Magnetic disturbance rejection enabled")
+
+    if not args.skip_sensor_calibration:
+        print("\nSensor Intrinsic Calibration: Ferraris method (simplified)")
+        print("  - Gyroscope bias correction (critical for drift prevention)")
+        print("  - Accelerometer scale normalization")
+        print("  - Applied before VQF fusion for maximum accuracy")
+    else:
+        print("\nSensor Intrinsic Calibration: Skipped")
+        print("  - Using raw sensor data (may have bias/scale errors)")
+
+    if args.skip_tpose_calibration:
+        print("\nT-pose Segment Alignment: Skipped (raw quaternions)")
         print("  - Full motion range preserved")
         print("  - T-pose may not be perfectly aligned")
     else:
-        print("\nMode: Calibrated quaternions (T-pose aligned)")
-        print("  - T-pose aligned to identity")
-        print("  - Motion range may be affected")
+        print("\nT-pose Segment Alignment: Hierarchical calibration")
+        print("  - T-pose aligned to identity rotation")
+        print("  - Sensor frame -> Anatomical bone frame")
 
     print("\nYou can now use this BVH file with:")
     print("  - Blender: File -> Import -> Motion Capture (.bvh)")
