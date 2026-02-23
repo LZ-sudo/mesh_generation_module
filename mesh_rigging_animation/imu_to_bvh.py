@@ -117,7 +117,7 @@ Notes:
     print(f"Target FPS: {args.fps}")
     print()
 
-    calibrated_frames, source_frames = _run_pipeline(args, input_path)
+    calibrated_frames, source_frames, tpose_calib = _run_pipeline(args, input_path)
 
     if calibrated_frames is None:
         return 1
@@ -129,6 +129,7 @@ Notes:
             calibrated_frames,
             output_path,
             target_fps=args.fps,
+            world_correction=tpose_calib.chest_offset if tpose_calib is not None else None,
             verbose=args.verbose
         )
 
@@ -171,7 +172,7 @@ def _run_pipeline(args, input_path: Path):
     4. Apply T-pose alignment to all frames
 
     Returns:
-        (calibrated_frames, source_frames) on success, (None, None) on failure
+        (calibrated_frames, source_frames, tpose_calib) on success, (None, None, None) on failure
     """
     # Step 1: Parse pre-fused quaternions
     print("Step 1: Parsing Cometa pre-fused quaternions...")
@@ -184,7 +185,7 @@ def _run_pipeline(args, input_path: Path):
         if args.verbose:
             import traceback
             traceback.print_exc()
-        return None, None
+        return None, None, None
 
     # Step 2: Detect T-pose region
     print("\nStep 2: Detecting T-pose calibration region...")
@@ -201,7 +202,7 @@ def _run_pipeline(args, input_path: Path):
         if args.verbose:
             import traceback
             traceback.print_exc()
-        return None, None
+        return None, None, None
 
     # Step 3 (optional): Validate sensor data
     if args.validate:
@@ -212,6 +213,7 @@ def _run_pipeline(args, input_path: Path):
             print("  Continuing with conversion...")
 
     # Step 3/4: T-pose segment alignment
+    tpose_calib = None
     if args.skip_tpose_calibration:
         print("\nStep 3: Skipping T-pose alignment...")
         print("  Using raw Cometa quaternions without segment alignment")
@@ -228,7 +230,7 @@ def _run_pipeline(args, input_path: Path):
             if args.verbose:
                 import traceback
                 traceback.print_exc()
-            return None, None
+            return None, None, None
 
         print("\nStep 4: Applying T-pose alignment...")
         try:
@@ -245,9 +247,9 @@ def _run_pipeline(args, input_path: Path):
             if args.verbose:
                 import traceback
                 traceback.print_exc()
-            return None, None
+            return None, None, None
 
-    return calibrated_frames, frames
+    return calibrated_frames, frames, tpose_calib
 
 
 if __name__ == "__main__":

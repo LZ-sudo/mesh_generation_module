@@ -22,10 +22,35 @@ from cometa_parser import IMUFrame
 from imu_calibration import quaternion_to_euler, quaternion_multiply, quaternion_inverse
 
 
+def _apply_frame_correction(q, world_correction):
+    """
+    Re-express a rotation quaternion in BVH's world frame via similarity transform.
+
+    Applies: R_CB * q * R_CB^{-1}
+
+    After T-pose calibration the quaternions are expressed in Cometa's world frame
+    (e.g. Z-up).  BVH ZYX Euler angles must be in BVH's world frame (Y-up,
+    Z-forward).  This transform converts between the two frames without changing
+    the physical rotation.
+
+    Args:
+        q: Calibrated quaternion in Cometa's frame [w, x, y, z]
+        world_correction: R_CB rotation quaternion (chest_offset from CalibrationData)
+
+    Returns:
+        Quaternion expressing the same rotation in BVH's world frame
+    """
+    return quaternion_multiply(
+        quaternion_multiply(world_correction, q),
+        quaternion_inverse(world_correction)
+    )
+
+
 def write_bvh_file(
     frames: List[IMUFrame],
     output_path: Path,
     target_fps: float = 120.0,
+    world_correction=None,
     verbose: bool = False
 ) -> bool:
     """
@@ -40,9 +65,11 @@ def write_bvh_file(
                   End Site (hand endpoint)
 
     Args:
-        frames: List of calibrated IMU frames (must be in BVH coordinate frame)
+        frames: List of calibrated IMU frames (Cometa world frame after T-pose calibration)
         output_path: Path to output .bvh file
         target_fps: Target frame rate (will downsample if needed)
+        world_correction: R_CB quaternion [w,x,y,z] that re-expresses rotations in BVH's
+            world frame. Pass CalibrationData.chest_offset. If None, no correction applied.
         verbose: Print progress
 
     Returns:
@@ -76,7 +103,7 @@ def write_bvh_file(
             _write_hierarchy(f)
 
             # Write MOTION section
-            _write_motion(f, frames, frame_time, verbose)
+            _write_motion(f, frames, frame_time, world_correction, verbose)
 
         if verbose:
             print(f"  BVH file written successfully")
@@ -294,7 +321,7 @@ ROOT Hips
     f.write(hierarchy)
 
 
-def _write_motion(f, frames: List[IMUFrame], frame_time: float, verbose: bool):
+def _write_motion(f, frames: List[IMUFrame], frame_time: float, world_correction, verbose: bool):
     """
     Write BVH MOTION section matching CMU mocap format.
 
@@ -353,26 +380,36 @@ def _write_motion(f, frames: List[IMUFrame], frame_time: float, verbose: bool):
         hips_pos = (0.0, 0.0, 0.0)
         hips_rot = static
 
-        # IMU-driven rotations - compute hierarchical local rotations
-        # Chest (Spine1): relative to Spine (which is static/identity)
+        # Extract calibrated world-space quaternions from Cometa frame
         q_chest = frame.chest.as_array()
+        q_arm_world = frame.upper_arm.as_array()
+        q_forearm_world = frame.forearm.as_array()
+        q_hand_world = frame.hand.as_array()
+
+        # Re-express all quaternions in BVH's world frame via similarity transform:
+        #   R_CB * q * R_CB^{-1}
+        # where R_CB = world_correction = chest_offset from T-pose calibration.
+        # This maps Cometa's world axes (e.g. Z-up) to BVH's world axes (Y-up,
+        # Z-forward) so that ZYX Euler decomposition produces correct BVH angles.
+        if world_correction is not None:
+            q_chest = _apply_frame_correction(q_chest, world_correction)
+            q_arm_world = _apply_frame_correction(q_arm_world, world_correction)
+            q_forearm_world = _apply_frame_correction(q_forearm_world, world_correction)
+            q_hand_world = _apply_frame_correction(q_hand_world, world_correction)
+
+        # IMU-driven rotations - compute hierarchical local rotations
+        # Chest (Spine1): direct world rotation in BVH frame
         spine1_rot = quaternion_to_euler(q_chest, order='ZYX')
 
         # Right Arm: relative to Chest/Spine1 (via static RightShoulder)
-        # RightShoulder is a child of Spine1 and parent of RightArm
-        # Since RightShoulder is static (identity), RightArm inherits Spine1's orientation
-        # So we need: arm rotation relative to chest orientation
-        q_arm_world = frame.upper_arm.as_array()
         q_arm_local = quaternion_multiply(quaternion_inverse(q_chest), q_arm_world)
         right_arm_rot = quaternion_to_euler(q_arm_local, order='ZYX')
 
         # Right Forearm: relative to Right Arm (HIERARCHICAL - compute local rotation)
-        q_forearm_world = frame.forearm.as_array()
         q_forearm_local = quaternion_multiply(quaternion_inverse(q_arm_world), q_forearm_world)
         right_forearm_rot = quaternion_to_euler(q_forearm_local, order='ZYX')
 
         # Right Hand: relative to Right Forearm (HIERARCHICAL - compute local rotation)
-        q_hand_world = frame.hand.as_array()
         q_hand_local = quaternion_multiply(quaternion_inverse(q_forearm_world), q_hand_world)
         right_hand_rot = quaternion_to_euler(q_hand_local, order='ZYX')
 
