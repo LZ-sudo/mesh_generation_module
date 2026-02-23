@@ -141,19 +141,15 @@ def compute_tpose_calibration(
     # Target: forearm should match arm orientation in T-pose (straight elbow)
     # Target: hand should match forearm orientation in T-pose (straight wrist)
 
-    # Apply arm calibration to get calibrated arm orientation in T-pose
-    upper_arm_cal_tpose = quaternion_multiply(upper_arm_offset, upper_arm_avg)  # Should be identity
+    # Apply arm calibration to verify T-pose result (right multiplication)
+    # q_arm_cal = q_arm_raw * upper_arm_offset = upper_arm_avg * inv(upper_arm_avg) = identity
+    upper_arm_cal_tpose = quaternion_multiply(upper_arm_avg, upper_arm_offset)  # Should be identity
 
-    # Forearm should match calibrated arm orientation
-    # forearm_offset * forearm_avg = upper_arm_cal_tpose
-    # forearm_offset = upper_arm_cal_tpose * forearm_avg^-1
+    # Forearm offset = inv(forearm_avg) so that forearm_avg * forearm_offset = identity
     forearm_offset = quaternion_multiply(upper_arm_cal_tpose, quaternion_inverse(forearm_avg))
 
-    # Hand should match calibrated forearm orientation
-    # First get calibrated forearm in T-pose
-    forearm_cal_tpose = quaternion_multiply(forearm_offset, forearm_avg)
-    # hand_offset * hand_avg = forearm_cal_tpose
-    # hand_offset = forearm_cal_tpose * hand_avg^-1
+    # Hand offset = inv(hand_avg) so that hand_avg * hand_offset = identity
+    forearm_cal_tpose = quaternion_multiply(forearm_avg, forearm_offset)
     hand_offset = quaternion_multiply(forearm_cal_tpose, quaternion_inverse(hand_avg))
 
     if verbose:
@@ -167,13 +163,13 @@ def compute_tpose_calibration(
         print(f"    Hand:      [{hand_offset[0]:+.4f}, {hand_offset[1]:+.4f}, "
               f"{hand_offset[2]:+.4f}, {hand_offset[3]:+.4f}] -> match forearm")
 
-        # Verify T-pose calibration
-        print(f"\n  T-pose verification (calibrated orientations):")
+        # Verify T-pose calibration (right multiplication: q_raw * offset = identity at T-pose)
+        print(f"\n  T-pose verification (calibrated orientations, all should be ~identity):")
         print(f"    Upper Arm: [{upper_arm_cal_tpose[0]:+.4f}, {upper_arm_cal_tpose[1]:+.4f}, "
               f"{upper_arm_cal_tpose[2]:+.4f}, {upper_arm_cal_tpose[3]:+.4f}]")
         print(f"    Forearm:   [{forearm_cal_tpose[0]:+.4f}, {forearm_cal_tpose[1]:+.4f}, "
               f"{forearm_cal_tpose[2]:+.4f}, {forearm_cal_tpose[3]:+.4f}]")
-        hand_cal_tpose = quaternion_multiply(hand_offset, hand_avg)
+        hand_cal_tpose = quaternion_multiply(hand_avg, hand_offset)
         print(f"    Hand:      [{hand_cal_tpose[0]:+.4f}, {hand_cal_tpose[1]:+.4f}, "
               f"{hand_cal_tpose[2]:+.4f}, {hand_cal_tpose[3]:+.4f}]")
 
@@ -193,27 +189,27 @@ def apply_calibration(
     """
     Apply calibration to transform a single IMU frame from Cometa to BVH coordinates.
 
-    Uses hierarchical T-pose calibration offsets:
-    - Chest: calibrated to identity (zero rotation)
-    - Upper arm: calibrated to identity (zero rotation)
-    - Forearm: calibrated to match upper arm (zero relative rotation in T-pose)
-    - Hand: calibrated to match forearm (zero relative rotation in T-pose)
+    Uses RIGHT quaternion multiplication: q_cal = q_raw * offset
+    This expresses the motion as a world-frame rotation from T-pose, which is
+    required for the subsequent world-frame correction in bvh_writer to work correctly.
 
-    This ensures all bones have zero rotation in T-pose, allowing the skeleton's
-    OFFSET structure to define the anatomical pose while preserving full motion range.
+    With right multiplication: q_cal = q_raw * inv(q_tpose)
+    At T-pose: q_tpose * inv(q_tpose) = identity (zero rotation) ✓
+    During motion: (Δ * q_tpose) * inv(q_tpose) = Δ (motion in world frame) ✓
 
     Args:
         frame: Raw IMU frame (Cometa coordinate frame)
-        calib: Calibration data with hierarchical offsets
+        calib: Calibration data with hierarchical offsets (each = inv(q_tpose))
 
     Returns:
-        Calibrated IMU frame (BVH coordinate frame)
+        Calibrated IMU frame with motion expressed in world frame relative to T-pose
     """
-    # Apply calibration offsets directly (simple quaternion multiplication)
-    chest_cal = quaternion_multiply(calib.chest_offset, frame.chest.as_array())
-    upper_arm_cal = quaternion_multiply(calib.upper_arm_offset, frame.upper_arm.as_array())
-    forearm_cal = quaternion_multiply(calib.forearm_offset, frame.forearm.as_array())
-    hand_cal = quaternion_multiply(calib.hand_offset, frame.hand.as_array())
+    # Right-multiply by calibration offset: q_cal = q_raw * offset
+    # This preserves the world-frame meaning of the motion for subsequent frame correction
+    chest_cal = quaternion_multiply(frame.chest.as_array(), calib.chest_offset)
+    upper_arm_cal = quaternion_multiply(frame.upper_arm.as_array(), calib.upper_arm_offset)
+    forearm_cal = quaternion_multiply(frame.forearm.as_array(), calib.forearm_offset)
+    hand_cal = quaternion_multiply(frame.hand.as_array(), calib.hand_offset)
 
     return IMUFrame(
         timestamp=frame.timestamp,

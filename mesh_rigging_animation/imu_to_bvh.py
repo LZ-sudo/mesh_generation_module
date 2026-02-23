@@ -14,14 +14,8 @@ Pipeline:
 5. Downsample to 120 Hz + Write BVH file
 
 Usage:
-    # Default: Cometa pre-fused quaternions
     python imu_to_bvh.py -i capture.txt -o animation.bvh
-
-    # Skip T-pose alignment (preserves full motion range but may have errors)
-    python imu_to_bvh.py -i capture.txt -o animation.bvh --skip-tpose-calibration
-
-    # Verbose output for debugging
-    python imu_to_bvh.py -i capture.txt -o animation.bvh --verbose
+    python imu_to_bvh.py -i capture.txt -o animation.bvh --fps 120 --verbose
 """
 
 import argparse
@@ -40,7 +34,6 @@ def main():
         epilog="""
 Examples:
   python imu_to_bvh.py -i imu_data/capture.txt -o output/anim.bvh
-  python imu_to_bvh.py -i capture.txt -o anim.bvh --skip-tpose-calibration
   python imu_to_bvh.py -i capture.txt -o anim.bvh --fps 120 --verbose
 
 Notes:
@@ -78,12 +71,6 @@ Notes:
         type=float,
         default=1.0,
         help='Expected T-pose duration in seconds (default: 1.0)'
-    )
-
-    parser.add_argument(
-        '--skip-tpose-calibration',
-        action='store_true',
-        help='Skip T-pose segment alignment (preserves full motion range)'
     )
 
     parser.add_argument(
@@ -129,7 +116,7 @@ Notes:
             calibrated_frames,
             output_path,
             target_fps=args.fps,
-            world_correction=tpose_calib.chest_offset if tpose_calib is not None else None,
+            world_correction=tpose_calib.chest_offset,
             verbose=args.verbose
         )
 
@@ -212,42 +199,37 @@ def _run_pipeline(args, input_path: Path):
             print("  WARNING: Data validation found issues (see above)")
             print("  Continuing with conversion...")
 
-    # Step 3/4: T-pose segment alignment
-    tpose_calib = None
-    if args.skip_tpose_calibration:
-        print("\nStep 3: Skipping T-pose alignment...")
-        print("  Using raw Cometa quaternions without segment alignment")
-        calibrated_frames = frames
-    else:
-        print("\nStep 3: Computing T-pose alignment...")
-        try:
-            tpose_calib = compute_tpose_calibration(
-                frames, tpose_start, tpose_end, verbose=args.verbose
-            )
-            print("  T-pose calibration computed successfully")
-        except Exception as e:
-            print(f"  ERROR: Failed to compute T-pose calibration: {e}")
-            if args.verbose:
-                import traceback
-                traceback.print_exc()
-            return None, None, None
+    # Step 3: Compute T-pose alignment
+    print("\nStep 3: Computing T-pose alignment...")
+    try:
+        tpose_calib = compute_tpose_calibration(
+            frames, tpose_start, tpose_end, verbose=args.verbose
+        )
+        print("  T-pose calibration computed successfully")
+    except Exception as e:
+        print(f"  ERROR: Failed to compute T-pose calibration: {e}")
+        if args.verbose:
+            import traceback
+            traceback.print_exc()
+        return None, None, None
 
-        print("\nStep 4: Applying T-pose alignment...")
-        try:
-            calibrated_frames = []
-            chunk_size = 5000
-            for i in range(0, len(frames), chunk_size):
-                chunk = frames[i:i + chunk_size]
-                calibrated_frames.extend(apply_calibration(f, tpose_calib) for f in chunk)
-                if args.verbose and len(frames) > chunk_size:
-                    print(f"    Calibrated {min(i + chunk_size, len(frames))}/{len(frames)} frames...")
-            print(f"  Applied T-pose alignment to {len(calibrated_frames)} frames")
-        except Exception as e:
-            print(f"  ERROR: Failed to apply T-pose calibration: {e}")
-            if args.verbose:
-                import traceback
-                traceback.print_exc()
-            return None, None, None
+    # Step 4: Apply T-pose alignment
+    print("\nStep 4: Applying T-pose alignment...")
+    try:
+        calibrated_frames = []
+        chunk_size = 5000
+        for i in range(0, len(frames), chunk_size):
+            chunk = frames[i:i + chunk_size]
+            calibrated_frames.extend(apply_calibration(f, tpose_calib) for f in chunk)
+            if args.verbose and len(frames) > chunk_size:
+                print(f"    Calibrated {min(i + chunk_size, len(frames))}/{len(frames)} frames...")
+        print(f"  Applied T-pose alignment to {len(calibrated_frames)} frames")
+    except Exception as e:
+        print(f"  ERROR: Failed to apply T-pose calibration: {e}")
+        if args.verbose:
+            import traceback
+            traceback.print_exc()
+        return None, None, None
 
     return calibrated_frames, frames, tpose_calib
 

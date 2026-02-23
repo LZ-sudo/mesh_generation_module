@@ -14,7 +14,6 @@ scikit-learn==1.7.2
 scipy>=1.11.0
 pandas>=2.0.0
 optuna>=3.0.0
-# xgboost>=2.0.0
 torch>=2.0.0
 tabm==0.0.3
 tqdm>=4.60.0
