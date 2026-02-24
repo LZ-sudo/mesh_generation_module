@@ -17,3 +17,4 @@ optuna>=3.0.0
 torch>=2.0.0
 tabm==0.0.3
 tqdm>=4.60.0
+ezc3d==1.6.3

@@ -22,10 +22,15 @@ Angle-to-BVH channel mapping (ZYX rotation order, arm rest direction = -X):
     theta_y = asin(cos(abd)*sin(horiz))
     theta_x = shoulder_vert  (axial/internal-external rotation)
   Elbow Flexion (+bend)            -> RightForeArm Z = -fe
-  Elbow Pronation/Supination       -> RightForeArm X = +ps
+  Elbow Pronation/Supination       -> RightForeArm X = -ps
+    Cometa +ps = supination (palm toward up).  In BVH, forearm supination
+    is a negative Xrotation (rotating around -X world = forearm axis), so
+    the sign must be negated: X_bvh = -ps_cometa.
   Elbow Deviation                  -> RightForeArm Y = +dev
   Wrist Flexion (+bend)            -> RightHand  Z = -fe
-  Wrist Ulnar/Radial Deviation     -> RightHand  Y = +rad
+  Wrist Ulnar/Radial Deviation     -> RightHand  Y = +rad  (T-pose offset subtracted)
+    Cometa wrist_rad has a notable T-pose offset (~-10 deg) that is removed
+    by subtracting the mean wrist_rad over the initial T-pose segment.
   Wrist CW/CCW Rotation            -> RightHand  X = +rot
 
 Usage:
@@ -85,6 +90,7 @@ class JointAngleFrame:
 
 def parse_c3d_joint_angles(
     c3d_path: Path,
+    tpose_duration: float = 1.0,
     verbose: bool = False,
 ) -> List[JointAngleFrame]:
     """
@@ -95,12 +101,18 @@ def parse_c3d_joint_angles(
     unique frames at the effective IMU rate by stepping through the 2000 Hz
     data at the IMU stride interval.
 
+    A T-pose offset correction is applied to wrist_rad: the mean wrist_rad
+    value over the first tpose_duration seconds is subtracted from all frames
+    to remove the calibration bias that Cometa reports at anatomical neutral.
+
     Args:
         c3d_path: Path to Cometa C3D file
+        tpose_duration: Duration (seconds) of the initial T-pose segment used
+            to compute the wrist_rad calibration offset (default: 1.0 s)
         verbose: Print parsing details
 
     Returns:
-        List of JointAngleFrame at ~142.857 Hz
+        List of JointAngleFrame at ~142.857 Hz with wrist_rad offset corrected
 
     Raises:
         ValueError: If required joint angle channels are not found in the C3D file
@@ -148,10 +160,19 @@ def parse_c3d_joint_angles(
             wrist_rot=float(wrist_rot[i]),
         ))
 
+    # Subtract T-pose wrist_rad bias.  Cometa reports a notable non-zero offset
+    # (~-10 deg) for wrist_rad at anatomical neutral, so the mean over the
+    # initial T-pose segment is removed from every frame.
+    n_tpose = max(1, min(int(round(tpose_duration * imu_rate)), len(frames)))
+    wrist_rad_offset = sum(f.wrist_rad for f in frames[:n_tpose]) / n_tpose
+    for frame in frames:
+        frame.wrist_rad -= wrist_rad_offset
+
     if verbose:
         print(f"  Analog rate: {analog_rate:.0f} Hz, IMU rate: {imu_rate:.3f} Hz (stride={step})")
         print(f"  Extracted {len(frames)} unique frames")
         print(f"  Duration: {frames[-1].timestamp:.2f}s")
+        print(f"  wrist_rad T-pose offset removed: {wrist_rad_offset:+.2f} deg")
 
     return frames
 
@@ -232,11 +253,11 @@ def _map_angles_to_bvh(
     # Elbow -> RightForeArm ZYX
     # Z = -fe:  +flexion = forearm rotates toward +Y in arm frame = R_z(-angle)
     # Y = +dev: deviation (near zero, sagittal plane)
-    # X = +ps:  pronation/supination = axial rotation of forearm
+    # X = -ps:  Cometa +ps = supination; BVH supination = negative Xrotation
     forearm = (
         -frame.elbow_fe,
         +frame.elbow_dev,
-        +frame.elbow_ps,
+        -frame.elbow_ps,
     )
 
     # Wrist -> RightHand ZYX
@@ -355,6 +376,9 @@ Notes:
                         help='Path to output BVH file (.bvh)')
     parser.add_argument('--fps', type=float, default=120.0,
                         help='Target frame rate for BVH output (default: 120 Hz)')
+    parser.add_argument('--tpose-duration', type=float, default=1.0,
+                        help='Duration (s) of initial T-pose for wrist_rad offset correction '
+                             '(default: 1.0 s)')
     parser.add_argument('-v', '--verbose', action='store_true',
                         help='Print detailed progress information')
 
@@ -379,7 +403,9 @@ Notes:
 
     print("Step 1: Parsing C3D joint angles...")
     try:
-        frames = parse_c3d_joint_angles(input_path, verbose=args.verbose)
+        frames = parse_c3d_joint_angles(
+            input_path, tpose_duration=args.tpose_duration, verbose=args.verbose
+        )
         print(f"  Parsed {len(frames)} frames")
         print(f"  Duration: {frames[-1].timestamp:.2f}s")
     except Exception as e:
