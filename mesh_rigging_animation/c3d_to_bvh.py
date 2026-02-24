@@ -13,9 +13,14 @@ alignment internally, exposing the result as named degree-valued channels in
 the C3D ANALOG section.
 
 Angle-to-BVH channel mapping (ZYX rotation order, arm rest direction = -X):
-  Shoulder Abduction (+up)         -> RightArm   Z = -abd
-  Shoulder Horizontal Flex (+fwd)  -> RightArm   Y = +horiz
-  Shoulder Vertical Flex           -> RightArm   X = +vert
+  Shoulder angles use a spherical-to-ZYX conversion (see _shoulder_to_zyx).
+  Cometa reports (abd, horiz) as spherical coordinates: abd = elevation above
+  horizontal, horiz = azimuth forward from the coronal plane.  Direct use as
+  ZYX Euler channels over-rotates the arm forward at high abduction (Euler
+  coupling).  The corrected BVH ZYX angles are derived as:
+    theta_z = atan2(-sin(abd), cos(abd)*cos(horiz))
+    theta_y = asin(cos(abd)*sin(horiz))
+    theta_x = shoulder_vert  (axial/internal-external rotation)
   Elbow Flexion (+bend)            -> RightForeArm Z = -fe
   Elbow Pronation/Supination       -> RightForeArm X = +ps
   Elbow Deviation                  -> RightForeArm Y = +dev
@@ -23,17 +28,13 @@ Angle-to-BVH channel mapping (ZYX rotation order, arm rest direction = -X):
   Wrist Ulnar/Radial Deviation     -> RightHand  Y = +rad
   Wrist CW/CCW Rotation            -> RightHand  X = +rot
 
-Sign derivation for Z (abduction):
-  R_z(-90) * (-1,0,0) = (0,+1,0)  => Z = -abd  (arm up = negative Z rotation)
-Sign derivation for Y (horizontal flex):
-  R_y(+90) * (-1,0,0) = (0,0,+1)  => Y = +horiz (arm forward = positive Y rotation)
-
 Usage:
     python c3d_to_bvh.py -i capture.c3d -o animation.bvh
     python c3d_to_bvh.py -i capture.c3d -o animation.bvh --fps 120 --verbose
 """
 
 import argparse
+import math
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -167,6 +168,42 @@ def _downsample_joint_angles(
     return frames[::step]
 
 
+def _shoulder_to_zyx(
+    shoulder_abd_deg: float,
+    shoulder_horiz_deg: float,
+    shoulder_vert_deg: float,
+) -> Tuple[float, float, float]:
+    """
+    Convert Cometa spherical shoulder angles to BVH ZYX Euler angles.
+
+    Cometa reports (abd, horiz) as spherical coordinates of the upper arm direction:
+      - abd:   elevation above horizontal (0 = T-pose, +90 = arm straight up)
+      - horiz: azimuth forward from the coronal plane (0 = pure abduction, +90 = pure forward flex)
+      - vert:  axial rotation of the humerus (internal/external rotation)
+
+    Arm unit vector from Cometa spherical coordinates:
+      arm = (-cos(abd)*cos(horiz),  sin(abd),  cos(abd)*sin(horiz))
+
+    BVH ZYX arm direction (arm rest at -X):
+      arm = (-cos(ty)*cos(tz),  -cos(ty)*sin(tz),  sin(ty))
+
+    Plugging Cometa angles directly into ZYX channels amplifies the forward lean
+    (horiz term) by Euler coupling at high abduction.  This function solves for the
+    exact ZYX angles that reproduce the same arm direction.
+
+    Returns:
+        (theta_z_deg, theta_y_deg, theta_x_deg) for BVH ZYX channels
+    """
+    abd = math.radians(shoulder_abd_deg)
+    horiz = math.radians(shoulder_horiz_deg)
+
+    theta_y = math.asin(math.cos(abd) * math.sin(horiz))
+    theta_z = math.atan2(-math.sin(abd), math.cos(abd) * math.cos(horiz))
+    theta_x = math.radians(shoulder_vert_deg)
+
+    return math.degrees(theta_z), math.degrees(theta_y), math.degrees(theta_x)
+
+
 def _map_angles_to_bvh(
     frame: JointAngleFrame,
 ) -> Tuple[
@@ -181,23 +218,16 @@ def _map_angles_to_bvh(
     The BVH skeleton uses CMU convention: +Y up, +Z forward, right arm at -X.
     All rotations are ZYX intrinsic Euler angles relative to the parent bone.
 
-    Note: Sign conventions are derived geometrically and verified against
-    known movement reference frames. The shoulder_vert, elbow_ps, elbow_dev,
-    wrist_rad, and wrist_rot signs may need empirical adjustment after visual
-    inspection of the BVH output in Blender.
+    Shoulder angles use a spherical-to-ZYX conversion because Cometa reports
+    abd (elevation) and horiz (azimuth) as independent spherical coordinates,
+    not as sequential Euler angles.  Direct substitution would over-rotate the
+    arm forward at high abduction due to Euler coupling.
     """
     # Chest (Spine1): no dedicated chest-relative angle available; kept static.
     chest = (0.0, 0.0, 0.0)
 
-    # Shoulder -> RightArm ZYX
-    # Z = -abd:   +abduction = arm raised toward +Y = R_z(-angle) of arm at -X
-    # Y = +horiz: +horiz flex = arm forward toward +Z = R_y(+angle) of arm at -X
-    # X = +vert:  vertical/axial component (sign empirical)
-    arm = (
-        -frame.shoulder_abd,
-        +frame.shoulder_horiz,
-        +frame.shoulder_vert,
-    )
+    # Shoulder -> RightArm ZYX (spherical coordinate conversion)
+    arm = _shoulder_to_zyx(frame.shoulder_abd, frame.shoulder_horiz, frame.shoulder_vert)
 
     # Elbow -> RightForeArm ZYX
     # Z = -fe:  +flexion = forearm rotates toward +Y in arm frame = R_z(-angle)
