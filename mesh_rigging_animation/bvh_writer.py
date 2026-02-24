@@ -100,7 +100,7 @@ def write_bvh_file(
     try:
         with open(output_path, 'w', encoding='utf-8') as f:
             # Write HIERARCHY section
-            _write_hierarchy(f)
+            write_bvh_hierarchy(f)
 
             # Write MOTION section
             _write_motion(f, frames, frame_time, world_correction, verbose)
@@ -115,7 +115,7 @@ def write_bvh_file(
         return False
 
 
-def _write_hierarchy(f):
+def write_bvh_hierarchy(f):
     """
     Write BVH HIERARCHY section matching CMU mocap format.
 
