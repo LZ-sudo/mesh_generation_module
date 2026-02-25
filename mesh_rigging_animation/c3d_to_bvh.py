@@ -21,12 +21,14 @@ Angle-to-BVH channel mapping (ZYX rotation order, arm rest direction = -X):
     theta_z = atan2(-sin(abd), cos(abd)*cos(horiz))
     theta_y = asin(cos(abd)*sin(horiz))
     theta_x = shoulder_vert  (axial/internal-external rotation)
-  Elbow Flexion (+bend)            -> RightForeArm Z = -fe
+  Elbow Flexion (+bend)            -> RightForeArm Y = +fe
+    Flexion sweeps the forearm in the arm XZ plane (forward/backward).
+    Y rotation is the correct axis; Z rotation would sweep upward instead.
+  Elbow Deviation                  -> RightForeArm Z = -dev
   Elbow Pronation/Supination       -> RightForeArm X = -ps
     Cometa +ps = supination (palm toward up).  In BVH, forearm supination
     is a negative Xrotation (rotating around -X world = forearm axis), so
     the sign must be negated: X_bvh = -ps_cometa.
-  Elbow Deviation                  -> RightForeArm Y = +dev
   Wrist Flexion (+bend)            -> RightHand  Z = +fe
   Wrist Ulnar/Radial Deviation     -> RightHand  Y = +rad  (T-pose offset subtracted)
     Cometa wrist_rad has a notable T-pose offset (~-10 deg) that is removed
@@ -251,12 +253,12 @@ def _map_angles_to_bvh(
     arm = _shoulder_to_zyx(frame.shoulder_abd, frame.shoulder_horiz, frame.shoulder_vert)
 
     # Elbow -> RightForeArm ZYX
-    # Z = -fe:  +flexion = forearm rotates toward +Y in arm frame = R_z(-angle)
-    # Y = +dev: deviation (near zero, sagittal plane)
+    # Y = +fe:  flexion sweeps forearm forward (+Z arm frame) = R_y(+angle)
+    # Z = -dev: deviation (side-to-side in arm XY plane)
     # X = -ps:  Cometa +ps = supination; BVH supination = negative Xrotation
     forearm = (
-        -frame.elbow_fe,
-        +frame.elbow_dev,
+        -frame.elbow_dev,
+        +frame.elbow_fe,
         -frame.elbow_ps,
     )
 
