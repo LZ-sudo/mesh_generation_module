@@ -21,14 +21,11 @@ Angle-to-BVH channel mapping (ZYX rotation order, arm rest direction = -X):
     theta_z = atan2(-sin(abd), cos(abd)*cos(horiz))
     theta_y = asin(cos(abd)*sin(horiz))
     theta_x = shoulder_vert  (axial/internal-external rotation)
-  Elbow Flexion (+bend)            -> RightForeArm Y = +fe
-    Flexion sweeps the forearm in the arm XZ plane (forward/backward).
-    Y rotation is the correct axis; Z rotation would sweep upward instead.
-  Elbow Deviation                  -> RightForeArm Z = -dev
-  Elbow Pronation/Supination       -> RightForeArm X = -ps
-    Cometa +ps = supination (palm toward up).  In BVH, forearm supination
-    is a negative Xrotation (rotating around -X world = forearm axis), so
-    the sign must be negated: X_bvh = -ps_cometa.
+  Elbow angles use a spherical-to-ZYX conversion (see _elbow_to_zyx).
+  Cometa reports (dev, fe) as spherical coordinates of the forearm direction:
+    theta_z = atan2(-sin(dev), cos(dev)*cos(fe))
+    theta_y = asin(cos(dev)*sin(fe))
+    theta_x = -ps  (pronation/supination, sign negated)
   Wrist Flexion (+bend)            -> RightHand  Z = +fe
   Wrist Ulnar/Radial Deviation     -> RightHand  Y = +rad  (T-pose offset subtracted)
     Cometa wrist_rad has a notable T-pose offset (~-10 deg) that is removed
@@ -227,6 +224,43 @@ def _shoulder_to_zyx(
     return math.degrees(theta_z), math.degrees(theta_y), math.degrees(theta_x)
 
 
+def _elbow_to_zyx(
+    elbow_dev_deg: float,
+    elbow_fe_deg: float,
+    elbow_ps_deg: float,
+) -> Tuple[float, float, float]:
+    """
+    Convert Cometa spherical elbow angles to BVH ZYX Euler angles.
+
+    Cometa reports (dev, fe) as spherical coordinates of the forearm direction
+    relative to the upper arm, using the same convention as the shoulder:
+      - dev: elevation of the forearm out of the sagittal flex plane (carrying angle)
+      - fe:  azimuth of the forearm from T-pose (flexion = 0 at rest, +90 = forward)
+      - ps:  axial rotation of the forearm (pronation/supination)
+
+    Forearm unit vector in arm frame from Cometa spherical coordinates:
+      forearm = (-cos(dev)*cos(fe),  sin(dev),  cos(dev)*sin(fe))
+
+    BVH ZYX forearm direction (forearm rest at -X in arm frame):
+      forearm = (-cos(ty)*cos(tz),  -cos(ty)*sin(tz),  sin(ty))
+
+    Plugging (dev, fe) directly as ZYX channels introduces the same Euler coupling
+    as the shoulder at large deviation angles.  This function solves for the exact
+    ZYX angles that reproduce the intended forearm direction.
+
+    Returns:
+        (theta_z_deg, theta_y_deg, theta_x_deg) for BVH ZYX channels
+    """
+    dev = math.radians(elbow_dev_deg)
+    fe = math.radians(elbow_fe_deg)
+
+    theta_y = math.asin(math.cos(dev) * math.sin(fe))
+    theta_z = math.atan2(-math.sin(dev), math.cos(dev) * math.cos(fe))
+    theta_x = math.radians(-elbow_ps_deg)
+
+    return math.degrees(theta_z), math.degrees(theta_y), math.degrees(theta_x)
+
+
 def _map_angles_to_bvh(
     frame: JointAngleFrame,
 ) -> Tuple[
@@ -241,10 +275,10 @@ def _map_angles_to_bvh(
     The BVH skeleton uses CMU convention: +Y up, +Z forward, right arm at -X.
     All rotations are ZYX intrinsic Euler angles relative to the parent bone.
 
-    Shoulder angles use a spherical-to-ZYX conversion because Cometa reports
-    abd (elevation) and horiz (azimuth) as independent spherical coordinates,
-    not as sequential Euler angles.  Direct substitution would over-rotate the
-    arm forward at high abduction due to Euler coupling.
+    Both shoulder and elbow angles use a spherical-to-ZYX conversion because
+    Cometa reports them as independent spherical coordinates, not as sequential
+    Euler angles.  Direct substitution introduces Euler coupling errors at large
+    deviation or abduction angles.
     """
     # Chest (Spine1): no dedicated chest-relative angle available; kept static.
     chest = (0.0, 0.0, 0.0)
@@ -252,15 +286,8 @@ def _map_angles_to_bvh(
     # Shoulder -> RightArm ZYX (spherical coordinate conversion)
     arm = _shoulder_to_zyx(frame.shoulder_abd, frame.shoulder_horiz, frame.shoulder_vert)
 
-    # Elbow -> RightForeArm ZYX
-    # Y = +fe:  flexion sweeps forearm forward (+Z arm frame) = R_y(+angle)
-    # Z = -dev: deviation (side-to-side in arm XY plane)
-    # X = -ps:  Cometa +ps = supination; BVH supination = negative Xrotation
-    forearm = (
-        -frame.elbow_dev,
-        +frame.elbow_fe,
-        -frame.elbow_ps,
-    )
+    # Elbow -> RightForeArm ZYX (spherical coordinate conversion)
+    forearm = _elbow_to_zyx(frame.elbow_dev, frame.elbow_fe, frame.elbow_ps)
 
     # Wrist -> RightHand ZYX
     # Z = +fe:  +flexion = hand rotates toward -Y in forearm frame = R_z(+angle)
