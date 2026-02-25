@@ -26,11 +26,16 @@ Angle-to-BVH channel mapping (ZYX rotation order, arm rest direction = -X):
     theta_z = atan2(-sin(dev), cos(dev)*cos(fe))
     theta_y = asin(cos(dev)*sin(fe))
     theta_x = -ps  (pronation/supination, sign negated)
-  Wrist Flexion (+bend)            -> RightHand  Z = +fe
-  Wrist Ulnar/Radial Deviation     -> RightHand  Y = +rad  (T-pose offset subtracted)
-    Cometa wrist_rad has a notable T-pose offset (~-10 deg) that is removed
-    by subtracting the mean wrist_rad over the initial T-pose segment.
-  Wrist CW/CCW Rotation            -> RightHand  X = +rot
+  Wrist angles use a spherical-to-ZYX conversion (see _wrist_to_zyx).
+  Cometa reports (fe, rad) as spherical coordinates of the hand direction:
+    The BVH hand bone (OFFSET -3.71 0 0) has Z as the flexion axis and Y as
+    the deviation axis.  Cometa's positive wrist_rad = ulnar deviation (toward
+    -Z), so the rad sign is inverted when mapping to BVH +Y = radial direction.
+    theta_z = atan2( sin(fe), cos(fe)*cos(rad))   (no sign negation on fe)
+    theta_y = asin(-cos(fe)*sin(rad))             (rad sign inverted)
+    theta_x = +rot  (CW/CCW axial rotation)
+  Cometa wrist_rad has a notable T-pose offset (~-10 deg) that is removed
+  by subtracting the mean wrist_rad over the initial T-pose segment.
 
 Usage:
     python c3d_to_bvh.py -i capture.c3d -o animation.bvh
@@ -261,6 +266,48 @@ def _elbow_to_zyx(
     return math.degrees(theta_z), math.degrees(theta_y), math.degrees(theta_x)
 
 
+def _wrist_to_zyx(
+    wrist_fe_deg: float,
+    wrist_rad_deg: float,
+    wrist_rot_deg: float,
+) -> Tuple[float, float, float]:
+    """
+    Convert Cometa spherical wrist angles to BVH ZYX Euler angles.
+
+    The BVH hand bone (OFFSET -3.71 0 0) extends along -X at rest, so:
+      - Z rotation sweeps the hand in the XY plane (toward -Y) = flexion
+      - Y rotation sweeps the hand in the XZ plane (toward +Z) = radial deviation
+
+    Cometa's hand direction unit vector (fe = flexion elevation, rad = deviation azimuth):
+      hand = (-cos(fe)*cos(rad),  -sin(fe),  -cos(fe)*sin(rad))
+    Note: positive fe -> hand goes toward -Y (palm-ward = flexion);
+          positive rad -> hand goes toward -Z (ulnar direction).
+
+    BVH ZYX hand direction (hand rest at -X in forearm frame):
+      hand = (-cos(ty)*cos(tz),  -cos(ty)*sin(tz),  sin(ty))
+
+    Matching components:
+      theta_z = atan2( sin(fe),  cos(fe)*cos(rad))
+      theta_y = asin(-cos(fe)*sin(rad))
+      theta_x = +rot
+
+    Sign difference vs shoulder/elbow: positive fe produces positive theta_z
+    (flexion toward -Y maps to +Z BVH rotation), and rad is negated because
+    Cometa's positive rad = ulnar (-Z) but BVH +Y = radial (+Z).
+
+    Returns:
+        (theta_z_deg, theta_y_deg, theta_x_deg) for BVH ZYX channels
+    """
+    fe = math.radians(wrist_fe_deg)
+    rad = math.radians(wrist_rad_deg)
+
+    theta_z = math.atan2(math.sin(fe), math.cos(fe) * math.cos(rad))
+    theta_y = math.asin(-math.cos(fe) * math.sin(rad))
+    theta_x = math.radians(wrist_rot_deg)
+
+    return math.degrees(theta_z), math.degrees(theta_y), math.degrees(theta_x)
+
+
 def _map_angles_to_bvh(
     frame: JointAngleFrame,
 ) -> Tuple[
@@ -289,15 +336,8 @@ def _map_angles_to_bvh(
     # Elbow -> RightForeArm ZYX (spherical coordinate conversion)
     forearm = _elbow_to_zyx(frame.elbow_dev, frame.elbow_fe, frame.elbow_ps)
 
-    # Wrist -> RightHand ZYX
-    # Z = +fe:  +flexion = hand rotates toward -Y in forearm frame = R_z(+angle)
-    # Y = +rad: ulnar/radial deviation
-    # X = +rot: CW/CCW rotation = axial rotation
-    hand = (
-        +frame.wrist_fe,
-        +frame.wrist_rad,
-        +frame.wrist_rot,
-    )
+    # Wrist -> RightHand ZYX (spherical coordinate conversion)
+    hand = _wrist_to_zyx(frame.wrist_fe, frame.wrist_rad, frame.wrist_rot)
 
     return chest, arm, forearm, hand
 
