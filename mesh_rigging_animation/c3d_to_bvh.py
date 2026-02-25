@@ -20,7 +20,7 @@ Angle-to-BVH channel mapping (ZYX rotation order, arm rest direction = -X):
   coupling).  The corrected BVH ZYX angles are derived as:
     theta_z = atan2(-sin(abd), cos(abd)*cos(horiz))
     theta_y = asin(cos(abd)*sin(horiz))
-    theta_x = shoulder_vert  (axial/internal-external rotation)
+    theta_x = _axial_correction(abd, horiz) + shoulder_vert
   Elbow angles use a spherical-to-ZYX conversion (see _elbow_to_zyx).
   Cometa reports (dev, fe) as spherical coordinates of the forearm direction:
     theta_z = atan2(-sin(dev), cos(dev)*cos(fe))
@@ -322,6 +322,13 @@ def _shoulder_to_zyx(
     (horiz term) by Euler coupling at high abduction.  This function solves for the
     exact ZYX angles that reproduce the same arm direction.
 
+    The axial channel theta_x uses the same _axial_correction as the elbow: the
+    Rz*Ry compound rotation drifts the BVH "zero axial" frame away from the T-pose
+    arm orientation.  _axial_correction(abd, horiz) returns the offset needed so
+    that shoulder_vert=0 maps to the rigid-body-rotation of the T-pose palm, not
+    BVH's arbitrary zero.  This correction is negligible at small abd/horiz but
+    becomes significant (>10 deg) at large shoulder excursions.
+
     Returns:
         (theta_z_deg, theta_y_deg, theta_x_deg) for BVH ZYX channels
     """
@@ -330,7 +337,7 @@ def _shoulder_to_zyx(
 
     theta_y = math.asin(math.cos(abd) * math.sin(horiz))
     theta_z = math.atan2(-math.sin(abd), math.cos(abd) * math.cos(horiz))
-    theta_x = math.radians(shoulder_vert_deg)
+    theta_x = math.radians(_axial_correction(shoulder_abd_deg, shoulder_horiz_deg) + shoulder_vert_deg)
 
     return math.degrees(theta_z), math.degrees(theta_y), math.degrees(theta_x)
 
