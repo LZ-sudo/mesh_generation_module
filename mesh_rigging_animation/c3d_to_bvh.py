@@ -98,6 +98,7 @@ class JointAngleFrame:
 def parse_c3d_joint_angles(
     c3d_path: Path,
     tpose_duration: float = 1.0,
+    wrist_rad_bias_deg: float = 0.0,
     verbose: bool = False,
 ) -> List[JointAngleFrame]:
     """
@@ -111,11 +112,17 @@ def parse_c3d_joint_angles(
     A T-pose offset correction is applied to wrist_rad: the mean wrist_rad
     value over the first tpose_duration seconds is subtracted from all frames
     to remove the calibration bias that Cometa reports at anatomical neutral.
+    An additional wrist_rad_bias_deg can be added after the T-pose correction
+    to compensate for any residual radial/ulnar deviation visible in Blender:
+      positive bias -> ulnar direction (reduces thumb-side tilt)
+      negative bias -> radial direction (reduces little-finger-side tilt)
 
     Args:
         c3d_path: Path to Cometa C3D file
         tpose_duration: Duration (seconds) of the initial T-pose segment used
             to compute the wrist_rad calibration offset (default: 1.0 s)
+        wrist_rad_bias_deg: Extra offset (deg) added to all corrected wrist_rad
+            values after T-pose correction (default: 0.0)
         verbose: Print parsing details
 
     Returns:
@@ -173,13 +180,15 @@ def parse_c3d_joint_angles(
     n_tpose = max(1, min(int(round(tpose_duration * imu_rate)), len(frames)))
     wrist_rad_offset = sum(f.wrist_rad for f in frames[:n_tpose]) / n_tpose
     for frame in frames:
-        frame.wrist_rad -= wrist_rad_offset
+        frame.wrist_rad = frame.wrist_rad - wrist_rad_offset + wrist_rad_bias_deg
 
     if verbose:
         print(f"  Analog rate: {analog_rate:.0f} Hz, IMU rate: {imu_rate:.3f} Hz (stride={step})")
         print(f"  Extracted {len(frames)} unique frames")
         print(f"  Duration: {frames[-1].timestamp:.2f}s")
         print(f"  wrist_rad T-pose offset removed: {wrist_rad_offset:+.2f} deg")
+        if wrist_rad_bias_deg != 0.0:
+            print(f"  wrist_rad extra bias applied:    {wrist_rad_bias_deg:+.2f} deg")
 
     return frames
 
@@ -554,6 +563,11 @@ Notes:
     parser.add_argument('--tpose-duration', type=float, default=1.0,
                         help='Duration (s) of initial T-pose for wrist_rad offset correction '
                              '(default: 1.0 s)')
+    parser.add_argument('--wrist-rad-bias', type=float, default=0.0,
+                        help='Extra wrist_rad offset (deg) added after T-pose correction: '
+                             'positive = ulnar (reduces thumb-side tilt), '
+                             'negative = radial (reduces little-finger-side tilt) '
+                             '(default: 0.0)')
     parser.add_argument('-v', '--verbose', action='store_true',
                         help='Print detailed progress information')
 
@@ -579,7 +593,10 @@ Notes:
     print("Step 1: Parsing C3D joint angles...")
     try:
         frames = parse_c3d_joint_angles(
-            input_path, tpose_duration=args.tpose_duration, verbose=args.verbose
+            input_path,
+            tpose_duration=args.tpose_duration,
+            wrist_rad_bias_deg=args.wrist_rad_bias,
+            verbose=args.verbose,
         )
         print(f"  Parsed {len(frames)} frames")
         print(f"  Duration: {frames[-1].timestamp:.2f}s")
