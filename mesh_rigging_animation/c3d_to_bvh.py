@@ -25,7 +25,10 @@ Angle-to-BVH channel mapping (ZYX rotation order, arm rest direction = -X):
   Cometa reports (dev, fe) as spherical coordinates of the forearm direction:
     theta_z = atan2(-sin(dev), cos(dev)*cos(fe))
     theta_y = asin(cos(dev)*sin(fe))
-    theta_x = -ps  (pronation/supination, sign negated)
+    theta_x = _axial_correction(dev, fe) + (-ps)
+  The axial correction compensates for the palm-orientation drift introduced by
+  the Rz*Ry compound rotation: at large fe angles the BVH "zero axial" position
+  diverges from Cometa's ps=0 reference (see _axial_correction).
   Wrist angles use a spherical-to-ZYX conversion (see _wrist_to_zyx).
   Cometa reports (fe, rad) as spherical coordinates of the hand direction:
     The BVH hand bone (OFFSET -3.71 0 0) has Z as the flexion axis and Y as
@@ -33,7 +36,7 @@ Angle-to-BVH channel mapping (ZYX rotation order, arm rest direction = -X):
     -Z), so the rad sign is inverted when mapping to BVH +Y = radial direction.
     theta_z = atan2( sin(fe), cos(fe)*cos(rad))   (no sign negation on fe)
     theta_y = asin(-cos(fe)*sin(rad))             (rad sign inverted)
-    theta_x = +rot  (CW/CCW axial rotation)
+    theta_x = -rot  (CW/CCW axial rotation, sign negated to match BVH convention)
   Cometa wrist_rad has a notable T-pose offset (~-10 deg) that is removed
   by subtracting the mean wrist_rad over the initial T-pose segment.
 
@@ -193,6 +196,100 @@ def _downsample_joint_angles(
     return frames[::step]
 
 
+def _axial_correction(dev_deg: float, fe_deg: float) -> float:
+    """
+    Compute the BVH theta_x bias introduced by the ZY compound rotation.
+
+    When a limb is described by spherical coordinates (dev, fe) and mapped to
+    BVH ZYX Euler angles, the Rz*Ry compound rotation moves the limb to the
+    correct direction but rotates its axial reference away from the T-pose
+    orientation.  This function returns the correction angle (degrees) that
+    must be added to theta_x so that theta_x = 0 corresponds to the same palm
+    orientation that Cometa's zero pronation/supination (ps = 0) represents
+    (i.e. the rigid-body-rotation of the T-pose palm direction).
+
+    Algorithm:
+      1. Compute the new limb direction d_new from (dev, fe) in spherical coords.
+      2. Find the rigid-body rotation R from d_tpose=(-1,0,0) to d_new (Rodrigues).
+      3. Apply R to p_tpose=(0,-1,0) to get the expected palm direction.
+      4. Transform expected_palm to limb-local frame by undoing the BVH ZY rotation.
+      5. Return atan2(-p_local[2], -p_local[1]), the Rx angle that reproduces it.
+
+    Returns 0 when dev=0 and fe=0 (T-pose identity check).
+
+    Args:
+        dev_deg: Deviation / carrying angle (deg)
+        fe_deg:  Flexion / azimuth angle (deg)
+
+    Returns:
+        Correction offset in degrees to add to theta_x
+    """
+    dev = math.radians(dev_deg)
+    fe  = math.radians(fe_deg)
+
+    d_tpose = (-1.0, 0.0, 0.0)
+    p_tpose = (0.0, -1.0, 0.0)
+    d_new   = (
+        -math.cos(dev) * math.cos(fe),
+         math.sin(dev),
+         math.cos(dev) * math.sin(fe),
+    )
+
+    def _dot(a, b):
+        return a[0]*b[0] + a[1]*b[1] + a[2]*b[2]
+
+    def _cross(a, b):
+        return (
+            a[1]*b[2] - a[2]*b[1],
+            a[2]*b[0] - a[0]*b[2],
+            a[0]*b[1] - a[1]*b[0],
+        )
+
+    def _norm(v):
+        n = math.sqrt(v[0]*v[0] + v[1]*v[1] + v[2]*v[2])
+        return (v[0]/n, v[1]/n, v[2]/n)
+
+    def _rodrigues(v, k, angle):
+        c, s = math.cos(angle), math.sin(angle)
+        kxv = _cross(k, v)
+        kd  = _dot(k, v)
+        return (
+            c*v[0] + s*kxv[0] + (1 - c)*kd*k[0],
+            c*v[1] + s*kxv[1] + (1 - c)*kd*k[1],
+            c*v[2] + s*kxv[2] + (1 - c)*kd*k[2],
+        )
+
+    cos_theta = max(-1.0, min(1.0, _dot(d_tpose, d_new)))
+    if abs(cos_theta - 1.0) < 1e-9:
+        expected_palm = p_tpose
+    elif abs(cos_theta + 1.0) < 1e-9:
+        expected_palm = _rodrigues(p_tpose, (0.0, 1.0, 0.0), math.pi)
+    else:
+        k_axis = _norm(_cross(d_tpose, d_new))
+        expected_palm = _rodrigues(p_tpose, k_axis, math.acos(cos_theta))
+
+    # BVH ZY angles for d_new
+    theta_y = math.asin(math.cos(dev) * math.sin(fe))
+    theta_z = math.atan2(-math.sin(dev), math.cos(dev) * math.cos(fe))
+
+    # Undo ZY to bring expected_palm into limb-local frame
+    # p_local = Ry(-theta_y) * Rz(-theta_z) * expected_palm
+    cy, sy = math.cos(-theta_y), math.sin(-theta_y)
+    cz, sz = math.cos(-theta_z), math.sin(-theta_z)
+    ex, ey, ez = expected_palm
+    # Rz(-theta_z)
+    rx = cz*ex - sz*ey
+    ry = sz*ex + cz*ey
+    rz = ez
+    # Ry(-theta_y) — only Y and Z components needed for alpha
+    py =  ry
+    pz = -sy*rx + cy*rz
+
+    # Rx(alpha)*(0,-1,0) = (0,-cos(alpha),-sin(alpha)), match py and pz
+    # => alpha = atan2(-pz, -py)
+    return math.degrees(math.atan2(-pz, -py))
+
+
 def _shoulder_to_zyx(
     shoulder_abd_deg: float,
     shoulder_horiz_deg: float,
@@ -253,6 +350,13 @@ def _elbow_to_zyx(
     as the shoulder at large deviation angles.  This function solves for the exact
     ZYX angles that reproduce the intended forearm direction.
 
+    The axial channel theta_x also requires a correction beyond the simple sign
+    negation of ps.  When the Rz*Ry compound rotation places the forearm at a
+    non-zero (dev, fe), its "zero axial" frame drifts from the T-pose palm
+    orientation.  _axial_correction(dev, fe) returns the offset needed so that
+    ps=0 in Cometa maps to the same palm orientation as Cometa's T-pose reference
+    (i.e. the rigid-body-rotation of the T-pose palm, not BVH's arbitrary zero).
+
     Returns:
         (theta_z_deg, theta_y_deg, theta_x_deg) for BVH ZYX channels
     """
@@ -261,7 +365,7 @@ def _elbow_to_zyx(
 
     theta_y = math.asin(math.cos(dev) * math.sin(fe))
     theta_z = math.atan2(-math.sin(dev), math.cos(dev) * math.cos(fe))
-    theta_x = math.radians(-elbow_ps_deg)
+    theta_x = math.radians(_axial_correction(elbow_dev_deg, elbow_fe_deg) + (-elbow_ps_deg))
 
     return math.degrees(theta_z), math.degrees(theta_y), math.degrees(theta_x)
 
@@ -289,11 +393,13 @@ def _wrist_to_zyx(
     Matching components:
       theta_z = atan2( sin(fe),  cos(fe)*cos(rad))
       theta_y = asin(-cos(fe)*sin(rad))
-      theta_x = +rot
+      theta_x = -rot
 
     Sign difference vs shoulder/elbow: positive fe produces positive theta_z
     (flexion toward -Y maps to +Z BVH rotation), and rad is negated because
     Cometa's positive rad = ulnar (-Z) but BVH +Y = radial (+Z).
+    wrist_rot is negated (like elbow_ps) because Cometa's CW/CCW convention is
+    opposite to BVH's Rx sign convention.
 
     Returns:
         (theta_z_deg, theta_y_deg, theta_x_deg) for BVH ZYX channels
@@ -303,7 +409,7 @@ def _wrist_to_zyx(
 
     theta_z = math.atan2(math.sin(fe), math.cos(fe) * math.cos(rad))
     theta_y = math.asin(-math.cos(fe) * math.sin(rad))
-    theta_x = math.radians(wrist_rot_deg)
+    theta_x = math.radians(-wrist_rot_deg)
 
     return math.degrees(theta_z), math.degrees(theta_y), math.degrees(theta_x)
 
