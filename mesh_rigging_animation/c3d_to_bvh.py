@@ -27,7 +27,7 @@ Angle-to-BVH channel mapping (ZYX rotation order, arm rest direction = -X):
     is a negative Xrotation (rotating around -X world = forearm axis), so
     the sign must be negated: X_bvh = -ps_cometa.
   Elbow Deviation                  -> RightForeArm Y = +dev
-  Wrist Flexion (+bend)            -> RightHand  Z = -fe
+  Wrist Flexion (+bend)            -> RightHand  Z = +fe
   Wrist Ulnar/Radial Deviation     -> RightHand  Y = +rad  (T-pose offset subtracted)
     Cometa wrist_rad has a notable T-pose offset (~-10 deg) that is removed
     by subtracting the mean wrist_rad over the initial T-pose segment.
@@ -261,11 +261,11 @@ def _map_angles_to_bvh(
     )
 
     # Wrist -> RightHand ZYX
-    # Z = -fe:  +flexion = hand rotates toward +Y in forearm frame = R_z(-angle)
+    # Z = +fe:  +flexion = hand rotates toward -Y in forearm frame = R_z(+angle)
     # Y = +rad: ulnar/radial deviation
     # X = +rot: CW/CCW rotation = axial rotation
     hand = (
-        -frame.wrist_fe,
+        +frame.wrist_fe,
         +frame.wrist_rad,
         +frame.wrist_rot,
     )
