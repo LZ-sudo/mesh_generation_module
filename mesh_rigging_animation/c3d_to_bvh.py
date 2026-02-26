@@ -10,12 +10,17 @@ Unlike the quaternion-based imu_to_bvh pipeline, this approach uses Cometa's
 pre-calibrated joint angles directly, bypassing the AHRS world-correction step.
 The Cometa software performs its own T-pose calibration and sensor-to-segment
 alignment internally, exposing the result as named degree-valued channels in
-the C3D ANALOG section.
+the C3D ANALOG section.  The chest IMU quaternion (also present in the C3D
+file) is read separately to animate Spine1 with trunk orientation.
 
 Angle-to-BVH channel mapping (ZYX rotation order, arm rest direction = -X):
-  All three joints (shoulder, elbow, wrist) use _spherical_to_zyx() with
-  per-joint sign conventions defined in _SHOULDER_SIGNS, _ELBOW_SIGNS, and
-  _WRIST_SIGNS.  The general formulas are:
+  Chest (Spine1) uses _quat_to_zyx() with per-axis sign conventions in
+  _CHEST_SIGNS.  The chest IMU quaternion is T-pose calibrated and converted
+  directly to ZYX Euler angles.
+
+  Arm joints (shoulder, elbow, wrist) use _spherical_to_zyx() with per-joint
+  sign conventions defined in _SHOULDER_SIGNS, _ELBOW_SIGNS, _WRIST_SIGNS.
+  The general formulas are:
     theta_z = atan2(elev_sign * sin(elev), cos(elev) * cos(azi))
     theta_y = asin(azi_sign  * cos(elev) * sin(azi))
     theta_x = _axial_correction(elev, azi) + axial_sign * axial_angle
@@ -38,8 +43,10 @@ from pathlib import Path
 from typing import List, Tuple
 
 import ezc3d
+import numpy as np
 
 from bvh_writer import write_bvh_hierarchy
+from imu_calibration import quaternion_inverse, quaternion_multiply, quaternion_to_euler
 
 
 # ---------------------------------------------------------------------------
@@ -61,6 +68,9 @@ _CHANNEL_LABELS = {
 _STATIC_3 = "0.000000 0.000000 0.000000 "
 _STATIC_6 = "0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 "
 
+# Chest IMU quaternion component channels: W, X, Y, Z order (:1, :2, :3, :4)
+_CHEST_QUAT_LABELS = ('Chest :1', 'Chest :2', 'Chest :3', 'Chest :4')
+
 
 # ---------------------------------------------------------------------------
 # CALIBRATION SETTINGS  (adjust here if needed)
@@ -74,6 +84,12 @@ _STATIC_6 = "0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 "
 _SHOULDER_SIGNS = dict(elev_sign=-1.0, azi_sign= 1.0, apply_correction=True,  axial_sign= 1.0)
 _ELBOW_SIGNS    = dict(elev_sign=-1.0, azi_sign= 1.0, apply_correction=True,  axial_sign=-1.0)
 _WRIST_SIGNS    = dict(elev_sign= 1.0, azi_sign=-1.0, apply_correction=False, axial_sign=-1.0)
+
+# Chest trunk sign conventions: change these if a trunk motion is inverted.
+# z_sign: sign of theta_z (lateral lean:           +1 = right-side up)
+# y_sign: sign of theta_y (axial rotation / twist: +1 = CCW when viewed from above)
+# x_sign: sign of theta_x (sagittal bend:          +1 = forward)
+_CHEST_SIGNS = dict(z_sign=1.0, y_sign=1.0, x_sign=1.0)
 
 # Duration (seconds) of the initial T-pose segment used for the wrist_rad
 # offset correction.  The subject must be in T-pose for at least this many
@@ -90,6 +106,8 @@ WRIST_RAD_BIAS_DEG: float = 15.0
 class JointAngleFrame:
     """One frame of pre-computed anatomical joint angles from Cometa C3D."""
     timestamp: float
+    # Chest quaternion [W, X, Y, Z] calibrated so T-pose = identity (1, 0, 0, 0)
+    chest_quat: Tuple[float, float, float, float]
     # Shoulder (3 DOF)
     shoulder_horiz: float   # Horizontal Flex/Ext [deg], +forward
     shoulder_vert: float    # Vertical Flex/Ext [deg]
@@ -167,11 +185,20 @@ def parse_c3d_joint_angles(
     wrist_rad      = _get_channel('wrist_rad')
     wrist_rot      = _get_channel('wrist_rot')
 
+    chest_labels = _CHEST_QUAT_LABELS
+    chest_ch = [analogs[0, label_to_idx[lbl], :] for lbl in chest_labels]
+
     n_total = analogs.shape[2]
     frames = []
     for i in range(0, n_total, step):
         frames.append(JointAngleFrame(
             timestamp=i / analog_rate,
+            chest_quat=(
+                float(chest_ch[0][i]),
+                float(chest_ch[1][i]),
+                float(chest_ch[2][i]),
+                float(chest_ch[3][i]),
+            ),
             shoulder_horiz=float(shoulder_horiz[i]),
             shoulder_vert=float(shoulder_vert[i]),
             shoulder_abd=float(shoulder_abd[i]),
@@ -191,6 +218,32 @@ def parse_c3d_joint_angles(
     for frame in frames:
         frame.wrist_rad = frame.wrist_rad - wrist_rad_offset + wrist_rad_bias_deg
 
+    # Apply chest quaternion T-pose calibration with world-frame correction.
+    # The raw chest quaternion captures the sensor's orientation in Cometa's
+    # world frame; at T-pose this is non-identity.  Left-multiplying by the
+    # T-pose inverse (chest_offset * q_raw) is algebraically equivalent to
+    # right-multiply calibration followed by the similarity transform
+    # R_CB * q_cal * R_CB^{-1} used by the quaternion pipeline.  This maps
+    # T-pose to identity AND re-expresses subsequent rotations in BVH's world
+    # frame (Y-up, Z-forward), so that trunk twist maps to Y-rotation and
+    # trunk lean maps to Z/X-rotation as expected.
+    q_stack = np.array([list(f.chest_quat) for f in frames[:n_tpose]])
+    q_ref = q_stack[0]
+    for i in range(1, len(q_stack)):
+        if np.dot(q_stack[i], q_ref) < 0:
+            q_stack[i] = -q_stack[i]
+    q_tpose_mean = q_stack.mean(axis=0)
+    q_tpose_mean = q_tpose_mean / np.linalg.norm(q_tpose_mean)
+    chest_offset = quaternion_inverse(q_tpose_mean)
+    for frame in frames:
+        q_raw = np.array(frame.chest_quat)
+        if np.linalg.norm(q_raw) > 0.5:
+            q_cal = quaternion_multiply(chest_offset, q_raw)
+        else:
+            # Zero-norm sample (dropped IMU frame in C3D): treat as no rotation.
+            q_cal = np.array([1.0, 0.0, 0.0, 0.0])
+        frame.chest_quat = (float(q_cal[0]), float(q_cal[1]), float(q_cal[2]), float(q_cal[3]))
+
     if verbose:
         print(f"  Analog rate: {analog_rate:.0f} Hz, IMU rate: {imu_rate:.3f} Hz (stride={step})")
         print(f"  Extracted {len(frames)} unique frames")
@@ -198,6 +251,8 @@ def parse_c3d_joint_angles(
         print(f"  wrist_rad T-pose offset removed: {wrist_rad_offset:+.2f} deg")
         if wrist_rad_bias_deg != 0.0:
             print(f"  wrist_rad extra bias applied:    {wrist_rad_bias_deg:+.2f} deg")
+        print(f"  Chest T-pose quat:  [{q_tpose_mean[0]:+.4f}, {q_tpose_mean[1]:+.4f}, "
+              f"{q_tpose_mean[2]:+.4f}, {q_tpose_mean[3]:+.4f}]")
 
     return frames
 
@@ -356,6 +411,33 @@ def _spherical_to_zyx(
     return math.degrees(theta_z), math.degrees(theta_y), math.degrees(theta_x)
 
 
+def _quat_to_zyx(
+    chest_quat: Tuple[float, float, float, float],
+    *,
+    z_sign: float,
+    y_sign: float,
+    x_sign: float,
+) -> Tuple[float, float, float]:
+    """
+    Convert a calibrated chest quaternion to BVH ZYX Euler angles.
+
+    The quaternion must already be calibrated so that T-pose = identity
+    (1, 0, 0, 0).  Sign conventions control the direction of each Euler
+    channel and are defined in _CHEST_SIGNS in the CALIBRATION SETTINGS block.
+
+    Args:
+        chest_quat: Calibrated chest quaternion [W, X, Y, Z]
+        z_sign:     Sign applied to theta_z (lateral lean)
+        y_sign:     Sign applied to theta_y (axial rotation / twist)
+        x_sign:     Sign applied to theta_x (sagittal bend)
+
+    Returns:
+        (theta_z_deg, theta_y_deg, theta_x_deg) for BVH ZYX channels
+    """
+    tz, ty, tx = quaternion_to_euler(np.array(chest_quat), order='ZYX')
+    return z_sign * tz, y_sign * ty, x_sign * tx
+
+
 def _map_angles_to_bvh(
     frame: JointAngleFrame,
 ) -> Tuple[
@@ -370,12 +452,11 @@ def _map_angles_to_bvh(
     The BVH skeleton uses CMU convention: +Y up, +Z forward, right arm at -X.
     All rotations are ZYX intrinsic Euler angles relative to the parent bone.
 
-    All joints use _spherical_to_zyx() with the sign conventions defined in
+    Chest uses _quat_to_zyx() with sign conventions defined in _CHEST_SIGNS.
+    Arm joints use _spherical_to_zyx() with sign conventions defined in
     _SHOULDER_SIGNS, _ELBOW_SIGNS, and _WRIST_SIGNS.
     """
-    # Chest (Spine1): no dedicated chest-relative angle available; kept static.
-    chest = (0.0, 0.0, 0.0)
-
+    chest   = _quat_to_zyx(frame.chest_quat,                                                   **_CHEST_SIGNS)
     arm     = _spherical_to_zyx(frame.shoulder_abd, frame.shoulder_horiz, frame.shoulder_vert, **_SHOULDER_SIGNS)
     forearm = _spherical_to_zyx(frame.elbow_dev,    frame.elbow_fe,       frame.elbow_ps,      **_ELBOW_SIGNS)
     hand    = _spherical_to_zyx(frame.wrist_fe,     frame.wrist_rad,      frame.wrist_rot,     **_WRIST_SIGNS)
@@ -476,7 +557,7 @@ Examples:
 Notes:
   - Input must be a Cometa Systems C3D file with pre-computed joint angle channels.
   - Required channels: Right Shoulder/Elbow/Wrist (3 DOF each).
-  - Chest is kept static; only the right arm chain is animated.
+  - Chest (Spine1) is animated from the chest IMU quaternion; right arm chain uses pre-computed joint angles.
   - Output BVH uses CMU mocap full-body skeleton (same as imu_to_bvh pipeline).
         """,
     )
