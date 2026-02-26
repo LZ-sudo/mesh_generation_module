@@ -19,7 +19,9 @@ Angle-to-BVH channel mapping (ZYX rotation order, arm rest direction = -X):
   directly to ZYX Euler angles.
 
   Arm joints (shoulder, elbow, wrist) use _spherical_to_zyx() with per-joint
-  sign conventions defined in _SHOULDER_SIGNS, _ELBOW_SIGNS, _WRIST_SIGNS.
+  sign conventions defined in _RIGHT_SHOULDER_SIGNS, _RIGHT_ELBOW_SIGNS,
+  _RIGHT_WRIST_SIGNS (right arm) or _LEFT_SHOULDER_SIGNS, _LEFT_ELBOW_SIGNS,
+  _LEFT_WRIST_SIGNS (left arm).
   The general formulas are:
     theta_z = atan2(elev_sign * sin(elev), cos(elev) * cos(azi))
     theta_y = asin(azi_sign  * cos(elev) * sin(azi))
@@ -53,7 +55,7 @@ from imu_calibration import quaternion_inverse, quaternion_multiply, quaternion_
 # Cometa channel label constants (Cometa EMG and Motion Tools naming)
 # ---------------------------------------------------------------------------
 
-_CHANNEL_LABELS = {
+_RIGHT_CHANNEL_LABELS = {
     'shoulder_horiz': 'Right Shoulder :Horizontal Flexion/Extension',
     'shoulder_vert':  'Right Shoulder :Vertical Flexion/Extension',
     'shoulder_abd':   'Right Shoulder :Abduction/Adduction',
@@ -63,6 +65,18 @@ _CHANNEL_LABELS = {
     'wrist_fe':       'Right Wrist :Flexion/Extension',
     'wrist_rad':      'Right Wrist :Ulnar/Radial Deviation',
     'wrist_rot':      'Right Wrist :CW/CCW Rotation',
+}
+
+_LEFT_CHANNEL_LABELS = {
+    'shoulder_horiz': 'Left Shoulder :Horizontal Flexion/Extension',
+    'shoulder_vert':  'Left Shoulder :Vertical Flexion/Extension',
+    'shoulder_abd':   'Left Shoulder :Abduction/Adduction',
+    'elbow_fe':       'Left Elbow :Flexion/Extension',
+    'elbow_ps':       'Left Elbow :Pronation/Supination',
+    'elbow_dev':      'Left Elbow :Deviation',
+    'wrist_fe':       'Left Wrist :Flexion/Extension',
+    'wrist_rad':      'Left Wrist :Ulnar/Radial Deviation',
+    'wrist_rot':      'Left Wrist :CW/CCW Rotation',
 }
 
 _STATIC_3 = "0.000000 0.000000 0.000000 "
@@ -81,9 +95,16 @@ _CHEST_QUAT_LABELS = ('Chest :1', 'Chest :2', 'Chest :3', 'Chest :4')
 # azi_sign:         sign of cos(elev)*sin(azi) in the asin argument for theta_y
 # apply_correction: whether _axial_correction() is added to theta_x
 # axial_sign:       sign applied to axial_deg when computing theta_x
-_SHOULDER_SIGNS = dict(elev_sign=-1.0, azi_sign= 1.0, apply_correction=True,  axial_sign= 1.0)
-_ELBOW_SIGNS    = dict(elev_sign=-1.0, azi_sign= 1.0, apply_correction=True,  axial_sign=-1.0)
-_WRIST_SIGNS    = dict(elev_sign= 1.0, azi_sign=-1.0, apply_correction=False, axial_sign=-1.0)
+_RIGHT_SHOULDER_SIGNS = dict(elev_sign=-1.0, azi_sign= 1.0, apply_correction=True,  axial_sign= 1.0)
+_RIGHT_ELBOW_SIGNS    = dict(elev_sign=-1.0, azi_sign= 1.0, apply_correction=True,  axial_sign=-1.0)
+_RIGHT_WRIST_SIGNS    = dict(elev_sign= 1.0, azi_sign=-1.0, apply_correction=False, axial_sign=-1.0)
+
+# Left-arm equivalents: elev_sign and azi_sign are geometrically flipped because
+# the left arm rests in +X (vs right arm -X).  axial_sign values are initial
+# guesses — validate against a left-arm recording in Blender and adjust if needed.
+_LEFT_SHOULDER_SIGNS = dict(elev_sign= 1.0, azi_sign=-1.0, apply_correction=True,  axial_sign=-1.0)
+_LEFT_ELBOW_SIGNS    = dict(elev_sign= 1.0, azi_sign=-1.0, apply_correction=True,  axial_sign= 1.0)
+_LEFT_WRIST_SIGNS    = dict(elev_sign=-1.0, azi_sign= 1.0, apply_correction=False, axial_sign= 1.0)
 
 # Chest trunk sign conventions: change these if a trunk motion is inverted.
 # z_sign: sign of theta_z (lateral lean:           +1 = right-side up)
@@ -122,12 +143,40 @@ class JointAngleFrame:
     wrist_rot: float        # CW/CCW Rotation [deg]
 
 
+def _detect_arm_side(label_to_idx: dict) -> str:
+    """
+    Detect which arm is instrumented from the C3D analog channel labels.
+
+    Checks for the shoulder abduction/adduction channel of each side, which
+    is always present in a Cometa joint-angle export regardless of recording
+    configuration.
+
+    Args:
+        label_to_idx: Mapping of channel label string to analog array index.
+
+    Returns:
+        'right' or 'left'
+
+    Raises:
+        ValueError: If neither right nor left shoulder channels are present.
+    """
+    if 'Right Shoulder :Abduction/Adduction' in label_to_idx:
+        return 'right'
+    if 'Left Shoulder :Abduction/Adduction' in label_to_idx:
+        return 'left'
+    raise ValueError(
+        "No arm joint angle channels found in C3D file. "
+        "Expected 'Right Shoulder :Abduction/Adduction' or "
+        "'Left Shoulder :Abduction/Adduction' in the analog channel labels."
+    )
+
+
 def parse_c3d_joint_angles(
     c3d_path: Path,
     tpose_duration: float = TPOSE_DURATION_S,
     wrist_rad_bias_deg: float = WRIST_RAD_BIAS_DEG,
     verbose: bool = False,
-) -> List[JointAngleFrame]:
+) -> Tuple[List[JointAngleFrame], str]:
     """
     Parse pre-computed joint angles from a Cometa C3D file.
 
@@ -153,7 +202,8 @@ def parse_c3d_joint_angles(
         verbose: Print parsing details
 
     Returns:
-        List of JointAngleFrame at ~142.857 Hz with wrist_rad offset corrected
+        Tuple of (frames, side) where frames is a List of JointAngleFrame at
+        ~142.857 Hz with wrist_rad offset corrected, and side is 'right' or 'left'.
 
     Raises:
         ValueError: If required joint angle channels are not found in the C3D file
@@ -168,8 +218,11 @@ def parse_c3d_joint_angles(
     an_labels = c['parameters']['ANALOG']['LABELS']['value']
     label_to_idx = {lbl.strip(): i for i, lbl in enumerate(an_labels)}
 
+    side = _detect_arm_side(label_to_idx)
+    channel_labels = _RIGHT_CHANNEL_LABELS if side == 'right' else _LEFT_CHANNEL_LABELS
+
     def _get_channel(key: str):
-        label = _CHANNEL_LABELS[key]
+        label = channel_labels[key]
         idx = label_to_idx.get(label)
         if idx is None:
             raise ValueError(f"Channel not found in C3D file: '{label}'")
@@ -245,6 +298,7 @@ def parse_c3d_joint_angles(
         frame.chest_quat = (float(q_cal[0]), float(q_cal[1]), float(q_cal[2]), float(q_cal[3]))
 
     if verbose:
+        print(f"  Arm side: {side}")
         print(f"  Analog rate: {analog_rate:.0f} Hz, IMU rate: {imu_rate:.3f} Hz (stride={step})")
         print(f"  Extracted {len(frames)} unique frames")
         print(f"  Duration: {frames[-1].timestamp:.2f}s")
@@ -254,7 +308,7 @@ def parse_c3d_joint_angles(
         print(f"  Chest T-pose quat:  [{q_tpose_mean[0]:+.4f}, {q_tpose_mean[1]:+.4f}, "
               f"{q_tpose_mean[2]:+.4f}, {q_tpose_mean[3]:+.4f}]")
 
-    return frames
+    return frames, side
 
 
 def _downsample_joint_angles(
@@ -269,7 +323,7 @@ def _downsample_joint_angles(
     return frames[::step]
 
 
-def _axial_correction(dev_deg: float, fe_deg: float) -> float:
+def _axial_correction(dev_deg: float, fe_deg: float, side: str = 'right') -> float:
     """
     Compute the BVH theta_x bias introduced by the ZY compound rotation.
 
@@ -300,12 +354,14 @@ def _axial_correction(dev_deg: float, fe_deg: float) -> float:
     dev = math.radians(dev_deg)
     fe  = math.radians(fe_deg)
 
-    d_tpose = (-1.0, 0.0, 0.0)
+    # Right arm rests along -X; left arm rests along +X.
+    x_sign  = -1.0 if side == 'right' else 1.0
+    d_tpose = (x_sign, 0.0, 0.0)
     p_tpose = (0.0, -1.0, 0.0)
     d_new   = (
-        -math.cos(dev) * math.cos(fe),
-         math.sin(dev),
-         math.cos(dev) * math.sin(fe),
+        x_sign * math.cos(dev) * math.cos(fe),
+        math.sin(dev),
+        math.cos(dev) * math.sin(fe),
     )
 
     def _dot(a, b):
@@ -341,9 +397,11 @@ def _axial_correction(dev_deg: float, fe_deg: float) -> float:
         k_axis = _norm(_cross(d_tpose, d_new))
         expected_palm = _rodrigues(p_tpose, k_axis, math.acos(cos_theta))
 
-    # BVH ZY angles for d_new
-    theta_y = math.asin(math.cos(dev) * math.sin(fe))
-    theta_z = math.atan2(-math.sin(dev), math.cos(dev) * math.cos(fe))
+    # BVH ZY angles for d_new — sign conventions mirror _spherical_to_zyx.
+    # Right arm (x_sign=-1): elev_sign=-1, azi_sign=+1
+    # Left arm  (x_sign=+1): elev_sign=+1, azi_sign=-1
+    theta_y = math.asin(-x_sign * math.cos(dev) * math.sin(fe))
+    theta_z = math.atan2( x_sign * math.sin(dev), math.cos(dev) * math.cos(fe))
 
     # Undo ZY to bring expected_palm into limb-local frame
     # p_local = Ry(-theta_y) * Rz(-theta_z) * expected_palm
@@ -372,6 +430,7 @@ def _spherical_to_zyx(
     azi_sign: float,
     apply_correction: bool,
     axial_sign: float,
+    side: str = 'right',
 ) -> Tuple[float, float, float]:
     """
     Convert Cometa spherical joint angles to BVH ZYX Euler angles.
@@ -380,7 +439,7 @@ def _spherical_to_zyx(
     coordinate convention where the limb rests along -X and is displaced by
     two angular coordinates (elevation, azimuth) plus an axial rotation.
     Sign conventions differ per joint and are controlled by the keyword
-    arguments -- see _SHOULDER_SIGNS, _ELBOW_SIGNS, _WRIST_SIGNS.
+    arguments -- see _RIGHT_SHOULDER_SIGNS/_LEFT_SHOULDER_SIGNS etc.
 
     General formulas:
       theta_z = atan2(elev_sign * sin(elev), cos(elev) * cos(azi))
@@ -405,7 +464,7 @@ def _spherical_to_zyx(
 
     theta_y = math.asin(azi_sign * math.cos(elev) * math.sin(azi))
     theta_z = math.atan2(elev_sign * math.sin(elev), math.cos(elev) * math.cos(azi))
-    correction = _axial_correction(elev_deg, azi_deg) if apply_correction else 0.0
+    correction = _axial_correction(elev_deg, azi_deg, side) if apply_correction else 0.0
     theta_x = math.radians(correction + axial_sign * axial_deg)
 
     return math.degrees(theta_z), math.degrees(theta_y), math.degrees(theta_x)
@@ -440,26 +499,33 @@ def _quat_to_zyx(
 
 def _map_angles_to_bvh(
     frame: JointAngleFrame,
+    side: str,
 ) -> Tuple[
     Tuple[float, float, float],   # Spine1 (chest): Z, Y, X
-    Tuple[float, float, float],   # RightArm: Z, Y, X
-    Tuple[float, float, float],   # RightForeArm: Z, Y, X
-    Tuple[float, float, float],   # RightHand: Z, Y, X
+    Tuple[float, float, float],   # Arm: Z, Y, X
+    Tuple[float, float, float],   # ForeArm: Z, Y, X
+    Tuple[float, float, float],   # Hand: Z, Y, X
 ]:
     """
     Map Cometa anatomical joint angles to BVH ZYX Euler channel values.
 
-    The BVH skeleton uses CMU convention: +Y up, +Z forward, right arm at -X.
-    All rotations are ZYX intrinsic Euler angles relative to the parent bone.
+    The BVH skeleton uses CMU convention: +Y up, +Z forward, right arm at -X,
+    left arm at +X.  All rotations are ZYX intrinsic Euler angles relative to
+    the parent bone.
 
     Chest uses _quat_to_zyx() with sign conventions defined in _CHEST_SIGNS.
-    Arm joints use _spherical_to_zyx() with sign conventions defined in
-    _SHOULDER_SIGNS, _ELBOW_SIGNS, and _WRIST_SIGNS.
+    Arm joints use _spherical_to_zyx() with per-joint sign dicts selected by
+    side: _RIGHT_SHOULDER/_ELBOW/_WRIST_SIGNS for right, _LEFT_* variants for left.
     """
-    chest   = _quat_to_zyx(frame.chest_quat,                                                   **_CHEST_SIGNS)
-    arm     = _spherical_to_zyx(frame.shoulder_abd, frame.shoulder_horiz, frame.shoulder_vert, **_SHOULDER_SIGNS)
-    forearm = _spherical_to_zyx(frame.elbow_dev,    frame.elbow_fe,       frame.elbow_ps,      **_ELBOW_SIGNS)
-    hand    = _spherical_to_zyx(frame.wrist_fe,     frame.wrist_rad,      frame.wrist_rot,     **_WRIST_SIGNS)
+    if side == 'right':
+        s_signs, e_signs, w_signs = _RIGHT_SHOULDER_SIGNS, _RIGHT_ELBOW_SIGNS, _RIGHT_WRIST_SIGNS
+    else:
+        s_signs, e_signs, w_signs = _LEFT_SHOULDER_SIGNS, _LEFT_ELBOW_SIGNS, _LEFT_WRIST_SIGNS
+
+    chest   = _quat_to_zyx(frame.chest_quat,                                                                **_CHEST_SIGNS)
+    arm     = _spherical_to_zyx(frame.shoulder_abd, frame.shoulder_horiz, frame.shoulder_vert, side=side, **s_signs)
+    forearm = _spherical_to_zyx(frame.elbow_dev,    frame.elbow_fe,       frame.elbow_ps,      side=side, **e_signs)
+    hand    = _spherical_to_zyx(frame.wrist_fe,     frame.wrist_rad,      frame.wrist_rot,     side=side, **w_signs)
 
     return chest, arm, forearm, hand
 
@@ -467,6 +533,7 @@ def _map_angles_to_bvh(
 def write_bvh_from_joint_angles(
     frames: List[JointAngleFrame],
     output_path: Path,
+    side: str = 'right',
     target_fps: float = 120.0,
     verbose: bool = False,
 ) -> bool:
@@ -512,24 +579,48 @@ def write_bvh_from_joint_angles(
             f.write(f"Frame Time: {frame_time:.6f}\n")
 
             for i, frame in enumerate(frames):
-                chest, arm, forearm, hand = _map_angles_to_bvh(frame)
+                chest, arm, forearm, hand = _map_angles_to_bvh(frame, side)
                 # 96 channels total: 6 (Hips) + 30 joints x 3
-                # Animated: Spine1, RightArm, RightForeArm, RightHand
-                line = (
-                    _STATIC_6                                                       # Hips (pos + rot)
-                    + _STATIC_3 * 5                                                 # LHipJoint..LeftToeBase
-                    + _STATIC_3 * 5                                                 # RHipJoint..RightToeBase
-                    + _STATIC_3 * 2                                                 # LowerBack, Spine
-                    + f"{chest[0]:.6f} {chest[1]:.6f} {chest[2]:.6f} "            # Spine1
-                    + _STATIC_3 * 3                                                 # Neck, Neck1, Head
-                    + _STATIC_3 * 7                                                 # LeftShoulder..LThumb
-                    + _STATIC_3                                                     # RightShoulder
-                    + f"{arm[0]:.6f} {arm[1]:.6f} {arm[2]:.6f} "                  # RightArm
-                    + f"{forearm[0]:.6f} {forearm[1]:.6f} {forearm[2]:.6f} "      # RightForeArm
-                    + f"{hand[0]:.6f} {hand[1]:.6f} {hand[2]:.6f} "               # RightHand
-                    + _STATIC_3 * 2                                                 # RightFingerBase, RightHandIndex1
-                    + "0.000000 0.000000 0.000000\n"                               # RThumb
-                )
+                # Animated: Spine1 + the instrumented arm chain (left or right)
+                arm_str     = f"{arm[0]:.6f} {arm[1]:.6f} {arm[2]:.6f} "
+                forearm_str = f"{forearm[0]:.6f} {forearm[1]:.6f} {forearm[2]:.6f} "
+                hand_str    = f"{hand[0]:.6f} {hand[1]:.6f} {hand[2]:.6f} "
+                spine1_str  = f"{chest[0]:.6f} {chest[1]:.6f} {chest[2]:.6f} "
+                if side == 'right':
+                    line = (
+                        _STATIC_6                   # Hips (pos + rot)
+                        + _STATIC_3 * 5             # LHipJoint..LeftToeBase
+                        + _STATIC_3 * 5             # RHipJoint..RightToeBase
+                        + _STATIC_3 * 2             # LowerBack, Spine
+                        + spine1_str                # Spine1
+                        + _STATIC_3 * 3             # Neck, Neck1, Head
+                        + _STATIC_3 * 7             # LeftShoulder..LThumb
+                        + _STATIC_3                 # RightShoulder
+                        + arm_str                   # RightArm
+                        + forearm_str               # RightForeArm
+                        + hand_str                  # RightHand
+                        + _STATIC_3 * 2             # RightFingerBase, RightHandIndex1
+                        + "0.000000 0.000000 0.000000\n"  # RThumb
+                    )
+                else:
+                    line = (
+                        _STATIC_6                   # Hips (pos + rot)
+                        + _STATIC_3 * 5             # LHipJoint..LeftToeBase
+                        + _STATIC_3 * 5             # RHipJoint..RightToeBase
+                        + _STATIC_3 * 2             # LowerBack, Spine
+                        + spine1_str                # Spine1
+                        + _STATIC_3 * 3             # Neck, Neck1, Head
+                        + _STATIC_3                 # LeftShoulder
+                        + arm_str                   # LeftArm
+                        + forearm_str               # LeftForeArm
+                        + hand_str                  # LeftHand
+                        + _STATIC_3 * 2             # LeftFingerBase, LeftHandIndex1
+                        + _STATIC_3                 # LThumb
+                        + _STATIC_3                 # RightShoulder
+                        + _STATIC_3 * 3             # RightArm, RightForeArm, RightHand
+                        + _STATIC_3 * 2             # RightFingerBase, RightHandIndex1
+                        + "0.000000 0.000000 0.000000\n"  # RThumb
+                    )
                 f.write(line)
 
                 if verbose and (i + 1) % 500 == 0:
@@ -591,10 +682,11 @@ Notes:
 
     print("Step 1: Parsing C3D joint angles...")
     try:
-        frames = parse_c3d_joint_angles(
+        frames, side = parse_c3d_joint_angles(
             input_path,
             verbose=args.verbose,
         )
+        print(f"  Arm side: {side}")
         print(f"  Parsed {len(frames)} frames")
         print(f"  Duration: {frames[-1].timestamp:.2f}s")
     except Exception as e:
@@ -609,6 +701,7 @@ Notes:
         success = write_bvh_from_joint_angles(
             frames,
             output_path,
+            side=side,
             target_fps=args.fps,
             verbose=args.verbose,
         )
