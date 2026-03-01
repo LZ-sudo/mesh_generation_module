@@ -21,8 +21,11 @@ mesh_generation_module/
 │   └── build_lookup_table.py       # Lookup table generator (For training TabM model)
 ├── mesh_hair_generation/           # Hair asset application
 │   └── mpfb_hair_assets_application.py  # Hair asset library
-├── mesh_rigging_animation/         # Animation retargeting
-│   └── animation_utils.py          # CMU MB BVH/FBX animation retargeting library
+├── mesh_rigging_animation/         # IMU motion capture processing and animation retargeting
+│   ├── animation_utils.py          # CMU MB BVH/FBX animation retargeting library
+│   ├── bvh_writer.py               # CMU mocap BVH skeleton hierarchy writer
+│   ├── c3d_to_bvh.py               # Cometa C3D joint angles to BVH converter
+│   └── imu_calibration.py          # Quaternion math primitives for IMU calibration
 ├── configs/                        # Configuration files
 │   └── lookup_table_config_*.json  # Lookup table configurations
 ├── lookup_tables/                  # Generated measurement databases
@@ -47,6 +50,7 @@ mesh_generation_module/
 - **Headless Operation**: No GUI required for batch processing
 - **Rigging Support**: Automatic skeletal rig with 2 rig types (`default_no_toes`, `cmu_mb`)
 - **Animation Baking**: Retarget CMU Motion Capture Database BVH animations onto generated characters via the retarget_bvh addon
+- **IMU Motion Capture to BVH**: Convert Cometa C3D files containing pre-computed wearable IMU joint angles into CMU-compatible BVH animations, with T-pose calibration and configurable sign conventions per joint and arm side
 - **Hair Assets**: Apply MakeHuman hair with automatic rigging and bone weight transfer
 - **FBX Export**: Compatible with Unity, Unreal Engine, and other 3D applications
 
@@ -320,6 +324,43 @@ python run_blender.py --script generate_human.py -- \
 
 The retargeted animation is baked into the exported FBX, ready for use in Unity, Unreal Engine, or any other 3D application.
 
+### C3D to BVH Conversion
+
+Convert Cometa Systems C3D files containing pre-computed wearable IMU joint angles into CMU mocap-compatible BVH animations. The output BVH files can be used directly with Animation Baking (see above).
+
+```bash
+# Basic conversion
+python mesh_rigging_animation/c3d_to_bvh.py -i path/to/capture.c3d -o path/to/animation.bvh
+
+# With custom frame rate and verbose output
+python mesh_rigging_animation/c3d_to_bvh.py -i path/to/capture.c3d -o path/to/animation.bvh --fps 120 --verbose
+```
+
+**Expected C3D Channel Labels (Cometa format):**
+
+| Joint | Degrees of Freedom | Right Arm Label | Left Arm Label |
+|-------|--------------------|-----------------|----------------|
+| Shoulder | Horizontal Flex/Ext | `Right Shoulder :Horizontal Flexion/Extension` | `Left Shoulder :Horizontal Flexion/Extension` |
+| Shoulder | Vertical Flex/Ext | `Right Shoulder :Vertical Flexion/Extension` | `Left Shoulder :Vertical Flexion/Extension` |
+| Shoulder | Abduction/Adduction | `Right Shoulder :Abduction/Adduction` | `Left Shoulder :Abduction/Adduction` |
+| Elbow | Flexion/Extension | `Right Elbow :Flexion/Extension` | `Left Elbow :Flexion/Extension` |
+| Elbow | Pronation/Supination | `Right Elbow :Pronation/Supination` | `Left Elbow :Pronation/Supination` |
+| Elbow | Deviation | `Right Elbow :Deviation` | `Left Elbow :Deviation` |
+| Wrist | Flexion/Extension | `Right Wrist :Flexion/Extension` | `Left Wrist :Flexion/Extension` |
+| Wrist | Ulnar/Radial Dev. | `Right Wrist :Ulnar/Radial Deviation` | `Left Wrist :Ulnar/Radial Deviation` |
+| Wrist | CW/CCW Rotation | `Right Wrist :CW/CCW Rotation` | `Left Wrist :CW/CCW Rotation` |
+| Chest | IMU Quaternion | `Chest :1`, `Chest :2`, `Chest :3`, `Chest :4` (W, X, Y, Z) | *(same)* |
+
+The arm side is auto-detected from the channel labels present in the C3D file.
+
+**Calibration settings** (configurable at the top of `c3d_to_bvh.py`):
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `TPOSE_DURATION_S` | `1.0` | Duration (seconds) of the initial T-pose segment used to compute calibration offsets |
+| `WRIST_RAD_BIAS_DEG` | `15.0` | Extra ulnar/radial deviation bias applied after T-pose offset correction (positive = ulnar) |
+| `_RIGHT_SHOULDER_SIGNS` / `_LEFT_SHOULDER_SIGNS` | See file | Per-axis sign conventions and axial correction flags for each joint and arm side |
+
 ### Two-Phase Microparameter Adjustment
 
 The system uses a two-phase adjustment strategy for accurate mesh recreation:
@@ -464,4 +505,5 @@ python build_lookup_table.py --config config.json --no-delete
 ### Motion Capture Data
 - [CMU Graphics Lab Motion Capture Database](https://mocap.cs.cmu.edu) - Motion capture animations
 - [cmubvh](https://github.com/Shriinivas/cmubvh) - CMU mocap data converted to BVH format for use with retarget_bvh
+- [ezc3d](https://github.com/pyomeca/ezc3d) - C3D file reader/writer for Cometa and other motion capture systems
 
