@@ -647,8 +647,10 @@ Examples:
 
 Notes:
   - Input must be a Cometa Systems C3D file with pre-computed joint angle channels.
-  - Required channels: Right Shoulder/Elbow/Wrist (3 DOF each).
-  - Chest (Spine1) is animated from the chest IMU quaternion; right arm chain uses pre-computed joint angles.
+  - Arm side (left/right) is auto-detected from the C3D analog channel labels.
+  - Required channels: Shoulder/Elbow/Wrist (3 DOF each) for the detected arm side.
+  - Chest (Spine1) is animated from the chest IMU quaternion; the detected arm chain
+    uses pre-computed joint angles. The non-instrumented arm remains static.
   - Output BVH uses CMU mocap full-body skeleton (same as imu_to_bvh pipeline).
         """,
     )

@@ -8,9 +8,11 @@ file.  The motion (MOTION) section is written by the calling pipeline
 
 Skeleton summary:
   - Full CMU-style body: Hips, legs, spine, head, both arms
-  - Only Spine1 (chest IMU) and the right arm chain are animated
-  - All other joints are static (identity rotation)
-  - Bone offsets are in centimeters (BVH standard)
+  - Bilateral skeleton: both left and right arm chains are present in the hierarchy
+  - Animated joints are Spine1 (chest IMU) plus whichever arm is detected from
+    the C3D file; the other arm remains static (identity rotation)
+  - Bone offsets are CMU Motion Capture Database reference values in centimeters,
+    matched to CMU MB rig animation assets
   - Rotation order: ZYX (Zrotation Yrotation Xrotation)
 """
 
@@ -21,17 +23,21 @@ def write_bvh_hierarchy(f):
 
     Creates a CMU-style full-body skeleton compatible with existing animation assets:
     - Uses ZYX rotation order (Zrotation Yrotation Xrotation) to match reference BVHs
-    - CMU bone naming: LowerBack, Spine, Spine1, RightArm, RightForeArm, RightHand
-    - Spine chain: Hips -> LowerBack -> Spine -> Spine1 (Spine1 has IMU chest data)
-    - Head: Neck -> Neck1 -> Head (dummy, static)
-    - Right arm: RightShoulder -> RightArm -> RightForeArm -> RightHand (IMU data)
-    - Left arm: LeftShoulder -> LeftArm (dummy, static)
-    - Legs: LHipJoint/RHipJoint with full leg chains (dummy, static)
+    - CMU bone naming: LowerBack, Spine, Spine1, RightArm, RightForeArm, RightHand, etc.
+    - Spine chain: Hips -> LowerBack -> Spine -> Spine1 (Spine1 animated from chest IMU)
+    - Head: Neck -> Neck1 -> Head (static)
+    - Right arm: RightShoulder -> RightArm -> RightForeArm -> RightHand ->
+                 RightFingerBase -> RightHandIndex1 / RThumb
+    - Left arm:  LeftShoulder  -> LeftArm  -> LeftForeArm  -> LeftHand  ->
+                 LeftFingerBase -> LeftHandIndex1 / LThumb
+    - Legs: LHipJoint/RHipJoint with full leg chains (static)
 
-    This structure matches animation_assets/*.bvh format for consistency.
-    Only the right arm and chest (Spine1) are animated from IMU data.
+    Both arm chains are present in the hierarchy. Which arm is animated is determined
+    by the calling pipeline (c3d_to_bvh.write_bvh_from_joint_angles) based on the
+    arm side detected from the C3D file. The non-instrumented arm remains static.
 
-    Bone offsets are in centimeters (BVH standard units).
+    Bone offsets are CMU Motion Capture Database reference values in centimeters,
+    matched to the CMU MB rig used in animation_assets/*.bvh.
     """
     hierarchy = """HIERARCHY
 ROOT Hips
