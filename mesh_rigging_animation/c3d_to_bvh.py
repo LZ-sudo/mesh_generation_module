@@ -117,10 +117,23 @@ _CHEST_SIGNS = dict(z_sign=1.0, y_sign=1.0, x_sign=1.0)
 # seconds at the start of every recording.
 TPOSE_DURATION_S: float = 1.0
 
-# Wrist radial/ulnar bias (degrees) added after T-pose offset correction.
+# Wrist radial/ulnar manual bias (degrees). Applied directly to the raw Cometa
+# wrist_rad channel without any automatic T-pose correction. Use only if a
+# systematic sensor offset is not correctable in Cometa's own calibration.
 # Positive = ulnar (reduces thumb-side tilt), negative = radial.
-# Increase if the hand tilts toward the thumb at rest; decrease otherwise.
-WRIST_RAD_BIAS_DEG: float = 15.0
+WRIST_RAD_BIAS_DEG: float = 0.0
+
+# Shoulder abduction/adduction bias (degrees) added after T-pose offset correction.
+# Positive = abduction (raises arm), negative = adduction (lowers arm).
+# Adjust if the arm drifts above or below horizontal at rest after T-pose calibration.
+# This offset also suppresses theta_z contamination at large shoulder_horiz angles,
+# where small shoulder_abd residuals get amplified by the spherical-to-ZYX formula.
+SHOULDER_ABD_BIAS_DEG: float = 0.0
+
+# Elbow deviation bias (degrees) added after T-pose offset correction.
+# Positive = deviation upward, negative = deviation downward.
+# Adjust if the forearm is not straight at rest after T-pose calibration.
+ELBOW_DEV_BIAS_DEG: float = 0.0
 
 
 @dataclass
@@ -175,6 +188,8 @@ def parse_c3d_joint_angles(
     c3d_path: Path,
     tpose_duration: float = TPOSE_DURATION_S,
     wrist_rad_bias_deg: float = WRIST_RAD_BIAS_DEG,
+    shoulder_abd_bias_deg: float = SHOULDER_ABD_BIAS_DEG,
+    elbow_dev_bias_deg: float = ELBOW_DEV_BIAS_DEG,
     verbose: bool = False,
 ) -> Tuple[List[JointAngleFrame], str]:
     """
@@ -185,20 +200,35 @@ def parse_c3d_joint_angles(
     unique frames at the effective IMU rate by stepping through the 2000 Hz
     data at the IMU stride interval.
 
-    A T-pose offset correction is applied to wrist_rad: the mean wrist_rad
-    value over the first tpose_duration seconds is subtracted from all frames
-    to remove the calibration bias that Cometa reports at anatomical neutral.
-    An additional wrist_rad_bias_deg can be added after the T-pose correction
-    to compensate for any residual radial/ulnar deviation visible in Blender:
-      positive bias -> ulnar direction (reduces thumb-side tilt)
-      negative bias -> radial direction (reduces little-finger-side tilt)
+    T-pose offset corrections are applied to shoulder_abd and elbow_dev: the
+    mean value of each channel over the first tpose_duration seconds is
+    subtracted from all frames to remove sensor bias at anatomical neutral.
+    Removing shoulder_abd bias is important because the spherical-to-ZYX
+    formula amplifies small shoulder_abd residuals into large theta_z (downward
+    arm) artifacts at large shoulder_horiz angles.  Additional per-channel bias
+    constants can be added after T-pose correction to compensate for any
+    residual visible in Blender.
+
+    wrist_rad is passed through without automatic T-pose correction, trusting
+    Cometa's own sensor calibration.  A manual wrist_rad_bias_deg offset can
+    be applied if a systematic deviation is observed after recording.
 
     Args:
         c3d_path: Path to Cometa C3D file
         tpose_duration: Duration (seconds) of the initial T-pose segment used
-            to compute the wrist_rad calibration offset (default: 1.0 s)
+            to compute calibration offsets for wrist_rad, shoulder_abd, and
+            elbow_dev (default: 1.0 s)
         wrist_rad_bias_deg: Extra offset (deg) added to all corrected wrist_rad
-            values after T-pose correction (default: 0.0)
+            values after T-pose correction (default: 15.0)
+        shoulder_abd_bias_deg: Extra offset (deg) added to all corrected
+            shoulder_abd values after T-pose correction (default: 0.0)
+        shoulder_abd_scale: Linear scale applied to shoulder_abd after bias
+            correction (default: 1.0). Use values below 1.0 to proportionally
+            reduce vertical arm movement without nonlinear distortion. Unlike
+            adjusting elev_sign to a fractional value, this scales the angle
+            linearly before it enters the spherical-to-ZYX formula.
+        elbow_dev_bias_deg: Extra offset (deg) added to all corrected
+            elbow_dev values after T-pose correction (default: 0.0)
         verbose: Print parsing details
 
     Returns:
@@ -263,13 +293,26 @@ def parse_c3d_joint_angles(
             wrist_rot=float(wrist_rot[i]),
         ))
 
-    # Subtract T-pose wrist_rad bias.  Cometa reports a notable non-zero offset
-    # (~-10 deg) for wrist_rad at anatomical neutral, so the mean over the
-    # initial T-pose segment is removed from every frame.
+    # Subtract T-pose offsets for shoulder_abd and elbow_dev.
+    # Cometa reports non-zero values at anatomical neutral for these channels;
+    # the mean over the initial T-pose segment is removed from every frame.
+    # Zeroing shoulder_abd is especially important: the spherical-to-ZYX formula
+    # amplifies small shoulder_abd residuals into large theta_z (downward arm)
+    # artefacts at large shoulder_horiz angles (denominator cos(azi) -> 0).
+    # wrist_rad is passed through without automatic correction.
     n_tpose = max(1, min(int(round(tpose_duration * imu_rate)), len(frames)))
-    wrist_rad_offset = sum(f.wrist_rad for f in frames[:n_tpose]) / n_tpose
+
+    if wrist_rad_bias_deg != 0.0:
+        for frame in frames:
+            frame.wrist_rad += wrist_rad_bias_deg
+
+    shoulder_abd_offset = sum(f.shoulder_abd for f in frames[:n_tpose]) / n_tpose
     for frame in frames:
-        frame.wrist_rad = frame.wrist_rad - wrist_rad_offset + wrist_rad_bias_deg
+        frame.shoulder_abd = frame.shoulder_abd - shoulder_abd_offset + shoulder_abd_bias_deg
+
+    elbow_dev_offset = sum(f.elbow_dev for f in frames[:n_tpose]) / n_tpose
+    for frame in frames:
+        frame.elbow_dev = frame.elbow_dev - elbow_dev_offset + elbow_dev_bias_deg
 
     # Apply chest quaternion T-pose calibration with world-frame correction.
     # The raw chest quaternion captures the sensor's orientation in Cometa's
@@ -302,9 +345,14 @@ def parse_c3d_joint_angles(
         print(f"  Analog rate: {analog_rate:.0f} Hz, IMU rate: {imu_rate:.3f} Hz (stride={step})")
         print(f"  Extracted {len(frames)} unique frames")
         print(f"  Duration: {frames[-1].timestamp:.2f}s")
-        print(f"  wrist_rad T-pose offset removed: {wrist_rad_offset:+.2f} deg")
+        print(f"  shoulder_abd T-pose offset removed: {shoulder_abd_offset:+.2f} deg")
+        if shoulder_abd_bias_deg != 0.0:
+            print(f"  shoulder_abd extra bias applied:    {shoulder_abd_bias_deg:+.2f} deg")
+        print(f"  elbow_dev T-pose offset removed: {elbow_dev_offset:+.2f} deg")
+        if elbow_dev_bias_deg != 0.0:
+            print(f"  elbow_dev extra bias applied:    {elbow_dev_bias_deg:+.2f} deg")
         if wrist_rad_bias_deg != 0.0:
-            print(f"  wrist_rad extra bias applied:    {wrist_rad_bias_deg:+.2f} deg")
+            print(f"  wrist_rad manual bias applied:   {wrist_rad_bias_deg:+.2f} deg")
         print(f"  Chest T-pose quat:  [{q_tpose_mean[0]:+.4f}, {q_tpose_mean[1]:+.4f}, "
               f"{q_tpose_mean[2]:+.4f}, {q_tpose_mean[3]:+.4f}]")
 
