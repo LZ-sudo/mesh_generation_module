@@ -216,17 +216,12 @@ def parse_c3d_joint_angles(
     Args:
         c3d_path: Path to Cometa C3D file
         tpose_duration: Duration (seconds) of the initial T-pose segment used
-            to compute calibration offsets for wrist_rad, shoulder_abd, and
+            to compute calibration offsets for shoulder_abd, shoulder_vert, and
             elbow_dev (default: 1.0 s)
         wrist_rad_bias_deg: Extra offset (deg) added to all corrected wrist_rad
             values after T-pose correction (default: 15.0)
         shoulder_abd_bias_deg: Extra offset (deg) added to all corrected
             shoulder_abd values after T-pose correction (default: 0.0)
-        shoulder_abd_scale: Linear scale applied to shoulder_abd after bias
-            correction (default: 1.0). Use values below 1.0 to proportionally
-            reduce vertical arm movement without nonlinear distortion. Unlike
-            adjusting elev_sign to a fractional value, this scales the angle
-            linearly before it enters the spherical-to-ZYX formula.
         elbow_dev_bias_deg: Extra offset (deg) added to all corrected
             elbow_dev values after T-pose correction (default: 0.0)
         verbose: Print parsing details
@@ -293,12 +288,14 @@ def parse_c3d_joint_angles(
             wrist_rot=float(wrist_rot[i]),
         ))
 
-    # Subtract T-pose offsets for shoulder_abd and elbow_dev.
+    # Subtract T-pose offsets for shoulder_abd, shoulder_vert, and elbow_dev.
     # Cometa reports non-zero values at anatomical neutral for these channels;
     # the mean over the initial T-pose segment is removed from every frame.
     # Zeroing shoulder_abd is especially important: the spherical-to-ZYX formula
     # amplifies small shoulder_abd residuals into large theta_z (downward arm)
     # artefacts at large shoulder_horiz angles (denominator cos(azi) -> 0).
+    # Zeroing shoulder_vert removes the sensor-to-segment axial bias so that
+    # theta_x = 0 at T-pose, keeping the palm at anatomical neutral throughout.
     # wrist_rad is passed through without automatic correction.
     n_tpose = max(1, min(int(round(tpose_duration * imu_rate)), len(frames)))
 
@@ -309,6 +306,10 @@ def parse_c3d_joint_angles(
     shoulder_abd_offset = sum(f.shoulder_abd for f in frames[:n_tpose]) / n_tpose
     for frame in frames:
         frame.shoulder_abd = frame.shoulder_abd - shoulder_abd_offset + shoulder_abd_bias_deg
+
+    shoulder_vert_offset = sum(f.shoulder_vert for f in frames[:n_tpose]) / n_tpose
+    for frame in frames:
+        frame.shoulder_vert = frame.shoulder_vert - shoulder_vert_offset
 
     elbow_dev_offset = sum(f.elbow_dev for f in frames[:n_tpose]) / n_tpose
     for frame in frames:
@@ -345,12 +346,13 @@ def parse_c3d_joint_angles(
         print(f"  Analog rate: {analog_rate:.0f} Hz, IMU rate: {imu_rate:.3f} Hz (stride={step})")
         print(f"  Extracted {len(frames)} unique frames")
         print(f"  Duration: {frames[-1].timestamp:.2f}s")
-        print(f"  shoulder_abd T-pose offset removed: {shoulder_abd_offset:+.2f} deg")
+        print(f"  shoulder_abd  T-pose offset removed: {shoulder_abd_offset:+.2f} deg")
         if shoulder_abd_bias_deg != 0.0:
-            print(f"  shoulder_abd extra bias applied:    {shoulder_abd_bias_deg:+.2f} deg")
-        print(f"  elbow_dev T-pose offset removed: {elbow_dev_offset:+.2f} deg")
+            print(f"  shoulder_abd  extra bias applied:    {shoulder_abd_bias_deg:+.2f} deg")
+        print(f"  shoulder_vert T-pose offset removed: {shoulder_vert_offset:+.2f} deg")
+        print(f"  elbow_dev      T-pose offset removed: {elbow_dev_offset:+.2f} deg")
         if elbow_dev_bias_deg != 0.0:
-            print(f"  elbow_dev extra bias applied:    {elbow_dev_bias_deg:+.2f} deg")
+            print(f"  elbow_dev      extra bias applied:    {elbow_dev_bias_deg:+.2f} deg")
         if wrist_rad_bias_deg != 0.0:
             print(f"  wrist_rad manual bias applied:   {wrist_rad_bias_deg:+.2f} deg")
         print(f"  Chest T-pose quat:  [{q_tpose_mean[0]:+.4f}, {q_tpose_mean[1]:+.4f}, "
@@ -562,16 +564,17 @@ def _map_angles_to_bvh(
     the parent bone.
 
     Chest uses _quat_to_zyx() with sign conventions defined in _CHEST_SIGNS.
-    Arm joints use _spherical_to_zyx() with per-joint sign dicts selected by
-    side: _RIGHT_SHOULDER/_ELBOW/_WRIST_SIGNS for right, _LEFT_* variants for left.
+    All arm joints (shoulder, elbow, wrist) use _spherical_to_zyx() with
+    per-joint sign dicts selected by side: _RIGHT_SHOULDER/_ELBOW/_WRIST_SIGNS
+    for right, _LEFT_* variants for left.
     """
     if side == 'right':
         s_signs, e_signs, w_signs = _RIGHT_SHOULDER_SIGNS, _RIGHT_ELBOW_SIGNS, _RIGHT_WRIST_SIGNS
     else:
         s_signs, e_signs, w_signs = _LEFT_SHOULDER_SIGNS, _LEFT_ELBOW_SIGNS, _LEFT_WRIST_SIGNS
 
-    chest   = _quat_to_zyx(frame.chest_quat,                                                                **_CHEST_SIGNS)
-    arm     = _spherical_to_zyx(frame.shoulder_abd, frame.shoulder_horiz, frame.shoulder_vert, side=side, **s_signs)
+    chest   = _quat_to_zyx(frame.chest_quat, **_CHEST_SIGNS)
+    arm     = _spherical_to_zyx(frame.shoulder_abd, frame.shoulder_horiz, frame.shoulder_vert,  side=side, **s_signs)
     forearm = _spherical_to_zyx(frame.elbow_dev,    frame.elbow_fe,       frame.elbow_ps,      side=side, **e_signs)
     hand    = _spherical_to_zyx(frame.wrist_fe,     frame.wrist_rad,      frame.wrist_rot,     side=side, **w_signs)
 
