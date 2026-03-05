@@ -18,19 +18,23 @@ Angle-to-BVH channel mapping (ZYX rotation order, arm rest direction = -X):
   _CHEST_SIGNS.  The chest IMU quaternion is T-pose calibrated and converted
   directly to ZYX Euler angles.
 
-  Arm joints (shoulder, elbow, wrist) use _spherical_to_zyx() with per-joint
-  sign conventions defined in _RIGHT_SHOULDER_SIGNS, _RIGHT_ELBOW_SIGNS,
-  _RIGHT_WRIST_SIGNS (right arm) or _LEFT_SHOULDER_SIGNS, _LEFT_ELBOW_SIGNS,
-  _LEFT_WRIST_SIGNS (left arm).
-  The general formulas are:
+  Shoulder uses _euler_shoulder_to_zyx() with sign conventions defined in
+  _RIGHT_SHOULDER_SIGNS / _LEFT_SHOULDER_SIGNS.  Cometa's XZ'Y'' anatomical
+  Euler sequence maps to ZX'Y'' in BVH world axes: Z=ABD, X'=VFLEX, Y''=HFLEX
+  (Henschke et al. 2022, PMC9364332).  The full rotation matrix is reconstructed
+  and decomposed into BVH ZYX, eliminating the cos(elev) spherical coupling.
+  Output signs (z_sign, y_sign, x_sign) correspond directly to the old
+  spherical model's elev_sign, azi_sign, axial_sign respectively.
+
+  Elbow and wrist use _spherical_to_zyx() with per-joint sign conventions
+  defined in _RIGHT_ELBOW_SIGNS, _RIGHT_WRIST_SIGNS (right arm) or the
+  _LEFT_* variants (left arm).  The general formulas are:
     theta_z = atan2(elev_sign * sin(elev), cos(elev) * cos(azi))
     theta_y = asin(azi_sign  * cos(elev) * sin(azi))
     theta_x = _axial_correction(elev, azi) + axial_sign * axial_angle
               (axial correction is zero when apply_correction=False)
   The axial correction compensates for palm-orientation drift introduced by
   the Rz*Ry compound rotation at large joint angles (see _axial_correction).
-  Cometa wrist_rad has a notable T-pose offset (~-10 deg) that is removed
-  by subtracting the mean wrist_rad over the initial T-pose segment.
 
 Usage:
     python c3d_to_bvh.py -i capture.c3d -o animation.bvh
@@ -46,6 +50,7 @@ from typing import List, Tuple
 
 import ezc3d
 import numpy as np
+from scipy.spatial.transform import Rotation
 
 from bvh_writer import write_bvh_hierarchy
 from imu_calibration import quaternion_inverse, quaternion_multiply, quaternion_to_euler
@@ -90,21 +95,31 @@ _CHEST_QUAT_LABELS = ('Chest :1', 'Chest :2', 'Chest :3', 'Chest :4')
 # CALIBRATION SETTINGS  (adjust here if needed)
 # ---------------------------------------------------------------------------
 
-# Joint direction sign conventions: change these if a limb points the wrong way.
+# Shoulder: Cometa uses an intrinsic XZ'Y'' Euler sequence (ABD -> VFLEX -> HFLEX).
+# _euler_shoulder_to_zyx() reconstructs the full rotation matrix and decomposes
+# it into BVH ZYX, removing the cos(elev) spherical coupling.
+# abd_sign:   sign applied to shoulder_abd before Euler reconstruction
+# vert_sign:  sign applied to shoulder_vert before Euler reconstruction
+# horiz_sign: sign applied to shoulder_horiz before Euler reconstruction
+# z_sign:     sign applied to output theta_z (ABD / lateral elevation direction)
+# y_sign:     sign applied to output theta_y (flex / forward direction)
+# x_sign:     sign applied to output theta_x (axial rotation direction)
+_RIGHT_SHOULDER_SIGNS = dict(abd_sign=1.0, vert_sign=1.0, horiz_sign=1.0, z_sign=-1.0, y_sign=1.0, x_sign=1.0)
+_LEFT_SHOULDER_SIGNS  = dict(abd_sign=1.0, vert_sign=1.0, horiz_sign=1.0, z_sign=1.0, y_sign=-1.0, x_sign=-1.0)
+
+# Elbow and wrist: spherical coordinate convention (unchanged).
 # elev_sign:        sign of sin(elev) in the atan2 numerator for theta_z
 # azi_sign:         sign of cos(elev)*sin(azi) in the asin argument for theta_y
 # apply_correction: whether _axial_correction() is added to theta_x
 # axial_sign:       sign applied to axial_deg when computing theta_x
-_RIGHT_SHOULDER_SIGNS = dict(elev_sign=-1.0, azi_sign= 1.0, apply_correction=True,  axial_sign= 1.0)
 _RIGHT_ELBOW_SIGNS    = dict(elev_sign=-1.0, azi_sign= 1.0, apply_correction=True,  axial_sign=-1.0)
 _RIGHT_WRIST_SIGNS    = dict(elev_sign= 1.0, azi_sign=-1.0, apply_correction=False, axial_sign=-1.0)
 
 # Left-arm equivalents: elev_sign and azi_sign are geometrically flipped because
 # the left arm rests in +X (vs right arm -X).  axial_sign values are initial
 # guesses — validate against a left-arm recording in Blender and adjust if needed.
-_LEFT_SHOULDER_SIGNS = dict(elev_sign= 1.0, azi_sign=-1.0, apply_correction=True,  axial_sign=-1.0)
-_LEFT_ELBOW_SIGNS    = dict(elev_sign= 1.0, azi_sign=-1.0, apply_correction=True,  axial_sign= 1.0)
-_LEFT_WRIST_SIGNS    = dict(elev_sign=-1.0, azi_sign= 1.0, apply_correction=False, axial_sign= 1.0)
+_LEFT_ELBOW_SIGNS     = dict(elev_sign= 1.0, azi_sign=-1.0, apply_correction=True,  axial_sign= 1.0)
+_LEFT_WRIST_SIGNS     = dict(elev_sign=-1.0, azi_sign= 1.0, apply_correction=False, axial_sign= 1.0)
 
 # Chest trunk sign conventions: change these if a trunk motion is inverted.
 # z_sign: sign of theta_z (lateral lean:           +1 = right-side up)
@@ -291,11 +306,10 @@ def parse_c3d_joint_angles(
     # Subtract T-pose offsets for shoulder_abd, shoulder_vert, and elbow_dev.
     # Cometa reports non-zero values at anatomical neutral for these channels;
     # the mean over the initial T-pose segment is removed from every frame.
-    # Zeroing shoulder_abd is especially important: the spherical-to-ZYX formula
-    # amplifies small shoulder_abd residuals into large theta_z (downward arm)
-    # artefacts at large shoulder_horiz angles (denominator cos(azi) -> 0).
-    # Zeroing shoulder_vert removes the sensor-to-segment axial bias so that
-    # theta_x = 0 at T-pose, keeping the palm at anatomical neutral throughout.
+    # Zeroing shoulder_abd ensures the arm is horizontal at T-pose and prevents
+    # contamination of the VFLEX and HFLEX channels in the Euler reconstruction.
+    # Zeroing shoulder_vert removes the sensor-to-segment VFLEX bias so that
+    # the arm lies in the coronal plane at T-pose.
     # wrist_rad is passed through without automatic correction.
     n_tpose = max(1, min(int(round(tpose_duration * imu_rate)), len(frames)))
 
@@ -520,6 +534,58 @@ def _spherical_to_zyx(
     return math.degrees(theta_z), math.degrees(theta_y), math.degrees(theta_x)
 
 
+def _euler_shoulder_to_zyx(
+    abd_deg: float,
+    vert_deg: float,
+    horiz_deg: float,
+    *,
+    abd_sign: float,
+    vert_sign: float,
+    horiz_sign: float,
+    z_sign: float,
+    y_sign: float,
+    x_sign: float,
+) -> Tuple[float, float, float]:
+    """
+    Convert Cometa XZ'Y'' shoulder Euler angles to BVH ZYX Euler angles.
+
+    Cometa WaveTrack uses an intrinsic XZ'Y'' Euler sequence in their anatomical
+    frame (Henschke et al. 2022, PMC9364332).  Mapped to BVH world axes
+    (Y-up, Z-forward, right arm at -X) the sequence becomes ZX'Y'':
+      Z   (1st) = Abduction/Adduction     (shoulder_abd)  -- coronal/Z axis
+      X'  (2nd) = Vertical Flex/Ext       (shoulder_vert) -- humerus axial rotation
+      Y'' (3rd) = Horizontal Flex/Ext     (shoulder_horiz)-- sagittal/Y axis
+
+    This function reconstructs the full rotation matrix from these three
+    angles and decomposes it into BVH ZYX, eliminating the cos(elev) coupling
+    artifact present in the spherical coordinate model.
+
+    Output sign conventions match the old spherical-model signs directly:
+      z_sign = elev_sign, y_sign = azi_sign, x_sign = axial_sign.
+
+    Args:
+        abd_deg:    Abduction/Adduction [deg], T-pose corrected
+        vert_deg:   Vertical Flexion/Extension [deg], T-pose corrected
+        horiz_deg:  Horizontal Flexion/Extension [deg]
+        abd_sign:   Sign applied to abd_deg before Euler reconstruction
+        vert_sign:  Sign applied to vert_deg before Euler reconstruction
+        horiz_sign: Sign applied to horiz_deg before Euler reconstruction
+        z_sign:     Sign applied to output theta_z
+        y_sign:     Sign applied to output theta_y
+        x_sign:     Sign applied to output theta_x
+
+    Returns:
+        (theta_z_deg, theta_y_deg, theta_x_deg) for BVH ZYX channels
+    """
+    R = Rotation.from_euler(
+        'ZXY',
+        [abd_sign * abd_deg, vert_sign * vert_deg, horiz_sign * horiz_deg],
+        degrees=True,
+    )
+    tz, ty, tx = R.as_euler('ZYX', degrees=True)
+    return z_sign * tz, y_sign * ty, x_sign * tx
+
+
 def _quat_to_zyx(
     chest_quat: Tuple[float, float, float, float],
     *,
@@ -564,9 +630,10 @@ def _map_angles_to_bvh(
     the parent bone.
 
     Chest uses _quat_to_zyx() with sign conventions defined in _CHEST_SIGNS.
-    All arm joints (shoulder, elbow, wrist) use _spherical_to_zyx() with
-    per-joint sign dicts selected by side: _RIGHT_SHOULDER/_ELBOW/_WRIST_SIGNS
-    for right, _LEFT_* variants for left.
+    Shoulder uses _euler_shoulder_to_zyx() with the intrinsic XZ'Y'' Euler
+    sequence (ABD -> VFLEX -> HFLEX) from Cometa's convention.
+    Elbow and wrist use _spherical_to_zyx() with per-joint sign dicts selected
+    by side: _RIGHT_ELBOW/_WRIST_SIGNS for right, _LEFT_* variants for left.
     """
     if side == 'right':
         s_signs, e_signs, w_signs = _RIGHT_SHOULDER_SIGNS, _RIGHT_ELBOW_SIGNS, _RIGHT_WRIST_SIGNS
@@ -574,7 +641,7 @@ def _map_angles_to_bvh(
         s_signs, e_signs, w_signs = _LEFT_SHOULDER_SIGNS, _LEFT_ELBOW_SIGNS, _LEFT_WRIST_SIGNS
 
     chest   = _quat_to_zyx(frame.chest_quat, **_CHEST_SIGNS)
-    arm     = _spherical_to_zyx(frame.shoulder_abd, frame.shoulder_horiz, frame.shoulder_vert,  side=side, **s_signs)
+    arm     = _euler_shoulder_to_zyx(frame.shoulder_abd, frame.shoulder_vert, frame.shoulder_horiz, **s_signs)
     forearm = _spherical_to_zyx(frame.elbow_dev,    frame.elbow_fe,       frame.elbow_ps,      side=side, **e_signs)
     hand    = _spherical_to_zyx(frame.wrist_fe,     frame.wrist_rad,      frame.wrist_rot,     side=side, **w_signs)
 
