@@ -28,7 +28,6 @@ Expected Blender workflow:
 """
 
 import argparse
-import math
 from pathlib import Path
 
 from bvh_writer import write_bvh_hierarchy
@@ -42,13 +41,13 @@ _FPS = 30
 _FRAME_TIME = 1.0 / _FPS
 
 
-def _arm_line(tx: float, tz: float, ty: float) -> str:
+def _arm_line(ty: float, tz: float, tx: float) -> str:
     """
-    Build a single BVH motion line with the given RightArm XZY angles (degrees)
+    Build a single BVH motion line with the given RightArm YZX angles (degrees)
     and all other joints at zero (static T-pose).
 
-    RightArm declares CHANNELS 3 Xrotation Zrotation Yrotation, so values are
-    written in (X, Z, Y) order.
+    RightArm declares CHANNELS 3 Yrotation Zrotation Xrotation, so values are
+    written in (Y, Z, X) order.
 
     Channel layout (96 total):
         Hips (6) | LHipJoint..LeftToeBase (5x3) | RHipJoint..RightToeBase (5x3)
@@ -57,7 +56,7 @@ def _arm_line(tx: float, tz: float, ty: float) -> str:
         RightArm (3) | RightForeArm (3) | RightHand (3)
         RightFingerBase,RightHandIndex1 (2x3) | RThumb (3)
     """
-    arm_str = f"{tx:.6f} {tz:.6f} {ty:.6f} "
+    arm_str = f"{ty:.6f} {tz:.6f} {tx:.6f} "
     return (
         _STATIC_6           # Hips pos + rot
         + _STATIC_3 * 5     # LHipJoint..LeftToeBase
@@ -77,7 +76,7 @@ def _arm_line(tx: float, tz: float, ty: float) -> str:
 
 def _write_sweep_bvh(path: Path, channel: str, peak_deg: float = 60.0) -> None:
     """
-    Write a BVH where one RightArm ZYX channel sweeps 0 -> +peak -> 0 -> -peak -> 0.
+    Write a BVH where one RightArm YZX channel sweeps 0 -> +peak -> 0 -> -peak -> 0.
 
     Segment layout (5 segments x 18 frames each = 90 frames total at 30 fps):
         seg 0 (frames  0-17): hold at 0 deg              -- T-pose reference
@@ -91,7 +90,7 @@ def _write_sweep_bvh(path: Path, channel: str, peak_deg: float = 60.0) -> None:
 
     Args:
         path:      Output BVH file path.
-        channel:   One of 'z', 'y', 'x' — which RightArm channel to sweep.
+        channel:   One of 'y', 'z', 'x' — which RightArm YZX channel to sweep.
         peak_deg:  Peak angle magnitude in degrees (default 60).
     """
     n_hold = 18
@@ -99,10 +98,10 @@ def _write_sweep_bvh(path: Path, channel: str, peak_deg: float = 60.0) -> None:
     frames = []
 
     def _make_frame(angle: float) -> str:
-        tx = angle if channel == 'x' else 0.0
-        tz = angle if channel == 'z' else 0.0
         ty = angle if channel == 'y' else 0.0
-        return _arm_line(tx, tz, ty)
+        tz = angle if channel == 'z' else 0.0
+        tx = angle if channel == 'x' else 0.0
+        return _arm_line(ty, tz, tx)
 
     # Segment 0: hold at 0
     frames.extend([_make_frame(0.0)] * n_hold)
@@ -161,17 +160,17 @@ def _write_key_frames_bvh(path: Path) -> None:
         ("Pure ABD -30 (coronal lower)", -30.0,    0.0, 0.0),
     ]
 
-    print("\n--- Key frame poses (_euler_shoulder_to_zyx output, XZY channel order) ---")
+    print("\n--- Key frame poses (_euler_shoulder_to_zyx output, YZX channel order) ---")
     print(f"{'Pose':<42}  {'abd':>7}  {'vert':>7}  {'horiz':>7}  "
-          f"{'tx_out':>8}  {'tz_out':>8}  {'ty_out':>8}")
+          f"{'ty_out':>8}  {'tz_out':>8}  {'tx_out':>8}")
     print("-" * 105)
 
     frames = []
     for label, abd, vert, horiz in poses:
-        tx, tz, ty = _euler_shoulder_to_zyx(abd, vert, horiz, **signs)
+        ty, tz, tx = _euler_shoulder_to_zyx(abd, vert, horiz, **signs)
         print(f"  {label:<40}  {abd:>7.2f}  {vert:>7.2f}  {horiz:>7.2f}  "
-              f"{tx:>8.3f}  {tz:>8.3f}  {ty:>8.3f}")
-        line = _arm_line(tx, tz, ty)
+              f"{ty:>8.3f}  {tz:>8.3f}  {tx:>8.3f}")
+        line = _arm_line(ty, tz, tx)
         frames.extend([line] * _FPS)  # hold for 1 second
 
     print()
@@ -221,8 +220,8 @@ probe_key_frames.bvh:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     probes = [
-        ('z', out_dir / 'probe_arm_z.bvh'),
         ('y', out_dir / 'probe_arm_y.bvh'),
+        ('z', out_dir / 'probe_arm_z.bvh'),
         ('x', out_dir / 'probe_arm_x.bvh'),
     ]
 
@@ -244,18 +243,18 @@ probe_key_frames.bvh:
     print("For each probe_arm_?.bvh:")
     print("  Play frames 18-35 (positive ramp).  Note arm direction at frame 35.")
     print("  Play frames 90-107 (negative ramp). Note arm direction at frame 107.")
-    print("  Fill in the table:")
+    print("  Fill in the table (YZX channel order):")
     print()
     print("  Channel     +60 deg direction     -60 deg direction")
-    print("  Zrotation   ???                   ???")
-    print("  Yrotation   ???                   ???")
-    print("  Xrotation   ???                   ???")
+    print("  Yrotation   ???                   ???   (expected: FORWARD / BACKWARD)")
+    print("  Zrotation   ???                   ???   (expected: DOWN / UP)")
+    print("  Xrotation   ???                   ???   (expected: axial twist)")
     print()
     print("For probe_key_frames.bvh:")
     print("  Frame  0: T-pose (baseline, arm horizontal right)")
     print("  Frame 30: Pure ABD +30 -- arm should raise in coronal plane")
-    print("  Frame 60: Movement 1 (abd=+8.5, horiz=+89.5) -- arm forward, slightly UP?")
-    print("  Frame 90: Movement 2 (abd=-3.86, horiz=+90.0) -- arm forward, slightly DOWN?")
+    print("  Frame 60: Movement 1 (abd=+8.5, horiz=+89.5) -- arm forward, slightly UP")
+    print("  Frame 90: Movement 2 (abd=-3.86, horiz=+90.0) -- arm forward, slightly DOWN")
     print("  Frame 120: Pure ABD -30 -- arm should lower from T-pose")
 
     return 0
