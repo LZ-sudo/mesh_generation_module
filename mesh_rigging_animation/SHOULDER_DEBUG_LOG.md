@@ -26,15 +26,21 @@ Cometa C3D files store pre-computed anatomical joint angles at 2000 Hz (stride-s
 to the true IMU rate of ~142.857 Hz). The pipeline:
 
 1. Reads shoulder/elbow/wrist angle channels from the ANALOG section
-2. Applies T-pose offset corrections (mean of first 1.0 s subtracted from abd, vert, dev)
+2. Applies T-pose offset corrections (mean of first 1.0 s subtracted from abd, vert, dev,
+   wrist_fe, wrist_rot, wrist_rad)
 3. Applies chest IMU quaternion T-pose calibration (left-multiply: `q_tpose^-1 * q_raw`)
-4. Maps angles to BVH ZYX Euler channels via `_euler_shoulder_to_zyx()` (shoulder),
-   `_spherical_to_zyx()` (elbow, wrist), and `_quat_to_zyx()` (chest/Spine1)
+4. Maps angles to BVH Euler channels via:
+   - `_euler_shoulder_to_zyx()` (shoulder) → BVH YZX channels (RightArm/LeftArm)
+   - `_euler_elbow_to_zyx()` (elbow) → BVH ZYX channels (RightForeArm/LeftForeArm)
+   - `_euler_wrist_to_zxy()` (wrist) → BVH ZXY channels (RightHand/LeftHand)
+   - `_quat_to_zyx()` (chest/Spine1) → BVH ZYX channels
 5. Writes CMU mocap full-body BVH skeleton (Y-up, Z-forward, right arm at -X at T-pose)
 
 ---
 
 ## Current Sign Conventions (`c3d_to_bvh.py`)
+
+As of 2026-03-09 (after wrist and elbow rework):
 
 ```python
 _RIGHT_SHOULDER_SIGNS = dict(
@@ -45,14 +51,20 @@ _LEFT_SHOULDER_SIGNS = dict(
     abd_sign=1.0, vert_sign=1.0, horiz_sign=1.0,
     z_sign=1.0, y_sign=-1.0, x_sign=-1.0
 )
-_RIGHT_ELBOW_SIGNS = dict(elev_sign=-1.0, azi_sign=1.0,  apply_correction=True,  axial_sign=-1.0)
-_RIGHT_WRIST_SIGNS = dict(elev_sign=1.0,  azi_sign=-1.0, apply_correction=False, axial_sign=-1.0)
-_LEFT_ELBOW_SIGNS  = dict(elev_sign=1.0,  azi_sign=-1.0, apply_correction=True,  axial_sign=1.0)
-_LEFT_WRIST_SIGNS  = dict(elev_sign=-1.0, azi_sign=1.0,  apply_correction=False, axial_sign=1.0)
+
+# Euler YZX model (replaces old spherical model)
+_RIGHT_ELBOW_SIGNS = dict(fe_sign=1.0, dev_sign=1.0, ps_sign=1.0, z_sign=-1.0, y_sign=1.0, x_sign=1.0)
+_LEFT_ELBOW_SIGNS  = dict(fe_sign=1.0, dev_sign=1.0, ps_sign=1.0, z_sign=1.0,  y_sign=-1.0, x_sign=-1.0)
+
+# ZXY Euler sequence (replaces old spherical model)
+_RIGHT_WRIST_SIGNS = dict(fe_sign=1.0, rot_sign=-1.0, rad_sign=-1.0, z_sign=1.0, x_sign=1.0, y_sign=1.0)
+_LEFT_WRIST_SIGNS  = dict(fe_sign=1.0, rot_sign=-1.0, rad_sign=1.0,  z_sign=-1.0, x_sign=-1.0, y_sign=-1.0)
+
 _CHEST_SIGNS = dict(z_sign=1.0, y_sign=1.0, x_sign=1.0)
 
 TPOSE_DURATION_S:        1.0  seconds
 WRIST_RAD_BIAS_DEG:      0.0  degrees
+WRIST_ROT_BIAS_DEG:      0.0  degrees
 SHOULDER_ABD_BIAS_DEG:   0.0  degrees
 ELBOW_DEV_BIAS_DEG:      0.0  degrees
 ```
@@ -62,17 +74,18 @@ ELBOW_DEV_BIAS_DEG:      0.0  degrees
 `_euler_shoulder_to_zyx()` reconstructs the full rotation matrix using scipy:
 
 ```python
-R = Rotation.from_euler('ZXY', [abd_sign*abd, vert_sign*vert, horiz_sign*horiz], degrees=True)
-tz, ty, tx = R.as_euler('ZYX', degrees=True)
-return z_sign * tz, y_sign * ty, x_sign * tx
+R = Rotation.from_euler('yzx', [horiz_sign*horiz, abd_sign*abd, vert_sign*vert], degrees=True)
+ty, tz, tx = R.as_euler('yzx', degrees=True)
+return y_sign * ty, z_sign * tz, x_sign * tx
 ```
 
-The docstring justification (Henschke et al. 2022, PMC9364332):
-- Cometa uses intrinsic **XZ'Y''** in their anatomical frame
-- Mapped to BVH world axes (Y-up, Z-forward, right arm at -X): sequence becomes **ZX'Y''**
-  - Z (1st) = Abduction/Adduction (`shoulder_abd`) — coronal axis
-  - X' (2nd) = Vertical Flex/Ext (`shoulder_vert`) — humerus axial rotation
-  - Y'' (3rd) = Horizontal Flex/Ext (`shoulder_horiz`) — sagittal axis
+- Cometa uses intrinsic **YXZ** (IL decompilation confirmed)
+- After BVH axis mapping: sequence becomes **YZX** in BVH frame
+  - Y (1st) = Horizontal Flex/Ext (`shoulder_horiz`) — sagittal axis
+  - Z (2nd) = Abduction/Adduction (`shoulder_abd`) — coronal axis
+  - X (3rd) = Vertical Flex/Ext (`shoulder_vert`) — humerus axial rotation
+- BVH RightArm/LeftArm CHANNELS: `Yrotation Zrotation Xrotation`
+- Output singularity at ABD = ±90 deg (full coronal abduction, rarely reached)
 
 ---
 
@@ -394,6 +407,84 @@ The XZY fix is theoretically correct but caused empirical regression when applie
 
 The shoulder conversion is fully isolated from all other joints:
 - Chest uses `_quat_to_zyx()` independently
-- Elbow and wrist use `_spherical_to_zyx()` independently
+- Elbow uses `_euler_elbow_to_zyx()` independently
+- Wrist uses `_euler_wrist_to_zxy()` independently
 - Any future fix to shoulder only requires changes to `_euler_shoulder_to_zyx()` and
   the two CHANNELS declarations (RightArm, LeftArm) in `bvh_writer.py`.
+
+---
+
+## Wrist and Elbow Rework (2026-03-09)
+
+### Wrist: spherical model replaced with ZXY Euler sequence
+
+**Problem:** Palm orientation was incorrect (facing backwards) and drifted during motion.
+
+**Root cause (IL decompilation confirmed):** Cometa internally uses intrinsic YXZ for all
+joints. The wrist C3D channels map to Cometa's YXZ axes as:
+- Y (1st) = `wrist_fe` (Flexion/Extension)
+- X (2nd) = `wrist_rot` (CW/CCW Rotation)
+- Z (3rd) = `wrist_rad` (Ulnar/Radial Deviation)
+
+For the right forearm along -X in BVH world, the physical axis mapping is:
+- FE axis (mediolateral) → BVH +Z → `Rz(wrist_fe)`
+- Rot axis (forearm long) → BVH +X → `Rx(wrist_rot)`
+- Rad axis (dorsopalmar) → BVH +Y → `Ry(wrist_rad)`
+
+Correct BVH reconstruction: `R = Rz(FE) x Rx(-Rot) x Ry(Rad)` = ZXY intrinsic.
+
+**Fixes applied:**
+1. `bvh_writer.py`: RightHand and LeftHand CHANNELS changed from
+   `Yrotation Xrotation Zrotation` to `Zrotation Xrotation Yrotation`.
+2. `c3d_to_bvh.py`: Renamed `_euler_wrist_to_yxz` → `_euler_wrist_to_zxy`, updated
+   Euler construction from `'yxz'` to `'zxy'` and decomposition accordingly.
+3. `rot_sign=-1.0` applied: Cometa's forearm long axis (X_cometa, elbow→wrist) = -X_bvh,
+   so `Rx_cometa(+Rot) = Rx_bvh(-Rot)`.
+4. T-pose offset corrections added for `wrist_fe`, `wrist_rot`, `wrist_rad`.
+5. `WRIST_ROT_BIAS_DEG` constant added (set to 0; static T-pose bias was not needed).
+
+**Outcome:** Palm orientation correct at T-pose and during wrist flexion/extension and
+radial/ulnar deviation. Palm no longer faces backwards.
+
+### Hand CHANNELS in bvh_writer.py
+
+| Joint        | Old CHANNELS                      | New CHANNELS                      |
+|--------------|-----------------------------------|-----------------------------------|
+| RightHand    | `Yrotation Xrotation Zrotation`   | `Zrotation Xrotation Yrotation`   |
+| LeftHand     | `Yrotation Xrotation Zrotation`   | `Zrotation Xrotation Yrotation`   |
+
+### Elbow: spherical model replaced with YZX Euler model
+
+**Problem:** The old `_spherical_to_zyx()` used a geometric approximation (Dev=elevation,
+FE=azimuth) with a manual `_axial_correction()` to compensate for palm drift during
+combined FE+PS motions. This caused wrist range of motion to appear reduced.
+
+**Root cause:** Cometa uses intrinsic YXZ for all joints (IL confirmed). Channel-to-axis
+mapping by analogy with the shoulder:
+- Y (1st) = `elbow_fe` (Flexion/Extension — primary hinge)
+- X (2nd) = `elbow_dev` (Deviation — carrying angle)
+- Z (3rd) = `elbow_ps` (Pronation/Supination — forearm axial)
+
+After BVH axis mapping (Cometa X→BVH Z, Cometa Z→BVH X, Cometa Y→BVH Y):
+`R = Ry(fe) x Rz(dev) x Rx(ps)` — YZX sequence, same structure as shoulder.
+
+**Fixes applied:**
+1. `_axial_correction()` and `_spherical_to_zyx()` removed entirely.
+2. New `_euler_elbow_to_zyx()` function added: constructs rotation as `'yzx'` (YZX
+   intrinsic), decomposes as `'zyx'` (ZYX) for BVH ForeArm channels.
+3. Sign dicts updated to new key names (`fe_sign`, `dev_sign`, `ps_sign`, `z_sign`,
+   `y_sign`, `x_sign`). `z_sign=-1.0` validated empirically in Blender.
+4. `import math` removed (no longer needed after removing the old functions).
+
+**Outcome:** Elbow FE, PS, and combined motions now correct. Palm orientation during
+combined elbow+wrist motions is accurate. Most movements replicated with high fidelity.
+
+### Current status after 2026-03-09 rework
+
+- **Shoulder:** Functionally correct. Gimbal lock artifact remains at horiz ≈ 90 deg
+  (XZY channel order fix attempted and reverted; open question).
+- **Elbow:** All DOFs visually correct. `z_sign=-1.0` confirmed for right arm.
+- **Wrist:** Palm orientation correct. All DOFs visually correct.
+- **Remaining issue:** Excess adduction observed for specific arm movements. Likely
+  a `z_sign` or `dev_sign` tuning issue in `_RIGHT_ELBOW_SIGNS`, or a residual shoulder
+  ABD bias. Under investigation.
