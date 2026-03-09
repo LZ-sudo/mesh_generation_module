@@ -26,14 +26,11 @@ Angle-to-BVH channel mapping (ZYX rotation order, arm rest direction = -X):
   Output signs (z_sign, y_sign, x_sign) correspond directly to the old
   spherical model's elev_sign, azi_sign, axial_sign respectively.
 
-  Elbow uses _spherical_to_zyx() with per-joint sign conventions defined in
-  _RIGHT_ELBOW_SIGNS / _LEFT_ELBOW_SIGNS.  The general formulas are:
-    theta_z = atan2(elev_sign * sin(elev), cos(elev) * cos(azi))
-    theta_y = asin(azi_sign  * cos(elev) * sin(azi))
-    theta_x = _axial_correction(elev, azi) + axial_sign * axial_angle
-              (axial correction is zero when apply_correction=False)
-  The axial correction compensates for palm-orientation drift introduced by
-  the Rz*Ry compound rotation at large joint angles (see _axial_correction).
+  Elbow uses _euler_elbow_to_zyx() with per-joint sign conventions defined in
+  _RIGHT_ELBOW_SIGNS / _LEFT_ELBOW_SIGNS.  Cometa uses intrinsic YXZ for the
+  elbow (same as shoulder/wrist).  Channel mapping: Y=fe, X=dev, Z=ps.
+  After BVH axis mapping: R = Ry(fe) x Rz(dev) x Rx(ps) -- YZX sequence.
+  Decomposed into BVH ZYX (ForeArm channels: Zrotation Yrotation Xrotation).
 
   Wrist uses _euler_wrist_to_zxy() with the intrinsic ZXY Euler sequence
   in BVH world frame: R = Rz(FE) x Rx(Rot) x Ry(Rad).  For the right forearm
@@ -47,7 +44,6 @@ Usage:
 """
 
 import argparse
-import math
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -116,16 +112,20 @@ _CHEST_QUAT_LABELS = ('Chest :1', 'Chest :2', 'Chest :3', 'Chest :4')
 _RIGHT_SHOULDER_SIGNS = dict(abd_sign=1.0, vert_sign=1.0, horiz_sign=1.0, z_sign=-1.0, y_sign=1.0, x_sign=1.0)
 _LEFT_SHOULDER_SIGNS  = dict(abd_sign=1.0, vert_sign=1.0, horiz_sign=1.0, z_sign=1.0, y_sign=-1.0, x_sign=-1.0)
 
-# Elbow: spherical coordinate convention (unchanged).
-# elev_sign:        sign of sin(elev) in the atan2 numerator for theta_z
-# azi_sign:         sign of cos(elev)*sin(azi) in the asin argument for theta_y
-# apply_correction: whether _axial_correction() is added to theta_x
-# axial_sign:       sign applied to axial_deg when computing theta_x
-# Left-arm equivalents: elev_sign and azi_sign are geometrically flipped because
-# the left arm rests in +X (vs right arm -X).  axial_sign values are initial
-# guesses -- validate against a left-arm recording in Blender and adjust if needed.
-_RIGHT_ELBOW_SIGNS    = dict(elev_sign=-1.0, azi_sign=1.0, apply_correction=True,  axial_sign=-1.0)
-_LEFT_ELBOW_SIGNS     = dict(elev_sign= 1.0, azi_sign=-1.0, apply_correction=True,  axial_sign= 1.0)
+# Elbow: Cometa uses intrinsic YXZ (same as shoulder/wrist, IL confirmed).
+# Channel mapping: Y=fe (Flexion/Extension), X=dev (Deviation), Z=ps (Pronation/Supination).
+# After BVH axis mapping (Cometa X->BVH Z, Cometa Z->BVH X, Cometa Y->BVH Y):
+#   R = Ry(fe) x Rz(dev) x Rx(ps) -- YZX sequence in BVH frame.
+# fe_sign:  sign applied to fe_deg before Euler reconstruction
+# dev_sign: sign applied to dev_deg before Euler reconstruction
+# ps_sign:  sign applied to ps_deg before Euler reconstruction
+# z_sign:   sign applied to output theta_z (deviation channel)
+# y_sign:   sign applied to output theta_y (FE channel)
+# x_sign:   sign applied to output theta_x (pro/sup channel)
+# Left-arm: y_sign and x_sign negated (left arm rests in +X vs right -X).
+# All signs start at +1.0 -- validate each DOF independently in Blender.
+_RIGHT_ELBOW_SIGNS    = dict(fe_sign=1.0, dev_sign=1.0, ps_sign=1.0, z_sign=-1.0, y_sign=1.0, x_sign=1.0)
+_LEFT_ELBOW_SIGNS     = dict(fe_sign=1.0, dev_sign=1.0, ps_sign=1.0, z_sign=1.0, y_sign=-1.0, x_sign=-1.0)
 
 # Wrist: Cometa internally uses intrinsic YXZ (confirmed by IL decompilation).
 # C3D channel mapping:
@@ -436,151 +436,6 @@ def _downsample_joint_angles(
     return frames[::step]
 
 
-def _axial_correction(dev_deg: float, fe_deg: float, side: str = 'right') -> float:
-    """
-    Compute the BVH theta_x bias introduced by the ZY compound rotation.
-
-    When a limb is described by spherical coordinates (dev, fe) and mapped to
-    BVH ZYX Euler angles, the Rz*Ry compound rotation moves the limb to the
-    correct direction but rotates its axial reference away from the T-pose
-    orientation.  This function returns the correction angle (degrees) that
-    must be added to theta_x so that theta_x = 0 corresponds to the same palm
-    orientation that Cometa's zero pronation/supination (ps = 0) represents
-    (i.e. the rigid-body-rotation of the T-pose palm direction).
-
-    Algorithm:
-      1. Compute the new limb direction d_new from (dev, fe) in spherical coords.
-      2. Find the rigid-body rotation R from d_tpose=(-1,0,0) to d_new (Rodrigues).
-      3. Apply R to p_tpose=(0,-1,0) to get the expected palm direction.
-      4. Transform expected_palm to limb-local frame by undoing the BVH ZY rotation.
-      5. Return atan2(-p_local[2], -p_local[1]), the Rx angle that reproduces it.
-
-    Returns 0 when dev=0 and fe=0 (T-pose identity check).
-
-    Args:
-        dev_deg: Deviation / carrying angle (deg)
-        fe_deg:  Flexion / azimuth angle (deg)
-
-    Returns:
-        Correction offset in degrees to add to theta_x
-    """
-    dev = math.radians(dev_deg)
-    fe  = math.radians(fe_deg)
-
-    # Right arm rests along -X; left arm rests along +X.
-    x_sign  = -1.0 if side == 'right' else 1.0
-    d_tpose = (x_sign, 0.0, 0.0)
-    p_tpose = (0.0, -1.0, 0.0)
-    d_new   = (
-        x_sign * math.cos(dev) * math.cos(fe),
-        math.sin(dev),
-        math.cos(dev) * math.sin(fe),
-    )
-
-    def _dot(a, b):
-        return a[0]*b[0] + a[1]*b[1] + a[2]*b[2]
-
-    def _cross(a, b):
-        return (
-            a[1]*b[2] - a[2]*b[1],
-            a[2]*b[0] - a[0]*b[2],
-            a[0]*b[1] - a[1]*b[0],
-        )
-
-    def _norm(v):
-        n = math.sqrt(v[0]*v[0] + v[1]*v[1] + v[2]*v[2])
-        return (v[0]/n, v[1]/n, v[2]/n)
-
-    def _rodrigues(v, k, angle):
-        c, s = math.cos(angle), math.sin(angle)
-        kxv = _cross(k, v)
-        kd  = _dot(k, v)
-        return (
-            c*v[0] + s*kxv[0] + (1 - c)*kd*k[0],
-            c*v[1] + s*kxv[1] + (1 - c)*kd*k[1],
-            c*v[2] + s*kxv[2] + (1 - c)*kd*k[2],
-        )
-
-    cos_theta = max(-1.0, min(1.0, _dot(d_tpose, d_new)))
-    if abs(cos_theta - 1.0) < 1e-9:
-        expected_palm = p_tpose
-    elif abs(cos_theta + 1.0) < 1e-9:
-        expected_palm = _rodrigues(p_tpose, (0.0, 1.0, 0.0), math.pi)
-    else:
-        k_axis = _norm(_cross(d_tpose, d_new))
-        expected_palm = _rodrigues(p_tpose, k_axis, math.acos(cos_theta))
-
-    # BVH ZY angles for d_new — sign conventions mirror _spherical_to_zyx.
-    # Right arm (x_sign=-1): elev_sign=-1, azi_sign=+1
-    # Left arm  (x_sign=+1): elev_sign=+1, azi_sign=-1
-    theta_y = math.asin(-x_sign * math.cos(dev) * math.sin(fe))
-    theta_z = math.atan2( x_sign * math.sin(dev), math.cos(dev) * math.cos(fe))
-
-    # Undo ZY to bring expected_palm into limb-local frame
-    # p_local = Ry(-theta_y) * Rz(-theta_z) * expected_palm
-    cy, sy = math.cos(-theta_y), math.sin(-theta_y)
-    cz, sz = math.cos(-theta_z), math.sin(-theta_z)
-    ex, ey, ez = expected_palm
-    # Rz(-theta_z)
-    rx = cz*ex - sz*ey
-    ry = sz*ex + cz*ey
-    rz = ez
-    # Ry(-theta_y) — only Y and Z components needed for alpha
-    py =  ry
-    pz = -sy*rx + cy*rz
-
-    # Rx(alpha)*(0,-1,0) = (0,-cos(alpha),-sin(alpha)), match py and pz
-    # => alpha = atan2(-pz, -py)
-    return math.degrees(math.atan2(-pz, -py))
-
-
-def _spherical_to_zyx(
-    elev_deg: float,
-    azi_deg: float,
-    axial_deg: float,
-    *,
-    elev_sign: float,
-    azi_sign: float,
-    apply_correction: bool,
-    axial_sign: float,
-    side: str = 'right',
-) -> Tuple[float, float, float]:
-    """
-    Convert Cometa spherical joint angles to BVH ZYX Euler angles.
-
-    All three arm joints (shoulder, elbow, wrist) share the same spherical
-    coordinate convention where the limb rests along -X and is displaced by
-    two angular coordinates (elevation, azimuth) plus an axial rotation.
-    Sign conventions differ per joint and are controlled by the keyword
-    arguments -- see _RIGHT_SHOULDER_SIGNS/_LEFT_SHOULDER_SIGNS etc.
-
-    General formulas:
-      theta_z = atan2(elev_sign * sin(elev), cos(elev) * cos(azi))
-      theta_y = asin(azi_sign  * cos(elev) * sin(azi))
-      theta_x = _axial_correction(elev, azi) + axial_sign * axial_deg
-                (correction term is zero when apply_correction=False)
-
-    Args:
-        elev_deg:         Elevation angle [deg] -- shoulder abd, elbow dev, wrist fe
-        azi_deg:          Azimuth angle [deg]   -- shoulder horiz, elbow fe, wrist rad
-        axial_deg:        Axial rotation [deg]  -- shoulder vert, elbow ps, wrist rot
-        elev_sign:        Sign of sin(elev) in the atan2 numerator for theta_z
-        azi_sign:         Sign of cos(elev)*sin(azi) in the asin argument for theta_y
-        apply_correction: If True, adds _axial_correction(elev_deg, azi_deg) to theta_x
-        axial_sign:       Sign applied to axial_deg when computing theta_x
-
-    Returns:
-        (theta_z_deg, theta_y_deg, theta_x_deg) for BVH ZYX channels
-    """
-    elev = math.radians(elev_deg)
-    azi  = math.radians(azi_deg)
-
-    theta_y = math.asin(azi_sign * math.cos(elev) * math.sin(azi))
-    theta_z = math.atan2(elev_sign * math.sin(elev), math.cos(elev) * math.cos(azi))
-    correction = _axial_correction(elev_deg, azi_deg, side) if apply_correction else 0.0
-    theta_x = math.radians(correction + axial_sign * axial_deg)
-
-    return math.degrees(theta_z), math.degrees(theta_y), math.degrees(theta_x)
 
 
 def _euler_shoulder_to_zyx(
@@ -634,6 +489,64 @@ def _euler_shoulder_to_zyx(
     )
     ty, tz, tx = R.as_euler('yzx', degrees=True)
     return y_sign * ty, z_sign * tz, x_sign * tx
+
+
+def _euler_elbow_to_zyx(
+    fe_deg: float,
+    dev_deg: float,
+    ps_deg: float,
+    *,
+    fe_sign: float,
+    dev_sign: float,
+    ps_sign: float,
+    z_sign: float,
+    y_sign: float,
+    x_sign: float,
+) -> Tuple[float, float, float]:
+    """
+    Convert Cometa elbow Euler angles to BVH ZYX Euler angles.
+
+    Cometa uses intrinsic YXZ for all joints (IL confirmed for shoulder and
+    wrist).  Channel-to-axis mapping by name analogy with the shoulder:
+      Y (1st) = elbow_fe  (Flexion/Extension   -- primary hinge)
+      X (2nd) = elbow_dev (Deviation           -- carrying angle)
+      Z (3rd) = elbow_ps  (Pronation/Supination -- forearm axial)
+
+    After BVH axis mapping (Cometa X->BVH Z, Cometa Z->BVH X, Cometa Y->BVH Y):
+      R = Ry(fe) x Rz(dev) x Rx(ps) -- YZX sequence in BVH frame.
+
+    This matches the shoulder YZX structure.  The rotation is decomposed into
+    ZYX for BVH ForeArm CHANNELS (Zrotation Yrotation Xrotation):
+      Z (1st) = deviation channel    (elbow_dev)
+      Y (2nd) = FE channel           (elbow_fe)
+      X (3rd) = pro/sup channel      (elbow_ps)
+
+    Singularity at theta_y = +-90 deg (full FE), same as the previous
+    spherical model.  Left-arm: y_sign and x_sign negated (left arm rests
+    in +X vs right -X).  All signs start at +1.0 -- validate per-DOF in
+    Blender.
+
+    Args:
+        fe_deg:   Elbow Flexion/Extension [deg]
+        dev_deg:  Elbow Deviation [deg]
+        ps_deg:   Elbow Pronation/Supination [deg]
+        fe_sign:  Sign applied to fe_deg before Euler reconstruction
+        dev_sign: Sign applied to dev_deg before Euler reconstruction
+        ps_sign:  Sign applied to ps_deg before Euler reconstruction
+        z_sign:   Sign applied to output theta_z (deviation channel)
+        y_sign:   Sign applied to output theta_y (FE channel)
+        x_sign:   Sign applied to output theta_x (pro/sup channel)
+
+    Returns:
+        (theta_z_deg, theta_y_deg, theta_x_deg) for BVH ZYX channels
+    """
+    R = Rotation.from_euler(
+        'yzx',
+        [fe_sign * fe_deg, dev_sign * dev_deg, ps_sign * ps_deg],
+        degrees=True,
+    )
+    tz, ty, tx = R.as_euler('zyx', degrees=True)
+    return z_sign * tz, y_sign * ty, x_sign * tx
 
 
 def _euler_wrist_to_zxy(
@@ -740,8 +653,9 @@ def _map_angles_to_bvh(
     Shoulder uses _euler_shoulder_to_zyx() with the intrinsic YZX Euler
     sequence in BVH frame (HFLEX -> ABD -> VFLEX), derived from Cometa's
     internal YXZ sequence after BVH axis mapping.
-    Elbow uses _spherical_to_zyx() with per-joint sign dicts selected by side:
-    _RIGHT_ELBOW_SIGNS for right, _LEFT_ELBOW_SIGNS for left.
+    Elbow uses _euler_elbow_to_zyx() with the intrinsic YZX Euler sequence in
+    BVH frame (Ry=FE -> Rz=Dev -> Rx=PS), derived from Cometa's internal YXZ
+    sequence after BVH axis mapping.  Sign dicts: _RIGHT_ELBOW_SIGNS / _LEFT_ELBOW_SIGNS.
     Wrist uses _euler_wrist_to_zxy() with the intrinsic ZXY Euler sequence in
     BVH frame (Rz=FE -> Rx=Rot -> Ry=Rad), derived from the physical axis
     mapping of the right forearm along -X in BVH world.
@@ -753,7 +667,7 @@ def _map_angles_to_bvh(
 
     chest   = _quat_to_zyx(frame.chest_quat, **_CHEST_SIGNS)
     arm     = _euler_shoulder_to_zyx(frame.shoulder_abd, frame.shoulder_vert, frame.shoulder_horiz, **s_signs)
-    forearm = _spherical_to_zyx(frame.elbow_dev,    frame.elbow_fe,       frame.elbow_ps,      side=side, **e_signs)
+    forearm = _euler_elbow_to_zyx(frame.elbow_fe,   frame.elbow_dev,      frame.elbow_ps,      **e_signs)
     hand    = _euler_wrist_to_zxy(frame.wrist_fe,   frame.wrist_rot,      frame.wrist_rad,     **w_signs)
 
     return chest, arm, forearm, hand
