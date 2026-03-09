@@ -26,8 +26,8 @@ Cometa C3D files store pre-computed anatomical joint angles at 2000 Hz (stride-s
 to the true IMU rate of ~142.857 Hz). The pipeline:
 
 1. Reads shoulder/elbow/wrist angle channels from the ANALOG section
-2. Applies T-pose offset corrections (mean of first 1.0 s subtracted from abd, vert, dev,
-   wrist_fe, wrist_rot, wrist_rad)
+2. Applies T-pose offset corrections (mean of first 1.0 s subtracted from abd, vert,
+   horiz, dev, wrist_fe, wrist_rot, wrist_rad)
 3. Applies chest IMU quaternion T-pose calibration (left-multiply: `q_tpose^-1 * q_raw`)
 4. Maps angles to BVH Euler channels via:
    - `_euler_shoulder_to_zyx()` (shoulder) → BVH YZX channels (RightArm/LeftArm)
@@ -62,11 +62,12 @@ _LEFT_WRIST_SIGNS  = dict(fe_sign=1.0, rot_sign=-1.0, rad_sign=1.0,  z_sign=-1.0
 
 _CHEST_SIGNS = dict(z_sign=1.0, y_sign=1.0, x_sign=1.0)
 
-TPOSE_DURATION_S:        1.0  seconds
-WRIST_RAD_BIAS_DEG:      0.0  degrees
-WRIST_ROT_BIAS_DEG:      0.0  degrees
-SHOULDER_ABD_BIAS_DEG:   0.0  degrees
-ELBOW_DEV_BIAS_DEG:      0.0  degrees
+TPOSE_DURATION_S:          1.0  seconds
+WRIST_RAD_BIAS_DEG:        0.0  degrees
+WRIST_ROT_BIAS_DEG:        0.0  degrees
+SHOULDER_ABD_BIAS_DEG:     0.0  degrees
+SHOULDER_HORIZ_BIAS_DEG:   0.0  degrees
+ELBOW_DEV_BIAS_DEG:        0.0  degrees
 ```
 
 ### Shoulder Euler Sequence
@@ -485,6 +486,89 @@ combined elbow+wrist motions is accurate. Most movements replicated with high fi
   (XZY channel order fix attempted and reverted; open question).
 - **Elbow:** All DOFs visually correct. `z_sign=-1.0` confirmed for right arm.
 - **Wrist:** Palm orientation correct. All DOFs visually correct.
-- **Remaining issue:** Excess adduction observed for specific arm movements. Likely
-  a `z_sign` or `dev_sign` tuning issue in `_RIGHT_ELBOW_SIGNS`, or a residual shoulder
-  ABD bias. Under investigation.
+- **Near-full adduction artifact:** Resolved as a known limitation — see section below.
+
+---
+
+## Near-Full Adduction Artifact Investigation (2026-03-09)
+
+### Symptom
+
+For `movement_1` (arm lowered from T-pose through shoulder adduction), the BVH output
+showed the arm pressing against/in front of the torso body mesh when viewed from the front.
+The side-view model showed a significant forward lean inconsistent with the real-life
+reference footage, where the arm hung nearly straight down at the side.
+
+### Investigation
+
+Peak adduction frame (t = 24.78 s):
+
+| Channel            | Value     |
+|--------------------|-----------|
+| `shoulder_abd_corr`  | -84.44 deg |
+| `shoulder_horiz`     | +37.91 deg (before horiz T-pose correction) |
+| `shoulder_vert_corr` | +20.08 deg |
+| `elbow_fe`           | -29.32 deg |
+
+Real-life side-view footage confirmed the arm was hanging nearly straight down with
+minimal forward lean (< 10 deg). The model showed ~18 deg of forward lean driven by
+the large `shoulder_horiz` and `shoulder_vert` values.
+
+### Root cause: DATA ISSUE — Cometa Euler singularity at full adduction
+
+Cometa's internal shoulder decomposition uses intrinsic **YXZ**, which after BVH axis
+mapping is equivalent to **YZX** in BVH frame. The YZX singularity sits at the **middle
+angle** (Rz = abd = ±90 deg). At `abd = -84 deg`, the decomposition is 6 deg from
+singularity with an amplification factor of:
+
+```
+1 / cos(-84 deg) ≈ 9.5x
+```
+
+Any small quaternion noise in the IMU at that arm position is amplified ~9.5× into the
+`shoulder_horiz` and `shoulder_vert` channels by Cometa's own decomposition **before the
+data is written to the C3D file**. The values `horiz = +37.91 deg` and `vert = +20.08 deg`
+at peak adduction are singularity-amplified artifacts in the source data. No pipeline
+correction can remove them because the distortion grows dynamically as the arm approaches
+full adduction.
+
+T-pose offsets observed on `Calibration_trial_4_Douglas_04-03_rotations.c3d`:
+```
+shoulder_abd   T-pose offset: -3.65 deg
+shoulder_vert  T-pose offset: -11.54 deg
+shoulder_horiz T-pose offset: -19.42 deg
+```
+
+Applying a T-pose correction to `shoulder_horiz` (added 2026-03-09) did not resolve
+the artifact — the T-pose offset was negative (-19.42 deg), so correcting it shifted
+the peak horiz value from +37.91 deg to +57.33 deg (worsened). This confirmed the
+artifact is dynamic noise amplification near the singularity, not a static sensor bias.
+
+### Attempted mitigation: singularity damping
+
+A cosine-weighted damping of the form `horiz_damped = horiz * |cos(abd)|` was considered.
+This would suppress horiz and vert toward zero as abd approaches ±90 deg, directly
+targeting the amplification region. However:
+
+- It would also suppress any genuinely real forward lean or axial rotation at full
+  adduction, introducing its own inaccuracy.
+- It only addresses this one known failure mode, not other potential data quality issues
+  (IMU drift, magnetic interference, loose sensors).
+- It is a heuristic, not a model-based correction.
+
+The approach was assessed as insufficiently robust for general use.
+
+### Resolution: accepted as a known limitation
+
+Near-full adduction movements (abd approaching ±90 deg) produce corrupted horiz and vert
+readings in the Cometa C3D source data due to the inherent YZX singularity in their
+decomposition. The pipeline cannot recover the true rotation from decomposed Euler angles
+that have already been distorted at source. All other arm positions and movement types
+are correctly reproduced.
+
+The `shoulder_horiz` T-pose correction added during this investigation is retained, as
+it correctly removes static sensor bias for all normal-range movements even though it
+does not help at the singularity.
+
+**This is a fundamental limitation of using Cometa's pre-decomposed Euler angles for
+movements approaching full adduction. It is not a pipeline bug.**

@@ -95,6 +95,14 @@ Example usage:
     )
 
     parser.add_argument(
+        '--clothing',
+        type=str,
+        nargs='+',
+        default=None,
+        help='One or more clothing asset names from mpfb_clothing_assets folder (e.g., "Scrub_Shirt" "Scrub_Pants"). Optional.'
+    )
+
+    parser.add_argument(
         '--t-pose',
         action='store_true',
         help='Export the model in T-pose instead of the default A-pose'
@@ -252,6 +260,7 @@ def main():
 
     # Apply hair asset if requested
     hair_obj = None
+    clothing_objs = []
     if args.hair:
         print("\n" + "-"*70)
         print("STEP 5.5: Applying Hair Asset")
@@ -285,10 +294,42 @@ def main():
                     
                     traceback.print_exc()
 
+    # Apply clothing assets if requested
+    if args.clothing:
+        print("\n" + "-"*70)
+        print("STEP 5.6: Applying Clothing Assets")
+        print("-"*70)
+
+        if not armature:
+            print("⚠ Warning: Cannot apply clothing without rig. Use --rig-type to add a rig.")
+            print("Skipping clothing application...")
+        else:
+            try:
+                sys.path.insert(0, str(script_dir / "mesh_clothing_generation"))
+                import mpfb_clothing_assets_application as clothing_lib
+
+                for clothing_name in args.clothing:
+                    clothing_obj = clothing_lib.apply_clothing_asset(
+                        human_obj=basemesh,
+                        armature_obj=armature,
+                        clothing_asset_name=clothing_name,
+                        verbose=args.verbose
+                    )
+                    if clothing_obj:
+                        clothing_objs.append(clothing_obj)
+                        print(f"✓ Clothing asset '{clothing_name}' applied successfully")
+                    else:
+                        print(f"⚠ Warning: Failed to apply clothing asset '{clothing_name}'")
+
+            except Exception as e:
+                print(f"⚠ Warning: Error applying clothing assets: {e}")
+                if args.verbose:
+                    traceback.print_exc()
+
     # Apply T-pose if requested
     if args.t_pose and armature:
         print("\n" + "-"*70)
-        print("STEP 5.6: Setting T-Pose")
+        print("STEP 5.7: Setting T-Pose")
         print("-"*70)
 
         try:
@@ -305,7 +346,7 @@ def main():
     # Apply animation if provided
     if args.animation and armature:
         print("\n" + "-"*70)
-        print("STEP 5.7: Applying Animation")
+        print("STEP 5.8: Applying Animation")
         print("-"*70)
 
         if args.rig_type != 'cmu_mb':
@@ -369,6 +410,7 @@ def main():
         additional_objects = []
         if hair_obj:
             additional_objects.append(hair_obj)
+        additional_objects.extend(clothing_objs)
 
         utils.export_fbx(basemesh, armature, output_path, export_settings, additional_objects)
         

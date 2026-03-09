@@ -182,6 +182,12 @@ WRIST_ROT_BIAS_DEG: float = 0
 # where small shoulder_abd residuals get amplified by the spherical-to-ZYX formula.
 SHOULDER_ABD_BIAS_DEG: float = 0.0
 
+# Shoulder horizontal flexion/extension bias (degrees) added after T-pose offset
+# correction.  Positive = forward (arm swings in front), negative = backward.
+# Adjust if the arm has a residual forward or backward lean at rest after T-pose
+# calibration.
+SHOULDER_HORIZ_BIAS_DEG: float = 0.0
+
 # Elbow deviation bias (degrees) added after T-pose offset correction.
 # Positive = deviation upward, negative = deviation downward.
 # Adjust if the forearm is not straight at rest after T-pose calibration.
@@ -242,6 +248,7 @@ def parse_c3d_joint_angles(
     wrist_rad_bias_deg: float = WRIST_RAD_BIAS_DEG,
     wrist_rot_bias_deg: float = WRIST_ROT_BIAS_DEG,
     shoulder_abd_bias_deg: float = SHOULDER_ABD_BIAS_DEG,
+    shoulder_horiz_bias_deg: float = SHOULDER_HORIZ_BIAS_DEG,
     elbow_dev_bias_deg: float = ELBOW_DEV_BIAS_DEG,
     verbose: bool = False,
 ) -> Tuple[List[JointAngleFrame], str]:
@@ -256,22 +263,24 @@ def parse_c3d_joint_angles(
     T-pose offset corrections are applied to shoulder, elbow, and wrist
     channels: the mean value of each channel over the first tpose_duration
     seconds is subtracted from all frames to remove sensor bias at anatomical
-    neutral.  Removing shoulder_abd bias is important because the
-    spherical-to-ZYX formula amplifies small shoulder_abd residuals into large
-    theta_z artifacts at large shoulder_horiz angles.  Removing wrist_fe,
-    wrist_rot, and wrist_rad biases ensures the hand is in the correct rest
-    pose at T-pose.  Additional per-channel bias constants can be added after
-    T-pose correction to compensate for any residual visible in Blender.
+    neutral.  Removing shoulder_abd and shoulder_horiz biases ensures the arm
+    lies in the coronal plane at T-pose with no forward/backward lean.
+    Removing wrist_fe, wrist_rot, and wrist_rad biases ensures the hand is in
+    the correct rest pose at T-pose.  Additional per-channel bias constants can
+    be added after T-pose correction to compensate for any residual visible in
+    Blender.
 
     Args:
         c3d_path: Path to Cometa C3D file
         tpose_duration: Duration (seconds) of the initial T-pose segment used
-            to compute calibration offsets for shoulder_abd, shoulder_vert, and
-            elbow_dev (default: 1.0 s)
+            to compute calibration offsets for shoulder_abd, shoulder_vert,
+            shoulder_horiz, and elbow_dev (default: 1.0 s)
         wrist_rad_bias_deg: Extra offset (deg) added to all corrected wrist_rad
-            values after T-pose correction (default: 15.0)
+            values after T-pose correction (default: 0.0)
         shoulder_abd_bias_deg: Extra offset (deg) added to all corrected
             shoulder_abd values after T-pose correction (default: 0.0)
+        shoulder_horiz_bias_deg: Extra offset (deg) added to all corrected
+            shoulder_horiz values after T-pose correction (default: 0.0)
         elbow_dev_bias_deg: Extra offset (deg) added to all corrected
             elbow_dev values after T-pose correction (default: 0.0)
         verbose: Print parsing details
@@ -357,6 +366,10 @@ def parse_c3d_joint_angles(
     for frame in frames:
         frame.shoulder_vert = frame.shoulder_vert - shoulder_vert_offset
 
+    shoulder_horiz_offset = sum(f.shoulder_horiz for f in frames[:n_tpose]) / n_tpose
+    for frame in frames:
+        frame.shoulder_horiz = frame.shoulder_horiz - shoulder_horiz_offset + shoulder_horiz_bias_deg
+
     elbow_dev_offset = sum(f.elbow_dev for f in frames[:n_tpose]) / n_tpose
     for frame in frames:
         frame.elbow_dev = frame.elbow_dev - elbow_dev_offset + elbow_dev_bias_deg
@@ -407,7 +420,10 @@ def parse_c3d_joint_angles(
         print(f"  shoulder_abd  T-pose offset removed: {shoulder_abd_offset:+.2f} deg")
         if shoulder_abd_bias_deg != 0.0:
             print(f"  shoulder_abd  extra bias applied:    {shoulder_abd_bias_deg:+.2f} deg")
-        print(f"  shoulder_vert T-pose offset removed: {shoulder_vert_offset:+.2f} deg")
+        print(f"  shoulder_vert  T-pose offset removed: {shoulder_vert_offset:+.2f} deg")
+        print(f"  shoulder_horiz T-pose offset removed: {shoulder_horiz_offset:+.2f} deg")
+        if shoulder_horiz_bias_deg != 0.0:
+            print(f"  shoulder_horiz extra bias applied:    {shoulder_horiz_bias_deg:+.2f} deg")
         print(f"  elbow_dev      T-pose offset removed: {elbow_dev_offset:+.2f} deg")
         if elbow_dev_bias_deg != 0.0:
             print(f"  elbow_dev      extra bias applied:    {elbow_dev_bias_deg:+.2f} deg")
