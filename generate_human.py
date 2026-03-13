@@ -14,6 +14,7 @@ The script will:
 
 import sys
 import os
+import builtins
 import argparse
 from pathlib import Path
 import traceback
@@ -25,6 +26,19 @@ if str(script_dir) not in sys.path:
     sys.path.insert(0, str(script_dir))
 
 import utils as utils
+
+# Force all print() calls in this process to flush immediately.
+# Blender replaces sys.stdout with its own buffered object, so PYTHONUNBUFFERED
+# has no effect once Blender is running. Patching builtins.print ensures that
+# every print() call -- including those from MPFB and retarget_bvh -- flushes
+# to the pipe on each line, enabling real-time output in the GUI log widget.
+_orig_print = builtins.print
+
+def _print_flush(*args, **kwargs):
+    kwargs.setdefault('flush', True)
+    _orig_print(*args, **kwargs)
+
+builtins.print = _print_flush
 
 
 def parse_arguments():

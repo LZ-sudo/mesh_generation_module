@@ -369,7 +369,9 @@ def main():
 
     # Run Blender with script
     try:
-        result = subprocess.run(blender_cmd)
+        blender_env = os.environ.copy()
+        blender_env["PYTHONUNBUFFERED"] = "1"
+        result = subprocess.run(blender_cmd, env=blender_env)
         return result.returncode
     except KeyboardInterrupt:
         print("\n\n Interrupted by user")
