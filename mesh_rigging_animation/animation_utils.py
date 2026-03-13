@@ -116,7 +116,17 @@ def apply_cmu_mb_animation(
     armature.select_set(True)
 
     try:
-        result = bpy.ops.mcp.load_and_retarget(filepath=str(anim_path))
+        # useAllFrames=True hard-codes the range to (-9999, 9999), capping any
+        # BVH at exactly 10 000 frames regardless of actual length.  Passing
+        # useAllFrames=False with a large endFrame delegates the upper bound to
+        # the BVH header's own Frames count (the loader also checks frame < nFrames),
+        # so no frames beyond the file are ever read.
+        result = bpy.ops.mcp.load_and_retarget(
+            filepath=str(anim_path),
+            useAllFrames=False,
+            startFrame=0,
+            endFrame=1_000_000,
+        )
         if verbose:
             print(f"  Operator result: {result}")
         if 'FINISHED' not in result:
