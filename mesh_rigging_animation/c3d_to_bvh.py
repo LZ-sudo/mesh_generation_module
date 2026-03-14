@@ -44,7 +44,6 @@ Usage:
 """
 
 import argparse
-import builtins
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -56,18 +55,6 @@ from scipy.spatial.transform import Rotation
 
 from bvh_writer import write_bvh_hierarchy
 from imu_calibration import quaternion_inverse, quaternion_multiply, quaternion_to_euler
-
-# Force all print() calls to flush immediately when output is piped.
-# Without this, C extension libraries (e.g. ezc3d) that write through Python's
-# print() retain full buffering on pipes, causing the GUI log widget to appear
-# frozen until the process exits.
-_orig_print = builtins.print
-
-def _print_flush(*args, **kwargs):
-    kwargs.setdefault('flush', True)
-    _orig_print(*args, **kwargs)
-
-builtins.print = _print_flush
 
 
 # ---------------------------------------------------------------------------
