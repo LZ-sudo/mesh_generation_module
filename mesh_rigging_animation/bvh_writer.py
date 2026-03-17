@@ -144,7 +144,7 @@ ROOT Hips
 \t\t\t\t\t\tJOINT LeftForeArm
 \t\t\t\t\t\t{
 \t\t\t\t\t\t\tOFFSET 4.78 -0.00 0.00
-\t\t\t\t\t\t\tCHANNELS 3 Zrotation Yrotation Xrotation
+\t\t\t\t\t\t\tCHANNELS 3 Yrotation Zrotation Xrotation
 \t\t\t\t\t\t\tJOINT LeftHand
 \t\t\t\t\t\t\t{
 \t\t\t\t\t\t\t\tOFFSET 3.59 -0.00 -0.00
@@ -187,7 +187,7 @@ ROOT Hips
 \t\t\t\t\t\tJOINT RightForeArm
 \t\t\t\t\t\t{
 \t\t\t\t\t\t\tOFFSET -4.49 -0.00 0.00
-\t\t\t\t\t\t\tCHANNELS 3 Zrotation Yrotation Xrotation
+\t\t\t\t\t\t\tCHANNELS 3 Yrotation Zrotation Xrotation
 \t\t\t\t\t\t\tJOINT RightHand
 \t\t\t\t\t\t\t{
 \t\t\t\t\t\t\t\tOFFSET -3.71 -0.00 0.00

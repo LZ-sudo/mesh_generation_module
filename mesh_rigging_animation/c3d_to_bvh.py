@@ -26,11 +26,12 @@ Angle-to-BVH channel mapping (ZYX rotation order, arm rest direction = -X):
   Output signs (z_sign, y_sign, x_sign) correspond directly to the old
   spherical model's elev_sign, azi_sign, axial_sign respectively.
 
-  Elbow uses _euler_elbow_to_zyx() with per-joint sign conventions defined in
+  Elbow uses _euler_elbow_to_yzx() with per-joint sign conventions defined in
   _RIGHT_ELBOW_SIGNS / _LEFT_ELBOW_SIGNS.  Cometa uses intrinsic YXZ for the
   elbow (same as shoulder/wrist).  Channel mapping: Y=fe, X=dev, Z=ps.
   After BVH axis mapping: R = Ry(fe) x Rz(dev) x Rx(ps) -- YZX sequence.
-  Decomposed into BVH ZYX (ForeArm channels: Zrotation Yrotation Xrotation).
+  Decomposed into BVH YZX (ForeArm channels: Yrotation Zrotation Xrotation).
+  Singularity at Rz=+-90 deg (full deviation) -- rarely reached in therapy.
 
   Wrist uses _euler_wrist_to_zxy() with the intrinsic ZXY Euler sequence
   in BVH world frame: R = Rz(FE) x Rx(Rot) x Ry(Rad).  For the right forearm
@@ -484,7 +485,7 @@ def _euler_shoulder_to_zyx(
     return y_sign * ty, z_sign * tz, x_sign * tx
 
 
-def _euler_elbow_to_zyx(
+def _euler_elbow_to_yzx(
     fe_deg: float,
     dev_deg: float,
     ps_deg: float,
@@ -497,7 +498,7 @@ def _euler_elbow_to_zyx(
     x_sign: float,
 ) -> Tuple[float, float, float]:
     """
-    Convert Cometa elbow Euler angles to BVH ZYX Euler angles.
+    Convert Cometa elbow Euler angles to BVH YZX Euler angles.
 
     Cometa uses intrinsic YXZ for all joints (IL confirmed for shoulder and
     wrist).  Channel-to-axis mapping by name analogy with the shoulder:
@@ -508,16 +509,18 @@ def _euler_elbow_to_zyx(
     After BVH axis mapping (Cometa X->BVH Z, Cometa Z->BVH X, Cometa Y->BVH Y):
       R = Ry(fe) x Rz(dev) x Rx(ps) -- YZX sequence in BVH frame.
 
-    This matches the shoulder YZX structure.  The rotation is decomposed into
-    ZYX for BVH ForeArm CHANNELS (Zrotation Yrotation Xrotation):
-      Z (1st) = deviation channel    (elbow_dev)
-      Y (2nd) = FE channel           (elbow_fe)
+    Decomposed back into YZX for BVH ForeArm CHANNELS (Yrotation Zrotation Xrotation):
+      Y (1st) = FE channel           (elbow_fe)
+      Z (2nd) = deviation channel    (elbow_dev)
       X (3rd) = pro/sup channel      (elbow_ps)
 
-    Singularity at theta_y = +-90 deg (full FE), same as the previous
-    spherical model.  Left-arm: y_sign and x_sign negated (left arm rests
-    in +X vs right -X).  All signs start at +1.0 -- validate per-DOF in
-    Blender.
+    Using YZX output (matching the construction sequence) makes this a no-op
+    round-trip, placing the singularity at the middle angle Z=+-90 deg (full
+    deviation) rather than at Y=+-90 deg (full FE) which the old ZYX output
+    produced.  Full deviation is rarely reached in therapy; full FE is common.
+
+    Note: sign conventions were calibrated against the previous ZYX output and
+    should be re-validated per-DOF in Blender after this change.
 
     Args:
         fe_deg:   Elbow Flexion/Extension [deg]
@@ -526,20 +529,20 @@ def _euler_elbow_to_zyx(
         fe_sign:  Sign applied to fe_deg before Euler reconstruction
         dev_sign: Sign applied to dev_deg before Euler reconstruction
         ps_sign:  Sign applied to ps_deg before Euler reconstruction
-        z_sign:   Sign applied to output theta_z (deviation channel)
         y_sign:   Sign applied to output theta_y (FE channel)
+        z_sign:   Sign applied to output theta_z (deviation channel)
         x_sign:   Sign applied to output theta_x (pro/sup channel)
 
     Returns:
-        (theta_z_deg, theta_y_deg, theta_x_deg) for BVH ZYX channels
+        (theta_y_deg, theta_z_deg, theta_x_deg) for BVH YZX channels
     """
     R = Rotation.from_euler(
         'yzx',
         [fe_sign * fe_deg, dev_sign * dev_deg, ps_sign * ps_deg],
         degrees=True,
     )
-    tz, ty, tx = R.as_euler('zyx', degrees=True)
-    return z_sign * tz, y_sign * ty, x_sign * tx
+    ty, tz, tx = R.as_euler('yzx', degrees=True)
+    return y_sign * ty, z_sign * tz, x_sign * tx
 
 
 def _euler_wrist_to_zxy(
@@ -633,7 +636,7 @@ def _map_angles_to_bvh(
 ) -> Tuple[
     Tuple[float, float, float],   # Spine1 (chest): Z, Y, X
     Tuple[float, float, float],   # Arm: Y, Z, X
-    Tuple[float, float, float],   # ForeArm: Z, Y, X
+    Tuple[float, float, float],   # ForeArm: Y, Z, X
     Tuple[float, float, float],   # Hand: Z, X, Y
 ]:
     """
@@ -660,7 +663,7 @@ def _map_angles_to_bvh(
 
     chest   = _quat_to_zyx(frame.chest_quat, **_CHEST_SIGNS)
     arm     = _euler_shoulder_to_zyx(frame.shoulder_abd, frame.shoulder_vert, frame.shoulder_horiz, **s_signs)
-    forearm = _euler_elbow_to_zyx(frame.elbow_fe,   frame.elbow_dev,      frame.elbow_ps,      **e_signs)
+    forearm = _euler_elbow_to_yzx(frame.elbow_fe,   frame.elbow_dev,      frame.elbow_ps,      **e_signs)
     hand    = _euler_wrist_to_zxy(frame.wrist_fe,   frame.wrist_rot,      frame.wrist_rad,     **w_signs)
 
     return chest, arm, forearm, hand
