@@ -640,3 +640,65 @@ manual tuning knobs, all currently set to 0.0.
 The chest IMU quaternion T-pose calibration is **unchanged** — it remains necessary
 because the raw chest quaternion is in Cometa's sensor world frame and must be
 re-expressed relative to anatomical neutral to drive the Spine1 BVH joint correctly.
+
+---
+
+## Elbow ZYX Convention Test — Reverted (2026-03-17)
+
+### Hypothesis
+
+IL decompilation of `ElbowR`/`ElbowL` in `EMGandMotionTools.exe` revealed that Cometa
+uses `'zyx'` Euler decomposition internally for the elbow, **not** `'yxz'` as assumed by
+analogy with the shoulder.  The confirmed axis-to-channel mapping is: Z=FE, Y=Dev, X=PS.
+IL-confirmed negation pattern: right arm negates all three; left arm negates only PS.
+
+The `from_euler` sequence in `_euler_elbow_to_yzx` was changed from `'yzx'` to `'zyx'`,
+and `_RIGHT_ELBOW_SIGNS`/`_LEFT_ELBOW_SIGNS` were updated to reproduce the IL negations
+(right: fe=-1, dev=-1, ps=-1; left: fe=+1, dev=+1, ps=-1).
+
+### Outcome — REVERTED
+
+Changing to ZYX caused the elbow to adopt a permanent bent position (static offset in FE),
+making the animation worse than the original YZX convention.  The IL-confirmed ZYX
+convention does not produce correct BVH output, possibly because the Cometa body-frame
+axis mapping to BVH world frame differs from what was assumed (same remapping as shoulder).
+
+The pipeline was reverted to `from_euler('yzx', ...)` with the original sign conventions.
+
+### Conclusion
+
+The elbow `from_euler('yzx', ...)` (YXZ assumed, YZX output) produces visually correct
+results despite the IL indicating ZYX internally.  The discrepancy suggests either a
+different Cometa-to-BVH axis remapping for the elbow vs shoulder, or that the YZX
+round-trip accidentally compensates for the convention mismatch.  The elbow channel
+mapping should be treated as empirically validated rather than analytically derived.
+
+**The elbow section is closed.  Do not change the `from_euler` sequence again without
+a Blender DOF-probe test plan that accounts for the ZYX-vs-YZX axis remapping.**
+
+---
+
+## Chest Quaternion Multiply Direction Test (2026-03-17)
+
+### Hypothesis
+
+The chest (Spine1) T-pose calibration currently left-multiplies:
+  `q_cal = chest_offset * q_raw`
+This expresses subsequent rotations relative to T-pose AND re-expresses them in BVH
+world frame simultaneously.  However, if the Cometa sensor world frame is already
+close to BVH world frame, left-multiply may over-rotate trunk motion axes (e.g. twist
+appearing as lean, or vice versa), contributing to shoulder joint artifacts.
+
+Right-multiplying instead:
+  `q_cal = q_raw * chest_offset`
+keeps the calibration in the sensor world frame and only removes the static T-pose bias,
+without the additional world-frame re-expression step.
+
+### Status — In progress
+
+### Outcome — REVERTED (left-multiply confirmed correct)
+
+Right-multiplying produced worse results.  Left-multiply (`chest_offset * q_raw`) is
+confirmed as the correct operation.  The pipeline was reverted to left-multiply.
+
+---
