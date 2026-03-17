@@ -242,6 +242,7 @@ def _detect_arm_side(label_to_idx: dict) -> str:
     )
 
 
+
 def parse_c3d_joint_angles(
     c3d_path: Path,
     tpose_duration: float = TPOSE_DURATION_S,
@@ -347,44 +348,26 @@ def parse_c3d_joint_angles(
             wrist_rot=float(wrist_rot[i]),
         ))
 
-    # Subtract T-pose offsets for shoulder, elbow, and wrist channels.
-    # Cometa reports non-zero values at anatomical neutral for these channels;
-    # the mean over the initial T-pose segment is removed from every frame.
-    # Zeroing shoulder_abd ensures the arm is horizontal at T-pose and prevents
-    # contamination of the VFLEX and HFLEX channels in the Euler reconstruction.
-    # Zeroing shoulder_vert removes the sensor-to-segment VFLEX bias so that
-    # the arm lies in the coronal plane at T-pose.
-    # Zeroing wrist_fe, wrist_rot, and wrist_rad removes palm-orientation drift
-    # at anatomical neutral, ensuring the hand is in the correct rest pose.
+    # T-pose offset correction is intentionally omitted for all joint angle channels.
+    # Raw Cometa angles are used directly; per-channel bias constants below can be
+    # used for manual fine-tuning if needed.
     n_tpose = max(1, min(int(round(tpose_duration * imu_rate)), len(frames)))
 
-    shoulder_abd_offset = sum(f.shoulder_abd for f in frames[:n_tpose]) / n_tpose
-    for frame in frames:
-        frame.shoulder_abd = frame.shoulder_abd - shoulder_abd_offset + shoulder_abd_bias_deg
-
-    shoulder_vert_offset = sum(f.shoulder_vert for f in frames[:n_tpose]) / n_tpose
-    for frame in frames:
-        frame.shoulder_vert = frame.shoulder_vert - shoulder_vert_offset
-
-    shoulder_horiz_offset = sum(f.shoulder_horiz for f in frames[:n_tpose]) / n_tpose
-    for frame in frames:
-        frame.shoulder_horiz = frame.shoulder_horiz - shoulder_horiz_offset + shoulder_horiz_bias_deg
-
-    elbow_dev_offset = sum(f.elbow_dev for f in frames[:n_tpose]) / n_tpose
-    for frame in frames:
-        frame.elbow_dev = frame.elbow_dev - elbow_dev_offset + elbow_dev_bias_deg
-
-    wrist_fe_offset = sum(f.wrist_fe for f in frames[:n_tpose]) / n_tpose
-    for frame in frames:
-        frame.wrist_fe = frame.wrist_fe - wrist_fe_offset
-
-    wrist_rot_offset = sum(f.wrist_rot for f in frames[:n_tpose]) / n_tpose
-    for frame in frames:
-        frame.wrist_rot = frame.wrist_rot - wrist_rot_offset + wrist_rot_bias_deg
-
-    wrist_rad_offset = sum(f.wrist_rad for f in frames[:n_tpose]) / n_tpose
-    for frame in frames:
-        frame.wrist_rad = frame.wrist_rad - wrist_rad_offset + wrist_rad_bias_deg
+    if shoulder_abd_bias_deg != 0.0:
+        for frame in frames:
+            frame.shoulder_abd = frame.shoulder_abd + shoulder_abd_bias_deg
+    if shoulder_horiz_bias_deg != 0.0:
+        for frame in frames:
+            frame.shoulder_horiz = frame.shoulder_horiz + shoulder_horiz_bias_deg
+    if elbow_dev_bias_deg != 0.0:
+        for frame in frames:
+            frame.elbow_dev = frame.elbow_dev + elbow_dev_bias_deg
+    if wrist_rot_bias_deg != 0.0:
+        for frame in frames:
+            frame.wrist_rot = frame.wrist_rot + wrist_rot_bias_deg
+    if wrist_rad_bias_deg != 0.0:
+        for frame in frames:
+            frame.wrist_rad = frame.wrist_rad + wrist_rad_bias_deg
 
     # Apply chest quaternion T-pose calibration with world-frame correction.
     # The raw chest quaternion captures the sensor's orientation in Cometa's
@@ -417,23 +400,17 @@ def parse_c3d_joint_angles(
         print(f"  Analog rate: {analog_rate:.0f} Hz, IMU rate: {imu_rate:.3f} Hz (stride={step})")
         print(f"  Extracted {len(frames)} unique frames")
         print(f"  Duration: {frames[-1].timestamp:.2f}s")
-        print(f"  shoulder_abd  T-pose offset removed: {shoulder_abd_offset:+.2f} deg")
+        print(f"  T-pose offsets: disabled for all channels (raw Cometa angles used)")
         if shoulder_abd_bias_deg != 0.0:
-            print(f"  shoulder_abd  extra bias applied:    {shoulder_abd_bias_deg:+.2f} deg")
-        print(f"  shoulder_vert  T-pose offset removed: {shoulder_vert_offset:+.2f} deg")
-        print(f"  shoulder_horiz T-pose offset removed: {shoulder_horiz_offset:+.2f} deg")
+            print(f"  shoulder_abd   bias applied: {shoulder_abd_bias_deg:+.2f} deg")
         if shoulder_horiz_bias_deg != 0.0:
-            print(f"  shoulder_horiz extra bias applied:    {shoulder_horiz_bias_deg:+.2f} deg")
-        print(f"  elbow_dev      T-pose offset removed: {elbow_dev_offset:+.2f} deg")
+            print(f"  shoulder_horiz bias applied: {shoulder_horiz_bias_deg:+.2f} deg")
         if elbow_dev_bias_deg != 0.0:
-            print(f"  elbow_dev      extra bias applied:    {elbow_dev_bias_deg:+.2f} deg")
-        print(f"  wrist_fe       T-pose offset removed: {wrist_fe_offset:+.2f} deg")
-        print(f"  wrist_rot      T-pose offset removed: {wrist_rot_offset:+.2f} deg")
+            print(f"  elbow_dev      bias applied: {elbow_dev_bias_deg:+.2f} deg")
         if wrist_rot_bias_deg != 0.0:
-            print(f"  wrist_rot      extra bias applied:    {wrist_rot_bias_deg:+.2f} deg")
-        print(f"  wrist_rad      T-pose offset removed: {wrist_rad_offset:+.2f} deg")
+            print(f"  wrist_rot      bias applied: {wrist_rot_bias_deg:+.2f} deg")
         if wrist_rad_bias_deg != 0.0:
-            print(f"  wrist_rad      extra bias applied:    {wrist_rad_bias_deg:+.2f} deg")
+            print(f"  wrist_rad      bias applied: {wrist_rad_bias_deg:+.2f} deg")
         print(f"  Chest T-pose quat:  [{q_tpose_mean[0]:+.4f}, {q_tpose_mean[1]:+.4f}, "
               f"{q_tpose_mean[2]:+.4f}, {q_tpose_mean[3]:+.4f}]")
 

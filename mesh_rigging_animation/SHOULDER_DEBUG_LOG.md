@@ -26,8 +26,8 @@ Cometa C3D files store pre-computed anatomical joint angles at 2000 Hz (stride-s
 to the true IMU rate of ~142.857 Hz). The pipeline:
 
 1. Reads shoulder/elbow/wrist angle channels from the ANALOG section
-2. Applies T-pose offset corrections (mean of first 1.0 s subtracted from abd, vert,
-   horiz, dev, wrist_fe, wrist_rot, wrist_rad)
+2. Applies optional per-channel bias constants (all 0.0 by default; T-pose offset
+   corrections were removed — see 2026-03-17 entry below)
 3. Applies chest IMU quaternion T-pose calibration (left-multiply: `q_tpose^-1 * q_raw`)
 4. Maps angles to BVH Euler channels via:
    - `_euler_shoulder_to_zyx()` (shoulder) → BVH YZX channels (RightArm/LeftArm)
@@ -572,3 +572,71 @@ does not help at the singularity.
 
 **This is a fundamental limitation of using Cometa's pre-decomposed Euler angles for
 movements approaching full adduction. It is not a pipeline bug.**
+
+---
+
+## Quaternion-Space Temporal Smoothing Attempt (2026-03-17)
+
+### Hypothesis
+
+IMU noise is amplified near the YZX singularity (full adduction) in Cometa's source
+decomposition by a factor of `1/cos(abd)`. Applying a moving average in quaternion space
+(rather than per-channel) after T-pose correction would reduce this high-frequency noise
+without introducing directional bias.
+
+### Implementation
+
+`_smooth_shoulder_quaternions(frames, half_window)` was added to `c3d_to_bvh.py`:
+- Reconstructs the shoulder rotation quaternion from YZX Euler angles per frame
+- Corrects antipodal flips (sign consistency) before averaging
+- Applies a symmetric moving average of width `2*half_window + 1` in quaternion space
+- Normalises and writes smoothed YZX angles back into each frame
+
+A `--shoulder-smooth N` CLI argument and a corresponding GUI entry field were added.
+
+### Outcome — REVERTED
+
+- At small values (e.g. N=5), no visible effect on the shoulder artifacts in Blender.
+- At larger values (e.g. N=10+), the range of motion of the shoulder joints was
+  noticeably reduced — the smoothing damped genuine motion alongside noise.
+- The feature was reverted entirely: function removed, CLI arg removed, GUI entry removed.
+
+### Conclusion
+
+Quaternion-space temporal smoothing is not effective for this artifact. The artifact is
+not purely high-frequency noise — it also has a static/bias component that smoothing
+cannot address. The issue may lie in the T-pose offset correction itself (see below).
+
+---
+
+## T-Pose Offset Investigation and Removal (2026-03-17)
+
+### Hypothesis
+
+The shoulder offset artifact observed in Blender may be caused in part by the automatic
+T-pose offset correction (mean of first 1.0 s subtracted from each channel). If the
+subject was not perfectly in anatomical T-pose during the calibration window, or if
+Cometa's internal decomposition already zeroes the neutral pose, subtracting a non-zero
+mean could introduce a persistent bias.
+
+### Test sequence
+
+1. **Disabled shoulder T-pose offsets only** (abd, vert, horiz) — kept elbow and wrist.
+   Observation: shoulder artifacts reduced, suggesting T-pose offsets were partially
+   contributing to the offset.
+2. **Disabled elbow T-pose offset** as well (wrist only active).
+   Observation: no additional visible improvement or regression.
+3. **Disabled all T-pose offsets** (shoulder, elbow, wrist all removed).
+   Observation: confirmed as the correct baseline; user approved removal.
+
+### Decision: T-pose offsets removed from pipeline (2026-03-17)
+
+The automatic T-pose mean subtraction has been **permanently removed** from the pipeline
+for all joint angle channels (shoulder, elbow, wrist). Raw Cometa angles are now used
+directly. Per-channel bias constants (`SHOULDER_ABD_BIAS_DEG`, `SHOULDER_HORIZ_BIAS_DEG`,
+`ELBOW_DEV_BIAS_DEG`, `WRIST_ROT_BIAS_DEG`, `WRIST_RAD_BIAS_DEG`) are retained as
+manual tuning knobs, all currently set to 0.0.
+
+The chest IMU quaternion T-pose calibration is **unchanged** — it remains necessary
+because the raw chest quaternion is in Cometa's sensor world frame and must be
+re-expressed relative to anatomical neutral to drive the Spine1 BVH joint correctly.
