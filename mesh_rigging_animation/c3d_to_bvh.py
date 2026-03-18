@@ -111,7 +111,7 @@ _CHEST_QUAT_LABELS = ('Chest :1', 'Chest :2', 'Chest :3', 'Chest :4')
 # y_sign:     sign applied to output theta_y (horiz / forward channel)
 # x_sign:     sign applied to output theta_x (axial rotation channel)
 _RIGHT_SHOULDER_SIGNS = dict(abd_sign=1.0, vert_sign=1.0, horiz_sign=1.0, z_sign=-1.0, y_sign=1.0, x_sign=1.0)
-_LEFT_SHOULDER_SIGNS  = dict(abd_sign=1.0, vert_sign=1.0, horiz_sign=1.0, z_sign=1.0, y_sign=-1.0, x_sign=-1.0)
+_LEFT_SHOULDER_SIGNS  = dict(abd_sign=1.0, vert_sign=-1.0, horiz_sign=1.0, z_sign=1.0, y_sign=-1.0, x_sign=-1.0)
 
 # Elbow: Cometa uses intrinsic YXZ (same as shoulder/wrist, IL confirmed).
 # Channel mapping: Y=fe (Flexion/Extension), X=dev (Deviation), Z=ps (Pronation/Supination).
@@ -126,7 +126,7 @@ _LEFT_SHOULDER_SIGNS  = dict(abd_sign=1.0, vert_sign=1.0, horiz_sign=1.0, z_sign
 # Left-arm: y_sign and x_sign negated (left arm rests in +X vs right -X).
 # All signs start at +1.0 -- validate each DOF independently in Blender.
 _RIGHT_ELBOW_SIGNS    = dict(fe_sign=1.0, dev_sign=1.0, ps_sign=1.0, z_sign=-1.0, y_sign=1.0, x_sign=1.0)
-_LEFT_ELBOW_SIGNS     = dict(fe_sign=1.0, dev_sign=1.0, ps_sign=1.0, z_sign=1.0, y_sign=-1.0, x_sign=-1.0)
+_LEFT_ELBOW_SIGNS     = dict(fe_sign=1.0, dev_sign=1.0, ps_sign=-1.0, z_sign=1.0, y_sign=-1.0, x_sign=-1.0)
 
 # Wrist: Cometa internally uses intrinsic YXZ (confirmed by IL decompilation).
 # C3D channel mapping:
@@ -150,7 +150,7 @@ _LEFT_ELBOW_SIGNS     = dict(fe_sign=1.0, dev_sign=1.0, ps_sign=1.0, z_sign=1.0,
 # x_sign:   sign applied to output theta_x (CW/CCW rotation channel)
 # y_sign:   sign applied to output theta_y (deviation channel)
 _RIGHT_WRIST_SIGNS    = dict(fe_sign=1.0, rot_sign=-1.0, rad_sign=-1.0, z_sign=1.0, x_sign=1.0, y_sign=1.0)
-_LEFT_WRIST_SIGNS     = dict(fe_sign=1.0, rot_sign=-1.0, rad_sign=1.0, z_sign=-1.0, x_sign=-1.0, y_sign=-1.0)
+_LEFT_WRIST_SIGNS     = dict(fe_sign=1.0, rot_sign=-1.0, rad_sign=-1.0, z_sign=-1.0, x_sign=-1.0, y_sign=-1.0)
 
 # Chest trunk sign conventions: change these if a trunk motion is inverted.
 # z_sign: sign of theta_z (lateral lean:           +1 = right-side up)
