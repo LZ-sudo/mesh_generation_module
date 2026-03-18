@@ -165,6 +165,43 @@ _CHEST_SIGNS = dict(z_sign=1.0, y_sign=1.0, x_sign=1.0)
 # calibration uses this window.
 CHEST_CALIB_DURATION_S: float = 0.5
 
+# Smooth dual-condition adduction correction.
+#
+# Corrects the systematic over-adduction artifact observed when shoulder
+# adduction and elbow flexion occur simultaneously.  Both conditions must
+# be active for any correction to apply, and both scale in continuously
+# (no hard thresholds) to avoid discontinuities in animation playback.
+#
+# Adduction axis:
+#   Correction is zero while shoulder_abd >= -SHOULDER_ABD_CORRECTION_THRESHOLD_DEG.
+#   Beyond that threshold, correction ramps linearly from 0 to
+#   SHOULDER_ADDUCTION_CORRECTION_MAX_DEG over the next
+#   SHOULDER_ABD_CORRECTION_RAMP_DEG degrees of adduction.
+#   Example with threshold=45, ramp=45, max=15:
+#     shoulder_abd = -45 -> correction = 0
+#     shoulder_abd = -67.5 -> correction = 7.5
+#     shoulder_abd = -90 -> correction = 15 (capped)
+#
+# Elbow axis:
+#   Correction weight scales from 0 at elbow_fe=0 to 1.0 at
+#   elbow_fe >= ELBOW_FE_CORRECTION_THRESHOLD_DEG.
+#   At intermediate flexion angles the weight is proportional.
+#
+# Set all correction maxes to 0.0 to disable entirely.
+SHOULDER_ABD_CORRECTION_THRESHOLD_DEG: float = 60
+SHOULDER_ABD_CORRECTION_RAMP_DEG: float = 45.0
+ELBOW_FE_CORRECTION_THRESHOLD_DEG: float = 60
+
+SHOULDER_ADDUCTION_CORRECTION_MAX_DEG: float = 75.0
+# Vertical flexion/extension correction (axial/humerus rotation) applied under
+# the same dual condition. Positive = reduces excessive forward vert; negative
+# = reduces excessive backward vert.
+SHOULDER_VERT_CORRECTION_MAX_DEG: float = -75.0
+# Horizontal flexion/extension correction (forward/backward arm swing) applied
+# under the same dual condition. Positive = reduces excessive forward horiz
+# (arm swings backward toward neutral); negative = reduces excessive extension.
+SHOULDER_HORIZ_CORRECTION_MAX_DEG: float = 90.0
+
 
 
 @dataclass
@@ -301,6 +338,23 @@ def parse_c3d_joint_angles(
 
     n_tpose = max(1, min(int(round(chest_calib_duration * imu_rate)), len(frames)))
 
+    # Smooth dual-condition shoulder correction (adduction + vertical flexion).
+    # Both adduction depth and elbow flexion scale the correction continuously
+    # so there are no hard thresholds that could produce animation stepping.
+    if (
+        SHOULDER_ADDUCTION_CORRECTION_MAX_DEG != 0.0
+        or SHOULDER_VERT_CORRECTION_MAX_DEG != 0.0
+        or SHOULDER_HORIZ_CORRECTION_MAX_DEG != 0.0
+    ):
+        for frame in frames:
+            abd_depth = max(0.0, -(frame.shoulder_abd + SHOULDER_ABD_CORRECTION_THRESHOLD_DEG))
+            abd_scale = min(1.0, abd_depth / SHOULDER_ABD_CORRECTION_RAMP_DEG)
+            elbow_scale = min(1.0, max(0.0, frame.elbow_fe / ELBOW_FE_CORRECTION_THRESHOLD_DEG))
+            scale = abd_scale * elbow_scale
+            frame.shoulder_abd  += SHOULDER_ADDUCTION_CORRECTION_MAX_DEG * scale
+            frame.shoulder_vert -= SHOULDER_VERT_CORRECTION_MAX_DEG * scale
+            frame.shoulder_horiz -= SHOULDER_HORIZ_CORRECTION_MAX_DEG * scale
+
     # Apply chest quaternion T-pose calibration with world-frame correction.
     # The raw chest quaternion captures the sensor's orientation in Cometa's
     # world frame; at T-pose this is non-identity.  Left-multiplying by the
@@ -333,6 +387,20 @@ def parse_c3d_joint_angles(
         print(f"  Extracted {len(frames)} unique frames")
         print(f"  Duration: {frames[-1].timestamp:.2f}s")
         print(f"  Raw Cometa angles used (no channel-level corrections applied)")
+        if (
+            SHOULDER_ADDUCTION_CORRECTION_MAX_DEG != 0.0
+            or SHOULDER_VERT_CORRECTION_MAX_DEG != 0.0
+            or SHOULDER_HORIZ_CORRECTION_MAX_DEG != 0.0
+        ):
+            print(
+                f"  Shoulder correction active: "
+                f"abd_max={SHOULDER_ADDUCTION_CORRECTION_MAX_DEG:+.1f} deg, "
+                f"vert_max={SHOULDER_VERT_CORRECTION_MAX_DEG:+.1f} deg, "
+                f"horiz_max={SHOULDER_HORIZ_CORRECTION_MAX_DEG:+.1f} deg, "
+                f"threshold={SHOULDER_ABD_CORRECTION_THRESHOLD_DEG:.0f} deg, "
+                f"ramp={SHOULDER_ABD_CORRECTION_RAMP_DEG:.0f} deg, "
+                f"elbow gate={ELBOW_FE_CORRECTION_THRESHOLD_DEG:.0f} deg FE"
+            )
         print(f"  Chest T-pose quat:  [{q_tpose_mean[0]:+.4f}, {q_tpose_mean[1]:+.4f}, "
               f"{q_tpose_mean[2]:+.4f}, {q_tpose_mean[3]:+.4f}]")
 
