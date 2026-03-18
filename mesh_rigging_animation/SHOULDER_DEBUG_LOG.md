@@ -678,6 +678,17 @@ a Blender DOF-probe test plan that accounts for the ZYX-vs-YZX axis remapping.**
 
 ---
 
+## Bias Constants Removed (2026-03-18)
+
+The per-channel manual bias constants (`WRIST_RAD_BIAS_DEG`, `WRIST_ROT_BIAS_DEG`,
+`SHOULDER_ABD_BIAS_DEG`, `SHOULDER_HORIZ_BIAS_DEG`, `ELBOW_DEV_BIAS_DEG`) were all
+set to `0.0` and were never used to produce a meaningful correction. They have been
+removed from `c3d_to_bvh.py` along with the corresponding parameters in
+`parse_c3d_joint_angles()` and their application loops. If per-channel biasing is
+needed in the future it should be reintroduced as a deliberate, targeted constant.
+
+---
+
 ## Chest Quaternion Multiply Direction Test (2026-03-17)
 
 ### Hypothesis
@@ -700,5 +711,99 @@ without the additional world-frame re-expression step.
 
 Right-multiplying produced worse results.  Left-multiply (`chest_offset * q_raw`) is
 confirmed as the correct operation.  The pipeline was reverted to left-multiply.
+
+---
+
+## Downward Adduction Over-Amplitude Artifact Investigation (2026-03-18)
+
+### Symptom
+
+When the subject performs motions that combine shoulder adduction (arm moving downward)
+with elbow flexion, the BVH avatar shows roughly 15 deg of excess downward adduction
+compared to the Cometa skeleton reference. The artifact is consistent across both left
+and right arms and is not present when the elbow is extended or the arm is in abduction.
+
+Reference frames used for comparison (Douglas_trial_18-03):
+- `shower_left.c3d` at t=18.8 s: abd=-80.84, vert=+46.68, horiz=+35.62, elbow_fe=+82.30
+- `rotations_left_arm.c3d` at t=14.41 s: abd=-65.10, vert=+49.09, horiz=+60.12, elbow_fe=+69.46
+
+### IL Decompilation of ShoulderR and ShoulderL
+
+`decode_cometa_il.py` was run against `EMGandMotionTools.exe` to decode ShoulderR/L.
+
+Confirmed findings:
+- Both methods call `QuatToEulerAngles(q, 'yxz')` — intrinsic YXZ decomposition.
+- ShoulderR: DOF[0]=+euler[2] (Z), DOF[1]=+euler[1] (X), DOF[2]=+euler[0] (Y) — no negations.
+- ShoulderL: DOF[0]=-euler[2] (negated Z), DOF[1]=+euler[1] (X unchanged), DOF[2]=-euler[0] (negated Y).
+- Neither method references any elbow variable. It is physically impossible for Cometa
+  to introduce direct elbow-shoulder coupling at the computation level.
+
+### ABD-FE Correlation Diagnostic
+
+A Pearson correlation diagnostic was added to the verbose output block:
+```
+Pearson r = +0.3196  (shoulder_abd vs elbow_fe across all frames)
+```
+This moderate positive correlation is attributed to physical soft tissue coupling:
+bicep/brachialis muscle bulk tilts the upper arm IMU slightly during elbow flexion.
+This is a real-world effect in the source data, not a pipeline artifact. No
+computational correction can reliably remove it without affecting other movements.
+
+### Rotation Order Coupling Hypothesis
+
+In the current YZX construction:
+  `R = Ry(horiz) x Rz(abd) x Rx(vert)`
+When `horiz` is large (35-60 deg at the artifact frames), the subsequent `Rz(abd)`
+rotation acts in the already-horiz-rotated local frame. This amplifies the world-space
+downward displacement when abd is negative, making the adduction appear more extreme
+than the raw value would suggest.
+
+Switching to ZYX construction (ABD applied first in the global rest frame):
+  `R = Rz(abd) x Ry(vert) x Rx(horiz)`
+was predicted to decouple adduction from the horiz-rotation amplification. Numerical
+verification showed a reduction in arm tip elevation at the artifact frames:
+- shower_left:       elevation -0.974 (YZX) -> -0.870 (ZYX)
+- rotations_left:    elevation -0.951 (YZX) -> -0.728 (ZYX)
+
+### Approaches Tried and Outcomes
+
+**Approach 1: ELBOW_ABD_COUPLING_GAIN (linear correction)**
+- Applied `shoulder_abd -= gain * elbow_fe` before reconstruction.
+- Pearson r diagnostic showed r=+0.32 supporting this as a first-order model.
+- Outcome: REVERTED TWICE. Increasing the gain improved the bent-elbow postures but
+  progressively degraded other movements (arm-extended frames, abduction). Too broad.
+
+**Approach 2: ZYX construction in `_euler_shoulder_to_zyx()`**
+- Changed `from_euler('yzx', [horiz, abd, vert])` to `from_euler('zyx', [abd, vert, horiz])`.
+- Outcome: REVERTED. Although it reduced over-adduction at the specific artifact frames,
+  it degraded general shoulder motion quality across other movements. The sign conventions
+  (z_sign, y_sign, x_sign) were empirically calibrated against the YZX construction and
+  do not transfer correctly to the ZYX frame.
+
+**Approach 3: Conditional fixed offset (`SHOULDER_ADDUCTION_CORRECTION_DEG`)**
+- Added a new constant applied only when `shoulder_abd < 0` (adduction range).
+- Positive value would reduce adduction magnitude without affecting neutral or abduction.
+- Outcome: REVERTED. The binary conditional (on/off at shoulder_abd = 0) produced a
+  noticeable jerking artifact in animation transitions, particularly when the subject
+  returns to T-pose or transitions through neutral.
+
+### Current Status
+
+The over-adduction artifact remains unresolved. The pipeline is in its original YZX
+state. Known constraints on any future fix:
+
+1. Must not use a linear elbow-FE-proportional correction (too broad).
+2. Must not change the overall rotation construction sequence (affects all movements).
+3. Must not use a hard threshold on shoulder_abd (produces discontinuity/jerking).
+4. The artifact magnitude (~15 deg) is consistent with the rotation-order coupling
+   identified in Approach 2, but no targeted fix has been found that does not cause
+   collateral regressions.
+
+Possible future directions:
+- A smooth (continuous) correction that scales adduction correction proportionally
+  to both `abs(shoulder_abd)` and `elbow_fe`, without a hard threshold — avoiding
+  the discontinuity problem of Approach 3 while being more targeted than Approach 1.
+- Re-examining whether the sign conventions can be re-tuned to work with ZYX construction
+  by running a full DOF probe in Blender after the construction change.
 
 ---

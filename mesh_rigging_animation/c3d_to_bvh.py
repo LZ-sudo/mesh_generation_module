@@ -165,30 +165,6 @@ _CHEST_SIGNS = dict(z_sign=1.0, y_sign=1.0, x_sign=1.0)
 # calibration uses this window.
 CHEST_CALIB_DURATION_S: float = 0.5
 
-# Wrist radial/ulnar manual bias (degrees). Applied to all frames as a manual
-# adjustment. Use to trim any residual radial/ulnar deviation visible in
-# Blender. Positive = ulnar, negative = radial.
-WRIST_RAD_BIAS_DEG: float = 0.0
-
-# Wrist axial rotation bias (degrees). Applied to all frames as a manual
-# adjustment. Compensates for the static convention offset between CMU BVH's
-# zero-rotation hand orientation and Cometa's palm direction.  If the palm in
-# Blender faces backward (-Z) when it should face down (-Y), set to -90.0.
-# If it faces forward (+Z) instead, set to +90.0.
-WRIST_ROT_BIAS_DEG: float = 0
-
-# Shoulder abduction/adduction bias (degrees). Applied to all frames as a
-# manual adjustment. Positive = abduction (raises arm), negative = adduction.
-SHOULDER_ABD_BIAS_DEG: float = 0.0
-
-# Shoulder horizontal flexion/extension bias (degrees). Applied to all frames
-# as a manual adjustment. Positive = forward (arm swings in front), negative =
-# backward.
-SHOULDER_HORIZ_BIAS_DEG: float = 0.0
-
-# Elbow deviation bias (degrees). Applied to all frames as a manual adjustment.
-# Positive = deviation upward, negative = deviation downward.
-ELBOW_DEV_BIAS_DEG: float = 0.0
 
 
 @dataclass
@@ -241,11 +217,6 @@ def _detect_arm_side(label_to_idx: dict) -> str:
 def parse_c3d_joint_angles(
     c3d_path: Path,
     chest_calib_duration: float = CHEST_CALIB_DURATION_S,
-    wrist_rad_bias_deg: float = WRIST_RAD_BIAS_DEG,
-    wrist_rot_bias_deg: float = WRIST_ROT_BIAS_DEG,
-    shoulder_abd_bias_deg: float = SHOULDER_ABD_BIAS_DEG,
-    shoulder_horiz_bias_deg: float = SHOULDER_HORIZ_BIAS_DEG,
-    elbow_dev_bias_deg: float = ELBOW_DEV_BIAS_DEG,
     verbose: bool = False,
 ) -> Tuple[List[JointAngleFrame], str]:
     """
@@ -256,9 +227,7 @@ def parse_c3d_joint_angles(
     unique frames at the effective IMU rate by stepping through the 2000 Hz
     data at the IMU stride interval.
 
-    Raw Cometa joint angles are used directly without channel-level offset
-    correction.  Optional per-channel bias constants can be applied to all
-    frames as manual adjustments for residual drift visible in Blender.
+    Raw Cometa joint angles are used directly without channel-level correction.
     The chest IMU quaternion is calibrated against the mean orientation of the
     first chest_calib_duration seconds to zero the trunk at recording start.
 
@@ -266,16 +235,6 @@ def parse_c3d_joint_angles(
         c3d_path: Path to Cometa C3D file
         chest_calib_duration: Duration (seconds) of the initial segment used
             to compute the chest quaternion T-pose reference (default: 0.5 s)
-        wrist_rad_bias_deg: Manual bias (deg) added to all wrist_rad values
-            (default: 0.0)
-        wrist_rot_bias_deg: Manual bias (deg) added to all wrist_rot values
-            (default: 0.0)
-        shoulder_abd_bias_deg: Manual bias (deg) added to all shoulder_abd
-            values (default: 0.0)
-        shoulder_horiz_bias_deg: Manual bias (deg) added to all shoulder_horiz
-            values (default: 0.0)
-        elbow_dev_bias_deg: Manual bias (deg) added to all elbow_dev values
-            (default: 0.0)
         verbose: Print parsing details
 
     Returns:
@@ -342,22 +301,6 @@ def parse_c3d_joint_angles(
 
     n_tpose = max(1, min(int(round(chest_calib_duration * imu_rate)), len(frames)))
 
-    if shoulder_abd_bias_deg != 0.0:
-        for frame in frames:
-            frame.shoulder_abd = frame.shoulder_abd + shoulder_abd_bias_deg
-    if shoulder_horiz_bias_deg != 0.0:
-        for frame in frames:
-            frame.shoulder_horiz = frame.shoulder_horiz + shoulder_horiz_bias_deg
-    if elbow_dev_bias_deg != 0.0:
-        for frame in frames:
-            frame.elbow_dev = frame.elbow_dev + elbow_dev_bias_deg
-    if wrist_rot_bias_deg != 0.0:
-        for frame in frames:
-            frame.wrist_rot = frame.wrist_rot + wrist_rot_bias_deg
-    if wrist_rad_bias_deg != 0.0:
-        for frame in frames:
-            frame.wrist_rad = frame.wrist_rad + wrist_rad_bias_deg
-
     # Apply chest quaternion T-pose calibration with world-frame correction.
     # The raw chest quaternion captures the sensor's orientation in Cometa's
     # world frame; at T-pose this is non-identity.  Left-multiplying by the
@@ -389,17 +332,7 @@ def parse_c3d_joint_angles(
         print(f"  Analog rate: {analog_rate:.0f} Hz, IMU rate: {imu_rate:.3f} Hz (stride={step})")
         print(f"  Extracted {len(frames)} unique frames")
         print(f"  Duration: {frames[-1].timestamp:.2f}s")
-        print(f"  T-pose offsets: disabled for all channels (raw Cometa angles used)")
-        if shoulder_abd_bias_deg != 0.0:
-            print(f"  shoulder_abd   bias applied: {shoulder_abd_bias_deg:+.2f} deg")
-        if shoulder_horiz_bias_deg != 0.0:
-            print(f"  shoulder_horiz bias applied: {shoulder_horiz_bias_deg:+.2f} deg")
-        if elbow_dev_bias_deg != 0.0:
-            print(f"  elbow_dev      bias applied: {elbow_dev_bias_deg:+.2f} deg")
-        if wrist_rot_bias_deg != 0.0:
-            print(f"  wrist_rot      bias applied: {wrist_rot_bias_deg:+.2f} deg")
-        if wrist_rad_bias_deg != 0.0:
-            print(f"  wrist_rad      bias applied: {wrist_rad_bias_deg:+.2f} deg")
+        print(f"  Raw Cometa angles used (no channel-level corrections applied)")
         print(f"  Chest T-pose quat:  [{q_tpose_mean[0]:+.4f}, {q_tpose_mean[1]:+.4f}, "
               f"{q_tpose_mean[2]:+.4f}, {q_tpose_mean[3]:+.4f}]")
 
