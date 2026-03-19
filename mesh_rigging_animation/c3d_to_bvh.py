@@ -198,7 +198,7 @@ SHOULDER_ADDUCTION_CORRECTION_MAX_DEG: float = 75.0
 SHOULDER_VERT_CORRECTION_MAX_DEG: float = -75.0
 # Horizontal flexion/extension correction (forward/backward arm swing).
 # Positive = reduces excessive forward horiz; negative = reduces excessive extension.
-SHOULDER_HORIZ_CORRECTION_MAX_DEG: float = 90.0
+SHOULDER_HORIZ_CORRECTION_MAX_DEG: float = 100.0
 
 
 
