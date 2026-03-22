@@ -153,8 +153,12 @@ def add_hair_to_human(human_obj, hair_asset_path: Path, verbose: bool = False):
                 break
 
         if hair_obj:
+            # Rename to a stable, predictable name so that Unreal Engine can
+            # reliably identify the hair mesh section when applying Chaos Cloth.
+            hair_obj.name = "Hair_Mesh"
+            hair_obj.data.name = "Hair_Mesh"
             if verbose:
-                print(f"  Hair mesh created: {hair_obj.name}")
+                print(f"  Hair mesh created and renamed to: {hair_obj.name}")
                 print(f"    Vertices: {len(hair_obj.data.vertices)}")
                 print(f"    Faces: {len(hair_obj.data.polygons)}")
         else:
