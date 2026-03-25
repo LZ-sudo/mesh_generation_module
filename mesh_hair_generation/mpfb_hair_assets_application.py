@@ -100,13 +100,18 @@ def find_hair_asset(hair_name: str, assets_dir: Optional[Path] = None) -> dict:
     }
 
 
-def add_hair_to_human(human_obj, hair_asset_path: Path, verbose: bool = False):
+def add_hair_to_human(human_obj, hair_asset_path: Path, hair_asset_name: Optional[str] = None, verbose: bool = False):
     """
     Add a hair asset to a human mesh using MPFB2 API.
 
     Args:
         human_obj: The Blender human mesh object
         hair_asset_path: Path to the .mhclo hair asset file
+        hair_asset_name: Name used to label the resulting mesh object and its
+                         mesh data block. Defaults to "Hair_Mesh" when not
+                         provided. Passing the hair folder name (e.g.
+                         "elvs_ashley_may_hair") ensures the mesh appears under
+                         that name in Unreal Engine after FBX import.
         verbose: Enable verbose output
 
     Returns:
@@ -153,10 +158,9 @@ def add_hair_to_human(human_obj, hair_asset_path: Path, verbose: bool = False):
                 break
 
         if hair_obj:
-            # Rename to a stable, predictable name so that Unreal Engine can
-            # reliably identify the hair mesh section when applying Chaos Cloth.
-            hair_obj.name = "Hair_Mesh"
-            hair_obj.data.name = "Hair_Mesh"
+            mesh_name = hair_asset_name if hair_asset_name else "Hair_Mesh"
+            hair_obj.name = mesh_name
+            hair_obj.data.name = mesh_name
             if verbose:
                 print(f"  Hair mesh created and renamed to: {hair_obj.name}")
                 print(f"    Vertices: {len(hair_obj.data.vertices)}")
@@ -339,7 +343,7 @@ def apply_hair_asset(
             print(f"    .mhmat: {asset_files['mhmat'].name}")
 
         # Add hair to human
-        hair_obj = add_hair_to_human(human_obj, asset_files['mhclo'], verbose=verbose)
+        hair_obj = add_hair_to_human(human_obj, asset_files['mhclo'], hair_asset_name=hair_asset_name, verbose=verbose)
 
         if not hair_obj:
             print(f"Failed to create hair object")
