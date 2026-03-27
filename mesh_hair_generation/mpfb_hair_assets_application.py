@@ -158,7 +158,7 @@ def add_hair_to_human(human_obj, hair_asset_path: Path, hair_asset_name: Optiona
                 break
 
         if hair_obj:
-            mesh_name = hair_asset_name if hair_asset_name else "Hair_Mesh"
+            mesh_name = f"Human_Hair_{hair_asset_name}" if hair_asset_name else "Human_Hair_Mesh"
             hair_obj.name = mesh_name
             hair_obj.data.name = mesh_name
             if verbose:
