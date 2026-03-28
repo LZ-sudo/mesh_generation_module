@@ -177,6 +177,164 @@ def add_hair_to_human(human_obj, hair_asset_path: Path, hair_asset_name: Optiona
         raise
 
 
+def apply_hair_material(hair_obj, mhmat_path: Path, verbose: bool = False):
+    """
+    Build a standard Principled BSDF material from a .mhmat file and assign it
+    to the hair mesh, replacing whatever MPFB2 created.
+
+    MPFB2 converts MakeHuman's litsphere shader to a custom Blender node group
+    that Blender's FBX exporter cannot introspect for texture extraction.  This
+    function creates a plain Principled BSDF material whose texture connections
+    the FBX exporter understands, ensuring textures are embedded in the exported
+    FBX file.
+
+    Supported .mhmat directives:
+        diffuseTexture       -> Base Color input (alpha channel -> Alpha input
+                                when transparent is True)
+        normalmapTexture     -> Normal Map node -> Normal input
+        transparencymapTexture -> Alpha input (overrides diffuse alpha)
+        diffuseColor         -> Base Color default value (used when no texture)
+        transparent          -> enables Alpha Hashed blend mode
+
+    Texture paths that are absolute and do not exist on this system (e.g.
+    authored on another machine) are skipped silently.
+
+    Args:
+        hair_obj:   The Blender hair mesh object whose material slots will be
+                    replaced.
+        mhmat_path: Path to the .mhmat file for this hair asset.
+        verbose:    Print applied texture names.
+
+    Returns:
+        The created bpy.types.Material, or None on failure.
+    """
+    try:
+        import bpy
+
+        mat_dir = mhmat_path.parent
+        diffuse_tex_path = None
+        normal_tex_path = None
+        alpha_tex_path = None
+        diffuse_color = (0.5, 0.5, 0.5, 1.0)
+        is_transparent = False
+
+        with open(mhmat_path, 'r') as f:
+            for raw_line in f:
+                line = raw_line.strip()
+                if not line or line.startswith('#'):
+                    continue
+                parts = line.split(None, 1)
+                if len(parts) < 2:
+                    continue
+                key = parts[0].lower()
+                value = parts[1]
+
+                if key == 'diffusetexture':
+                    p = Path(value)
+                    resolved = p if p.is_absolute() else mat_dir / p
+                    if resolved.exists():
+                        diffuse_tex_path = resolved
+
+                elif key == 'normalmaptexture':
+                    p = Path(value)
+                    resolved = p if p.is_absolute() else mat_dir / p
+                    if resolved.exists():
+                        normal_tex_path = resolved
+
+                elif key == 'transparencymaptexture':
+                    p = Path(value)
+                    resolved = p if p.is_absolute() else mat_dir / p
+                    if resolved.exists():
+                        alpha_tex_path = resolved
+
+                elif key == 'diffusecolor':
+                    rgb = value.split()
+                    if len(rgb) >= 3:
+                        diffuse_color = (float(rgb[0]), float(rgb[1]), float(rgb[2]), 1.0)
+
+                elif key == 'transparent' and value.strip().lower() == 'true':
+                    is_transparent = True
+
+        # Build Principled BSDF material
+        mat = bpy.data.materials.new(name=mhmat_path.stem)
+        mat.use_nodes = True
+        nodes = mat.node_tree.nodes
+        links = mat.node_tree.links
+        nodes.clear()
+
+        output_node = nodes.new('ShaderNodeOutputMaterial')
+        output_node.location = (400, 0)
+
+        bsdf = nodes.new('ShaderNodeBsdfPrincipled')
+        bsdf.location = (0, 0)
+        links.new(bsdf.outputs['BSDF'], output_node.inputs['Surface'])
+
+        # Base Color
+        if diffuse_tex_path:
+            img = bpy.data.images.load(str(diffuse_tex_path), check_existing=True)
+            diff_node = nodes.new('ShaderNodeTexImage')
+            diff_node.image = img
+            diff_node.location = (-500, 200)
+            links.new(diff_node.outputs['Color'], bsdf.inputs['Base Color'])
+            if is_transparent:
+                links.new(diff_node.outputs['Alpha'], bsdf.inputs['Alpha'])
+        else:
+            bsdf.inputs['Base Color'].default_value = diffuse_color
+
+        # Normal map
+        if normal_tex_path:
+            img = bpy.data.images.load(str(normal_tex_path), check_existing=True)
+            img.colorspace_settings.name = 'Non-Color'
+            norm_img = nodes.new('ShaderNodeTexImage')
+            norm_img.image = img
+            norm_img.location = (-500, -100)
+            norm_map = nodes.new('ShaderNodeNormalMap')
+            norm_map.location = (-200, -100)
+            links.new(norm_img.outputs['Color'], norm_map.inputs['Color'])
+            links.new(norm_map.outputs['Normal'], bsdf.inputs['Normal'])
+
+        # Separate alpha map (overrides the diffuse alpha channel if present)
+        if alpha_tex_path and alpha_tex_path != diffuse_tex_path:
+            img = bpy.data.images.load(str(alpha_tex_path), check_existing=True)
+            alpha_node = nodes.new('ShaderNodeTexImage')
+            alpha_node.image = img
+            alpha_node.location = (-500, -350)
+            links.new(alpha_node.outputs['Color'], bsdf.inputs['Alpha'])
+
+        # Transparency render mode (API changed in Blender 4.2)
+        if is_transparent:
+            if hasattr(mat, 'blend_mode'):
+                # Blender < 4.2
+                mat.blend_mode = 'HASHED'
+                if hasattr(mat, 'shadow_method'):
+                    mat.shadow_method = 'CLIP'
+            elif hasattr(mat, 'surface_render_method'):
+                # Blender 4.2+
+                mat.surface_render_method = 'DITHERED'
+
+        # Replace all material slots on the hair mesh
+        hair_obj.data.materials.clear()
+        hair_obj.data.materials.append(mat)
+
+        if verbose:
+            print(f"  Applied material '{mat.name}' to {hair_obj.name}")
+            if diffuse_tex_path:
+                print(f"    Base Color : {diffuse_tex_path.name}")
+            if normal_tex_path:
+                print(f"    Normal Map : {normal_tex_path.name}")
+            if alpha_tex_path:
+                print(f"    Alpha      : {alpha_tex_path.name}")
+            print(f"    Transparent: {is_transparent}")
+
+        return mat
+
+    except Exception as e:
+        print(f"  Warning: Could not apply hair material from {mhmat_path.name}: {e}")
+        if verbose:
+            traceback.print_exc()
+        return None
+
+
 def setup_hair_for_cloth(
     hair_obj,
     human_obj,
@@ -348,6 +506,10 @@ def apply_hair_asset(
         if not hair_obj:
             print(f"Failed to create hair object")
             return None
+
+        # Replace MPFB2's litsphere-based material with a standard Principled BSDF
+        # so that the FBX exporter can introspect and embed the textures correctly.
+        apply_hair_material(hair_obj, asset_files['mhmat'], verbose=verbose)
 
         success = setup_hair_for_cloth(
             hair_obj,
