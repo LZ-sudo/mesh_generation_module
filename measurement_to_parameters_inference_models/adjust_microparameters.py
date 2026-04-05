@@ -69,7 +69,8 @@ MICROPARAMETER_CATEGORIES = {
         'measure-lowerarm-length'
     ],
     'hand_length_cm': [
-        'measure-hand-length'
+        'l-hand-scale',
+        'r-hand-scale'
     ],
     'upper_leg_length_cm': [
         'measure-upperleg-height'  # Moved from height_cm
