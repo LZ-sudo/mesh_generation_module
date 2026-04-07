@@ -129,25 +129,6 @@ Example usage:
         help='Path to animation file (BVH or FBX). Requires --rig-type cmu_mb. Retargeted via the retarget_bvh addon (mcp.load_and_retarget). Optional.'
     )
 
-    parser.add_argument(
-        '--collision',
-        action='store_true',
-        help='Generate UCX_ collision meshes for Unreal Engine physics asset import using CoACD convex decomposition.'
-    )
-
-    parser.add_argument(
-        '--collision-threshold',
-        type=float,
-        default=0.05,
-        help='CoACD concavity threshold for collision mesh generation (default: 0.05). Normalized ratio of each region bounding box. Lower = tighter fit, more convex pieces.'
-    )
-
-    parser.add_argument(
-        '--collision-max-vertices',
-        type=int,
-        default=5000,
-        help='Vertex cap per body region before CoACD runs (default: 2000). Lower = faster, coarser decimation.'
-    )
 
     return parser.parse_args(argv)
 
@@ -411,36 +392,6 @@ def main():
                     traceback.print_exc()
                 print("  Continuing with export...")
 
-    # Generate collision meshes if requested
-    ucx_objects = []
-    if args.collision:
-        print("\n" + "-"*70)
-        print("STEP 5.9: Generating Collision Meshes (CoACD)")
-        print("-"*70)
-
-        try:
-            sys.path.insert(0, str(script_dir / "mesh_collision_implementation"))
-            import collision_mesh_generation as collision_lib
-
-            ucx_objects = collision_lib.generate_collision_meshes(
-                basemesh=basemesh,
-                script_dir=script_dir,
-                threshold=args.collision_threshold,
-                max_vertices=args.collision_max_vertices,
-                verbose=args.verbose,
-            )
-
-            if ucx_objects:
-                print(f"  {len(ucx_objects)} UCX collision mesh(es) created")
-            else:
-                print("  Warning: No collision meshes generated - continuing without them")
-
-        except Exception as e:
-            print(f"  Warning: Collision mesh generation failed: {e}")
-            if args.verbose:
-                traceback.print_exc()
-            print("  Continuing without collision meshes...")
-
     # Export FBX
     print("\n" + "-"*70)
     print("STEP 6: Exporting FBX")
@@ -470,12 +421,11 @@ def main():
             if args.verbose:
                 print(f"  Animation detected - enabling bake_anim with use_all_actions=True (Blender 5.0 slot path)")
 
-        # Prepare list of additional objects (hair, clothes, collision meshes)
+        # Prepare list of additional objects (hair, clothes)
         additional_objects = []
         if hair_obj:
             additional_objects.append(hair_obj)
         additional_objects.extend(clothing_objs)
-        additional_objects.extend(ucx_objects)
 
         utils.export_fbx(basemesh, armature, output_path, export_settings, additional_objects)
         

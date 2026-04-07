@@ -19,9 +19,6 @@ mesh_generation_module/
 ├── mesh_data_generation_scripts/   # Data generation utilities
 │   ├── generate_realistic_test_measurements.py  # Test data generator
 │   └── build_lookup_table.py       # Lookup table generator (For training TabM model)
-├── mesh_collision_implementation/  # Physics collision mesh generation
-│   ├── collision_mesh_generation.py  # UCX mesh extraction and CoACD orchestration (Blender context)
-│   └── run_coacd.py                  # Standalone CoACD runner (myenv subprocess)
 ├── mesh_hair_generation/           # Hair asset application
 │   └── mpfb_hair_assets_application.py  # Hair asset library
 ├── mesh_rigging_animation/         # IMU motion capture processing and animation retargeting
@@ -56,7 +53,6 @@ mesh_generation_module/
 - **IMU Motion Capture to BVH**: Convert Cometa C3D files containing pre-computed wearable IMU joint angles into CMU-compatible BVH animations, with T-pose calibration and configurable sign conventions per joint and arm side
 - **Hair Assets**: Apply MakeHuman hair with automatic rigging and bone weight transfer
 - **FBX Export**: Compatible with Unity, Unreal Engine, and other 3D applications
-- **Collision Mesh Generation**: Optional UCX_ physics collision meshes for Unreal Engine, generated via CoACD convex decomposition of per-region body geometry
 
 ### Measurement System
 - **Bone-Based Measurements**: 10 precise measurements extracted from armature
@@ -328,44 +324,6 @@ python run_blender.py --script generate_human.py -- \
 
 The retargeted animation is baked into the exported FBX, ready for use in Unity, Unreal Engine, or any other 3D application.
 
-### Collision Mesh Generation
-
-Generate UCX_ physics collision meshes alongside the FBX for use as a PhysicsAsset in Unreal Engine. Collision meshes are named `UCX_<MeshName>_<region>` (e.g. `UCX_Human_head`, `UCX_Human_torso`) following Unreal Engine's UCX naming convention, which causes them to be automatically imported as the mesh's PhysicsAsset.
-
-Decomposition is performed by [CoACD](https://github.com/SarahWeiii/CoACD) (Approximate Convex Decomposition, MIT license), which splits each body region into a small number of convex pieces that closely follow the skin surface — suitable for interpenetration prevention and ragdoll physics.
-
-```bash
-# Generate with collision meshes (default threshold=0.2, max_vertices=5000)
-python run_blender.py --script generate_human.py -- --config human.json --collision
-
-# Tighter fit (more convex pieces, slower)
-python run_blender.py --script generate_human.py -- --config human.json --collision --collision-threshold 0.1
-
-# Coarser fit (fewer pieces, faster)
-python run_blender.py --script generate_human.py -- --config human.json --collision --collision-threshold 0.4
-
-# Reduce vertex cap for faster processing
-python run_blender.py --script generate_human.py -- --config human.json --collision --collision-max-vertices 2000
-```
-
-**Body regions covered:**
-
-| Region | UCX suffix |
-|--------|------------|
-| Head + neck | `head` |
-| Torso + pelvis | `torso` |
-| Upper arms | `upper_arm_L`, `upper_arm_R` |
-| Forearms | `lower_arm_L`, `lower_arm_R` |
-| Hands + fingers | `hand_L`, `hand_R` |
-| Upper legs | `upper_leg_L`, `upper_leg_R` |
-| Lower legs | `lower_leg_L`, `lower_leg_R` |
-| Feet + toes | `foot_L`, `foot_R` |
-
-**Implementation notes:**
-- Vertex group weights from the MPFB2 basemesh (CMU mocap skinning) are used to assign vertices to regions
-- Each region is decimated to `--collision-max-vertices` (default 5000) via voxel-grid sampling before CoACD runs, preserving full spatial coverage of the surface
-- CoACD runs in the `myenv` subprocess; progress per region is printed in real time
-
 ### C3D to BVH Conversion
 
 Convert Cometa Systems C3D files containing pre-computed wearable IMU joint angles into CMU mocap-compatible BVH animations. The output BVH files can be used directly with Animation Baking (see above).
@@ -541,7 +499,6 @@ python build_lookup_table.py --config config.json --no-delete
 - [MPFB2](http://www.makehumancommunity.org/) - MakeHuman for Blender
 - [MPFB Community Contributed Assets](http://www.makehumancommunity.org/content/user_contributed_assets.html) - Community hair assets
 - [retarget_bvh](https://bitbucket.org/Diffeomorphic/retarget_bvh/downloads/) - BVH/FBX animation retargeting addon by Thomas Larsson
-- [CoACD](https://github.com/SarahWeiii/CoACD) - Approximate Convex Decomposition for collision mesh generation
 - [TabM](https://github.com/yandex-research/tabm) - Tabular regression model
 - [PyTorch](https://pytorch.org/) - Machine learning framework
 
