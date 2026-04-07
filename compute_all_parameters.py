@@ -108,7 +108,7 @@ def run_microparameter_adjustment(target_measurements, macroparameters, gender, 
         adjust_script_path = inference_dir / 'adjust_microparameters.py'
 
         cmd = [
-            'python',
+            sys.executable,
             str(script_dir / 'run_blender.py'),
             '--script', str(adjust_script_path),
             '--',

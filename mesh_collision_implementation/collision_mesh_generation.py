@@ -41,12 +41,13 @@ COLLISION_REGIONS: Dict[str, List[str]] = {
     "lower_arm_R": ["RightForeArm"],
     "hand_L": ["LeftHand", "LThumb", "LeftFingerBase", "LeftHandFinger1"],
     "hand_R": ["RightHand", "RThumb", "RightFingerBase", "RightHandFinger1"],
-    "upper_leg_L": ["LeftUpLeg"],
-    "upper_leg_R": ["RightUpLeg"],
-    "lower_leg_L": ["LeftLeg"],
-    "lower_leg_R": ["RightLeg"],
-    "foot_L": ["LeftFoot", "LeftToeBase"],
-    "foot_R": ["RightFoot", "RightToeBase"],
+    # Lower part of the body commented out to cut processing time
+    # "upper_leg_L": ["LeftUpLeg"],
+    # "upper_leg_R": ["RightUpLeg"],
+    # "lower_leg_L": ["LeftLeg"],
+    # "lower_leg_R": ["RightLeg"],
+    # "foot_L": ["LeftFoot", "LeftToeBase"],
+    # "foot_R": ["RightFoot", "RightToeBase"],
 }
 
 # Minimum bone weight for a vertex to be included in a region
@@ -97,8 +98,9 @@ def _extract_region_mesh(
     sorted_verts = sorted(region_verts)
     old_to_new = {old: new for new, old in enumerate(sorted_verts)}
 
-    # Export vertex positions in Blender's world space (metres)
-    verts_out = [list(mesh_obj.data.vertices[i].co) for i in sorted_verts]
+    # Export vertex positions in world space (applies any object-level transforms)
+    mat = mesh_obj.matrix_world
+    verts_out = [list(mat @ mesh_obj.data.vertices[i].co) for i in sorted_verts]
 
     # Export triangulated faces whose every vertex belongs to the region
     faces_out = []
@@ -122,7 +124,7 @@ def _extract_region_mesh(
 def _create_blender_meshes(
     parts: List[Dict],
     ucx_name: str,
-    armature,
+    basemesh,
 ) -> List:
     """
     Create Blender mesh objects for each convex part returned by CoACD.
@@ -130,15 +132,25 @@ def _create_blender_meshes(
     When CoACD returns multiple parts for a region, each part is a separate
     object with a numeric suffix (_0, _1, ...).
 
+    UCX objects are placed in the same collection(s) as the basemesh and
+    parented to the basemesh so Unreal Engine's FBX importer associates them
+    as collision shapes for the correct mesh.
+
     Args:
         parts: List of {"vertices": [...], "faces": [...]} dicts.
-        ucx_name: Base UCX name, e.g. "UCX_Body_00".
-        armature: Armature object the collision meshes will be parented to.
+        ucx_name: Base UCX name, e.g. "UCX_Body_head".
+        basemesh: Body mesh object the collision shapes belong to.
 
     Returns:
         List of created Blender mesh objects.
     """
     import bpy
+
+    # Collect all collections the basemesh belongs to so UCX objects sit
+    # in the same place in the outliner.
+    target_collections = list(basemesh.users_collection) if basemesh else [bpy.context.scene.collection]
+    if not target_collections:
+        target_collections = [bpy.context.scene.collection]
 
     created = []
     for i, part in enumerate(parts):
@@ -153,10 +165,12 @@ def _create_blender_meshes(
         mesh_data.update()
 
         obj = bpy.data.objects.new(name, mesh_data)
-        bpy.context.scene.collection.objects.link(obj)
 
-        if armature:
-            obj.parent = armature
+        for col in target_collections:
+            col.objects.link(obj)
+
+        if basemesh:
+            obj.parent = basemesh
 
         created.append(obj)
 
@@ -165,9 +179,8 @@ def _create_blender_meshes(
 
 def generate_collision_meshes(
     basemesh,
-    armature,
     script_dir: Path,
-    threshold: float = 0.3,
+    threshold: float = 0.05,
     max_vertices: int = 2000,
     verbose: bool = False,
 ) -> List:
@@ -182,7 +195,6 @@ def generate_collision_meshes(
 
     Args:
         basemesh: MPFB2 Blender mesh object (must have vertex groups).
-        armature: Armature to parent collision meshes to.
         script_dir: Root of mesh_generation_module (used to locate myenv and run_coacd.py).
         threshold: CoACD decomposition threshold. Lower = tighter fit, more parts.
                    0.01 (fine) / 0.05 (default) / 0.1 (coarse).
@@ -286,7 +298,7 @@ def generate_collision_meshes(
             continue
         # Name by body region so Unreal's physics asset editor shows meaningful labels
         ucx_name = f"UCX_{mesh_name}_{region_name}"
-        created = _create_blender_meshes(parts, ucx_name, armature)
+        created = _create_blender_meshes(parts, ucx_name, basemesh)
         ucx_objects.extend(created)
         if verbose:
             print(f"  '{region_name}' -> {len(created)} convex part(s) -> {ucx_name}")

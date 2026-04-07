@@ -138,8 +138,8 @@ Example usage:
     parser.add_argument(
         '--collision-threshold',
         type=float,
-        default=0.2,
-        help='CoACD concavity threshold for collision mesh generation (default: 0.3). Lower = tighter fit, more convex pieces.'
+        default=0.05,
+        help='CoACD concavity threshold for collision mesh generation (default: 0.05). Normalized ratio of each region bounding box. Lower = tighter fit, more convex pieces.'
     )
 
     parser.add_argument(
@@ -424,7 +424,6 @@ def main():
 
             ucx_objects = collision_lib.generate_collision_meshes(
                 basemesh=basemesh,
-                armature=armature,
                 script_dir=script_dir,
                 threshold=args.collision_threshold,
                 max_vertices=args.collision_max_vertices,

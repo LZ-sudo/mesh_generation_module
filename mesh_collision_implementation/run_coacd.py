@@ -72,7 +72,7 @@ def run_decomposition(
     input_path: str,
     output_path: str,
     threshold: float,
-    max_vertices: int = 5000,
+    max_vertices: int = 2000,
 ) -> None:
     """
     Decompose all regions in the input JSON with CoACD and write results.
@@ -120,13 +120,13 @@ def run_decomposition(
         )
 
         mesh = coacd.Mesh(vertices, faces)
-        # real_metric=True: threshold is in the mesh's native units (metres).
-        # mcts_iteration and mcts_max_depth set for speed; coarse
-        # threshold already limits decomposition complexity.
+        # threshold is a normalized concavity ratio relative to each region's
+        # own bounding box (real_metric=False is the default).  Using the
+        # absolute-metre metric (real_metric=True) caused collision shapes
+        # many times larger than the actual limbs for threshold=0.2m.
         parts = coacd.run_coacd(
             mesh,
             threshold=threshold,
-            real_metric=True,
             mcts_iterations=100,
             mcts_max_depth=3,
         )
@@ -157,8 +157,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--threshold",
         type=float,
-        default=0.3,
-        help="CoACD concavity threshold (default: 0.3). Range: 0.05 (fine) to 0.5 (coarse).",
+        default=0.05,
+        help="CoACD concavity threshold (default: 0.05). Normalized ratio of each region's bounding box. Range: 0.01 (fine) to 0.3 (coarse).",
     )
     parser.add_argument(
         "--max-vertices",
