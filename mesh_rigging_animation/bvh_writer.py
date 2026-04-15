@@ -21,6 +21,9 @@ def write_bvh_hierarchy(f):
     """
     Write BVH HIERARCHY section matching CMU mocap format.
 
+    Args:
+        f: Writable file object to which the HIERARCHY block is written.
+
     Creates a CMU-style full-body skeleton compatible with existing animation assets:
     - Uses ZYX rotation order (Zrotation Yrotation Xrotation) to match reference BVHs
     - CMU bone naming: LowerBack, Spine, Spine1, RightArm, RightForeArm, RightHand, etc.

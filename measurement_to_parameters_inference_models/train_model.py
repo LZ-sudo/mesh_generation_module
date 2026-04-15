@@ -429,6 +429,7 @@ def save_model(model, scalers, macro_bounds, performance, config, macroparameter
 
 
 def main():
+    """Entry point for training the TabM inverse-mapping model from a configuration file."""
     parser = argparse.ArgumentParser(
         description='Train TabM model for inverse mapping',
         formatter_class=argparse.RawDescriptionHelpFormatter,

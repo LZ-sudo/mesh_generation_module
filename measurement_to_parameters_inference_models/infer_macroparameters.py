@@ -108,7 +108,17 @@ def parse_race(race_input) -> dict:
 
 
 def print_progress_bar(iteration, total, prefix='', suffix='', length=50, fill='█'):
-    """Print a progress bar to console."""
+    """
+    Print a progress bar to console.
+
+    Args:
+        iteration: Current iteration index (1-based).
+        total: Total number of iterations.
+        prefix: String to display before the bar.
+        suffix: String to display after the percentage.
+        length: Character width of the bar (default 50).
+        fill: Character used to fill the completed portion of the bar.
+    """
     percent = f"{100 * (iteration / float(total)):.1f}"
     filled_length = int(length * iteration // total)
     bar = fill * filled_length + '-' * (length - filled_length)
@@ -301,7 +311,15 @@ def find_macroparameters(model_data, macro_bounds, target_measurements, verbose=
 
 
 def print_results(result, target_measurements, macro_bounds):
-    """Print detailed optimization results."""
+    """
+    Print detailed optimization results.
+
+    Args:
+        result: Result dictionary from find_macroparameters() containing macroparameters,
+            predicted_measurements, errors, mae, and max_error.
+        target_measurements: Dictionary of measurement names to target values in cm.
+        macro_bounds: Dictionary mapping macroparameter names to (min, max) bound tuples.
+    """
     print("\n" + "="*80)
     print("RESULTS")
     print("="*80)
@@ -342,6 +360,15 @@ def process_single(input_path, models, macro_bounds):
         ...
       }
     }
+
+    Args:
+        input_path: Path to the input JSON file containing subject measurements.
+        models: Loaded model dictionary as returned by load_models().
+        macro_bounds: Dictionary mapping macroparameter names to (min, max) bound tuples.
+
+    Returns:
+        Result dictionary from find_macroparameters() containing macroparameters,
+        predicted_measurements, errors, mae, and max_error.
     """
     print(f"\nProcessing: {input_path}")
 
@@ -410,7 +437,19 @@ def process_single(input_path, models, macro_bounds):
 
 
 def process_batch(input_path, output_path, models, macro_bounds):
-    """Process multiple measurements from CSV file."""
+    """
+    Process multiple measurements from CSV file.
+
+    Args:
+        input_path: Path to the input CSV file with one measurement row per subject.
+        output_path: Path to save the output CSV containing inferred macroparameters and errors.
+        models: Loaded model dictionary as returned by load_models().
+        macro_bounds: Dictionary mapping macroparameter names to (min, max) bound tuples.
+
+    Returns:
+        DataFrame with inferred macroparameters, target/predicted measurements, and error
+        columns for each processed entry.
+    """
     print(f"\nProcessing batch: {input_path}")
 
     df = pd.read_csv(input_path)
@@ -477,6 +516,7 @@ def process_batch(input_path, output_path, models, macro_bounds):
 
 
 def main():
+    """Entry point for macroparameter inference from body measurements (single JSON or batch CSV)."""
     parser = argparse.ArgumentParser(
         description='Infer macroparameters from body measurements',
         formatter_class=argparse.RawDescriptionHelpFormatter,

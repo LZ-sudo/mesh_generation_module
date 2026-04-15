@@ -22,7 +22,16 @@ MEASUREMENTS = [
 
 
 def analyze_measurement_bounds(csv_path):
-    """Analyze measurement bounds from training data."""
+    """
+    Analyze measurement bounds from training data.
+
+    Args:
+        csv_path: Path to the training data CSV file.
+
+    Returns:
+        Tuple of (df, bounds) where df is the loaded DataFrame and bounds is a dictionary
+        mapping each measurement name to its min, max, mean, std, and median values.
+    """
     print(f"Loading training data from: {csv_path}")
     df = pd.read_csv(csv_path)
 
@@ -122,7 +131,16 @@ def sample_from_training_data(df, n_samples=20, method='stratified'):
 
 
 def generate_test_json(test_cases, output_path, description="", gender=None, race=None):
-    """Generate JSON file with test measurements."""
+    """
+    Generate JSON file with test measurements.
+
+    Args:
+        test_cases: List of measurement dictionaries to include in the output.
+        output_path: Path where the JSON file will be written.
+        description: Human-readable description of the test set (default: empty string).
+        gender: Optional numeric gender value (>0.5 written as 'male', else 'female').
+        race: Optional race dictionary; the dominant key is written as the race string.
+    """
     data = {
         "description": description,
         "test_cases": test_cases
@@ -147,7 +165,7 @@ def generate_test_json(test_cases, output_path, description="", gender=None, rac
 
 
 def main():
-    
+    """Entry point for generating realistic test measurements sampled from training data."""
     parser = argparse.ArgumentParser(
         description='Generate realistic test measurements from training data'
     )

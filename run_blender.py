@@ -51,12 +51,23 @@ class BlenderFinder:
     }
 
     def __init__(self, config_file='.blender_config.json'):
+        """
+        Initialize the BlenderFinder.
+
+        Args:
+            config_file: Path to the JSON file used to cache the discovered Blender path.
+        """
         self.config_file = Path(config_file)
         self.os_name = platform.system()
         self.cached_path = None
 
     def load_cached_path(self):
-        """Load previously found Blender path from config file."""
+        """
+        Load previously found Blender path from config file.
+
+        Returns:
+            Cached Blender executable path string if it exists and is valid, otherwise None.
+        """
         if self.config_file.exists():
             try:
                 with open(self.config_file, 'r') as f:
@@ -70,7 +81,12 @@ class BlenderFinder:
         return None
 
     def save_path(self, path):
-        """Save Blender path to config file for future use."""
+        """
+        Save Blender path to config file for future use.
+
+        Args:
+            path: Blender executable path string to persist.
+        """
         try:
             with open(self.config_file, 'w') as f:
                 json.dump({'blender_path': str(path)}, f, indent=2)
@@ -79,7 +95,12 @@ class BlenderFinder:
             print(f"Warning: Could not save Blender path: {e}")
 
     def find_blender_windows(self):
-        """Find Blender executable on Windows."""
+        """
+        Find Blender executable on Windows.
+
+        Returns:
+            Path string to blender.exe if found in a known installation directory, otherwise None.
+        """
         search_paths = [Path(p) for p in self.SEARCH_PATHS['Windows']]
 
         for base_path in search_paths:
@@ -102,7 +123,12 @@ class BlenderFinder:
         return None
 
     def find_blender_macos(self):
-        """Find Blender executable on macOS."""
+        """
+        Find Blender executable on macOS.
+
+        Returns:
+            Path string to the Blender binary if found inside a .app bundle or directly, otherwise None.
+        """
         search_paths = [Path(p) for p in self.SEARCH_PATHS['Darwin']]
 
         for base_path in search_paths:
@@ -124,7 +150,12 @@ class BlenderFinder:
         return None
 
     def find_blender_linux(self):
-        """Find Blender executable on Linux."""
+        """
+        Find Blender executable on Linux.
+
+        Returns:
+            Path string to the Blender binary if found in a known installation directory, otherwise None.
+        """
         search_paths = [Path(p) for p in self.SEARCH_PATHS['Linux']]
 
         for base_path in search_paths:
@@ -145,7 +176,13 @@ class BlenderFinder:
         return None
 
     def find_in_path(self):
-        """Check if blender is available in system PATH."""
+        """
+        Check if blender is available in system PATH.
+
+        Returns:
+            Full path string to the blender executable if found in PATH, or the bare string
+            'blender' if it runs but the full path cannot be resolved, otherwise None.
+        """
         try:
             result = subprocess.run(
                 ['blender', '--version'],
@@ -224,7 +261,15 @@ class BlenderFinder:
         return None
 
     def get_blender_version(self, blender_path):
-        """Get Blender version information."""
+        """
+        Get Blender version information.
+
+        Args:
+            blender_path: Path string to the Blender executable.
+
+        Returns:
+            Version string from Blender's --version output, or 'Unknown version' if unavailable.
+        """
         try:
             result = subprocess.run(
                 [blender_path, '--version'],
@@ -242,7 +287,12 @@ class BlenderFinder:
 
 
 def parse_arguments():
-    """Parse command line arguments."""
+    """
+    Parse command line arguments.
+
+    Returns:
+        Parsed argparse.Namespace with fields: blender_path, script, find_only, and script_args.
+    """
     parser = argparse.ArgumentParser(
         description='Run Blender scripts in headless mode with automatic Blender detection',
         formatter_class=argparse.RawDescriptionHelpFormatter,

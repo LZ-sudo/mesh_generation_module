@@ -692,6 +692,7 @@ def print_aggregate_statistics(results, category):
 
 
 def main():
+    """Entry point for testing model accuracy with real mesh generation (single or batch mode)."""
     parser = argparse.ArgumentParser(
         description='Test model accuracy with real mesh generation (supports batch testing)',
         formatter_class=argparse.RawDescriptionHelpFormatter

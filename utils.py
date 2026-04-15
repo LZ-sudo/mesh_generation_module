@@ -97,6 +97,11 @@ def _get_mpfb_module_path():
     In Blender 5.0+, extensions can be installed from different repositories:
     - bl_ext.blender_org.mpfb (official Blender Extensions repository)
 
+    Returns:
+        Module path string for the active MPFB installation (e.g. 'bl_ext.blender_org.mpfb').
+
+    Raises:
+        ImportError: If no supported MPFB installation is found.
     """
 
 

@@ -301,7 +301,13 @@ def create_human_with_parameters(
 
 
 def cleanup_mesh_and_armature(mesh_obj, armature_obj):
-    """Clean up mesh and armature to prevent memory leaks."""
+    """
+    Clean up mesh and armature to prevent memory leaks.
+
+    Args:
+        mesh_obj: Blender mesh object to delete and remove data from.
+        armature_obj: Blender armature object to delete and remove data from.
+    """
     import bpy
 
     # Store references to data blocks
@@ -337,7 +343,17 @@ def cleanup_mesh_and_armature(mesh_obj, armature_obj):
 # ============================================================================
 
 def clamp(value: float, min_val: float, max_val: float) -> float:
-    """Clamp a value between min and max bounds."""
+    """
+    Clamp a value between min and max bounds.
+
+    Args:
+        value: The value to clamp.
+        min_val: Lower bound (inclusive).
+        max_val: Upper bound (inclusive).
+
+    Returns:
+        Value clamped to the range [min_val, max_val].
+    """
     return max(min_val, min(max_val, value))
 
 

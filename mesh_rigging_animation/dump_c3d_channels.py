@@ -53,6 +53,7 @@ _CHANNEL_ORDER = [
 
 
 def main() -> int:
+    """Entry point for dumping Cometa C3D joint angle channels to CSV for diagnostics."""
     parser = argparse.ArgumentParser(
         description='Dump Cometa C3D joint angle channels to CSV for diagnostics',
         formatter_class=argparse.RawDescriptionHelpFormatter,

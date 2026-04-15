@@ -71,6 +71,18 @@ def train_trial_model(X_train, y_train, X_val, y_val, trial_config, device='cuda
     Train a single model with given hyperparameters and return validation loss.
 
     This is a simplified training loop optimized for fast hyperparameter search.
+
+    Args:
+        X_train: Training feature DataFrame.
+        y_train: Training target DataFrame.
+        X_val: Validation feature DataFrame.
+        y_val: Validation target DataFrame.
+        trial_config: Configuration dictionary containing 'training', 'model', and 'embeddings' keys.
+        device: Torch device string to run training on (default 'cuda').
+
+    Returns:
+        Tuple of (best_val_loss, per_target_mae) where best_val_loss is the lowest
+        validation MSE loss seen and per_target_mae maps each target name to its MAE.
     """
     # Extract configuration
     train_cfg = trial_config['training']
@@ -206,6 +218,18 @@ def objective(trial, base_config, X_train, y_train, X_val, y_val, device):
     - n_blocks, d_block (model architecture)
     - learning_rate, weight_decay (optimization)
     - d_embedding, min_samples_leaf (n_bins for embeddings)
+
+    Args:
+        trial: Optuna Trial object used to suggest hyperparameter values.
+        base_config: Base configuration dictionary to be modified with trial parameters.
+        X_train: Training feature DataFrame.
+        y_train: Training target DataFrame.
+        X_val: Validation feature DataFrame.
+        y_val: Validation target DataFrame.
+        device: Torch device string to run training on.
+
+    Returns:
+        Best validation loss from the trial, or raises optuna.TrialPruned on failure.
     """
     # Create trial configuration by modifying base config
     trial_config = json.loads(json.dumps(base_config))  # Deep copy
@@ -425,7 +449,13 @@ def run_optimization(
 
 
 def save_best_config(config, output_path):
-    """Save best configuration to JSON file."""
+    """
+    Save best configuration to JSON file.
+
+    Args:
+        config: Configuration dictionary to serialize.
+        output_path: Path where the JSON file will be written.
+    """
     output_path = Path(output_path)
     with open(output_path, 'w') as f:
         json.dump(config, f, indent=2)
@@ -433,7 +463,13 @@ def save_best_config(config, output_path):
 
 
 def visualize_optimization(study, output_dir='.'):
-    """Create visualization plots for the optimization process."""
+    """
+    Create visualization plots for the optimization process.
+
+    Args:
+        study: Completed Optuna Study object to visualize.
+        output_dir: Directory path where plot images will be saved (default: current directory).
+    """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -461,6 +497,7 @@ def visualize_optimization(study, output_dir='.'):
 
 
 def main():
+    """Entry point for TabM hyperparameter optimization using Optuna TPE sampler."""
     parser = argparse.ArgumentParser(
         description='Optimize TabM hyperparameters using Optuna TPE sampler',
         formatter_class=argparse.RawDescriptionHelpFormatter,

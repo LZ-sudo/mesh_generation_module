@@ -35,6 +35,7 @@ import utils as utils
 _orig_print = builtins.print
 
 def _print_flush(*args, **kwargs):
+    """Wrap builtins.print to force flush=True, enabling real-time output in Blender's buffered stdout."""
     kwargs.setdefault('flush', True)
     _orig_print(*args, **kwargs)
 

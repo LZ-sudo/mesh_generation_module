@@ -22,6 +22,12 @@ def _enable_retarget_bvh(verbose: bool = False) -> bool:
     unreliable. Calling poll() on the specific operator is the correct check:
     it raises RuntimeError when the operator is not registered, and returns
     a bool when it is.
+
+    Args:
+        verbose: Print status messages when True.
+
+    Returns:
+        True if mcp.load_and_retarget is available after the attempt, False otherwise.
     """
     import bpy
 
