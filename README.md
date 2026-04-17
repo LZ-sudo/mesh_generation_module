@@ -23,6 +23,7 @@ mesh_generation_module/
 │   └── mpfb_hair_assets_application.py  # Hair asset library
 ├── mesh_rigging_animation/         # IMU motion capture processing and animation retargeting
 │   ├── animation_utils.py          # CMU MB BVH/FBX animation retargeting library
+│   ├── bake_animation.py           # Headless Blender script: bake BVH onto existing FBX avatar
 │   ├── bvh_writer.py               # CMU mocap BVH skeleton hierarchy writer
 │   ├── c3d_to_bvh.py               # Cometa C3D joint angles to BVH converter
 │   └── imu_calibration.py          # Quaternion math primitives for IMU calibration
@@ -314,12 +315,25 @@ print(assets)  # e.g., ['Short_Hair_B', 'Long_Hair_A', ...]
 
 Retarget BVH motion capture animations from the [CMU Graphics Lab Motion Capture Database](http://mocap.cs.cmu.edu/) onto generated characters. Requires the `cmu_mb` rig type and the retarget_bvh addon.
 
+**Option A — Bake during generation** (`generate_human.py`):
+
 ```bash
-# Generate character with CMU MB rig and bake a BVH animation
+# Generate character with CMU MB rig and bake a BVH animation in one step
 python run_blender.py --script generate_human.py -- \
   --config human.json \
   --rig-type cmu_mb \
   --animation path/to/animation.bvh
+```
+
+**Option B — Bake onto an existing FBX avatar** (`bake_animation.py`):
+
+Use this when you already have an exported FBX with a CMU MB rig and want to apply a different animation without regenerating the mesh.
+
+```bash
+python run_blender.py --script mesh_rigging_animation/bake_animation.py -- \
+  --fbx path/to/avatar.fbx \
+  --bvh path/to/animation.bvh \
+  --output path/to/avatar_animated.fbx
 ```
 
 The retargeted animation is baked into the exported FBX, ready for use in Unity, Unreal Engine, or any other 3D application.
