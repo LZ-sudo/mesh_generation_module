@@ -1,4 +1,7 @@
-P&G ShowerSense - Mesh Generation Module
+![P&G x SUTD](logos/p&gxsutd.png)
+
+# P&G ShowerSense - Mesh Generation Module
+
 Copyright (C) 2025-2026 Procter & Gamble and Singapore University of Technology and Design
 
 This program is free software: you can redistribute it and/or modify
